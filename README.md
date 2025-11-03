@@ -17,39 +17,6 @@ DataWeave-Py (`dwpy`) is a Python interpreter for the DataWeave language, origin
 - Python 3.10 or higher
 - Dependencies managed via [uv](https://github.com/astral-sh/uv) (recommended) or pip
 
-## Installation
-
-### Using uv (Recommended)
-
-```bash
-# Install uv if you haven't already
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Clone the repository
-git clone <repository-url>
-cd runtime-2.11.0-20250825-src
-
-# Create a virtual environment and install dependencies
-uv venv --python 3.10
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-uv pip sync
-```
-
-### Using pip
-
-```bash
-# Clone the repository
-git clone <repository-url>
-cd runtime-2.11.0-20250825-src
-
-# Create a virtual environment
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install dependencies
-pip install -e .
-```
-
 ## Quick Start
 
 ### Basic Usage
