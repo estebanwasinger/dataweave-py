@@ -1,0 +1,14 @@
+{
+  "orderId": "A123",
+  "status": "confirmed",
+  "items": [
+    { "price": 15.5, "quantity": 2 },
+    { "price": 9.99 }
+  ],
+  "values": [2, 3],
+  "user": {
+    "address": {
+      "city": "Seville"
+    }
+  }
+}

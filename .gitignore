@@ -1,0 +1,93 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+*.pyo
+*.pyd
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+.virtualenv
+
+# Python testing
+.pytest_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+*.cover
+.hypothesis/
+.pytype/
+coverage.xml
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# IDE and Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# OS-specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# uv package manager
+.uv/
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Compiled native extensions
+*.so
+
+# Runtime artifacts (downloaded dependencies)
+runtime-*.jar
+runtime-*/
+
+# Documentation builds
+docs/_build/
+docs/_static/
+docs/_templates/
+
+# Logs
+*.log
+
+# Local development files
+.env
+.envrc
+*.local

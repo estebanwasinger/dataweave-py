@@ -1,0 +1,10 @@
+{
+  "id": "A123",
+  "status": "CONFIRMED",
+  "total": 40.99,
+  "values": [4, 6],
+  "normalizedStatus": "CONFIRMED",
+  "city": "Seville",
+  "reference": 2,
+  "generatedAt": "2024-05-05T12:00:00Z"
+}
