@@ -464,3 +464,74 @@ def test_numeric_range_with_legacy_lambda_syntax():
         {}
     )
     assert result == [2, 4, 6, 8, 10]
+
+
+def test_import_star_from_strings_module():
+    runtime = DataWeaveRuntime()
+    script = """%dw 2.0
+output application/json
+import * from dw::core::Strings
+---
+upper(payload.name)
+"""
+    result = runtime.execute(script, {"name": "dw"})
+    assert result == "DW"
+
+
+def test_import_named_function_with_alias():
+    runtime = DataWeaveRuntime()
+    script = """%dw 2.0
+output application/json
+import trim as tidy from dw::core::Strings
+---
+tidy(payload.value)
+"""
+    result = runtime.execute(script, {"value": "  hello  "})
+    assert result == "hello"
+
+
+def test_import_from_module_file():
+    runtime = DataWeaveRuntime()
+    script = """%dw 2.0
+output application/json
+import keysOf, valuesOf from dw::core::Objects
+---
+{
+  keys: keysOf(payload.obj),
+  values: valuesOf(payload.obj)
+}
+"""
+    payload = {"obj": {"a": 1, "b": 2}}
+    result = runtime.execute(script, payload)
+    assert result == {"keys": ["a", "b"], "values": [1, 2]}
+
+
+def test_body_only_script_without_header():
+    runtime = DataWeaveRuntime()
+    result = runtime.execute("payload.name", {"name": "hello"})
+    assert result == "hello"
+
+
+def test_header_defined_function_invocation():
+    runtime = DataWeaveRuntime()
+    script = """%dw 2.0
+output application/json
+fun toUpper(aString) = upper(aString)
+---
+toUpper(\"h\" ++ \"el\" ++ lower(\"LO\"))
+"""
+    result = runtime.execute(script, {})
+    assert result == "HELLO"
+
+
+def test_map_over_range_generates_objects():
+    runtime = DataWeaveRuntime()
+    script = """%dw 2.0
+output application/json
+---
+1 to 10 map {
+  "hi": "Esteban"
+}
+"""
+    result = runtime.execute(script, {})
+    assert result == [{"hi": "Esteban"}] * 10

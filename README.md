@@ -126,6 +126,47 @@ result = runtime.execute(script, {"price": 75})
 # Output: {'category': 'standard'}
 ```
 
+### String Interpolation
+
+```python
+from dwpy import DataWeaveRuntime
+
+runtime = DataWeaveRuntime()
+
+# Simple interpolation
+script = """%dw 2.0
+output application/json
+---
+{
+  greeting: "Hello $(payload.name)!",
+  total: "Total: $(payload.price * payload.quantity)",
+  status: "Order $(payload.orderId) is $(upper(payload.status))"
+}
+"""
+
+payload = {
+    "name": "Alice",
+    "price": 10.5,
+    "quantity": 3,
+    "orderId": "ORD-123",
+    "status": "confirmed"
+}
+
+result = runtime.execute(script, payload)
+# Output: {
+#   'greeting': 'Hello Alice!',
+#   'total': 'Total: 31.5',
+#   'status': 'Order ORD-123 is CONFIRMED'
+# }
+```
+
+String interpolation allows you to embed expressions directly within strings using the `$(expression)` syntax. The expression can be:
+- Property access: `$(payload.name)`
+- Nested properties: `$(payload.user.email)`
+- Expressions: `$(payload.price * 1.1)`
+- Function calls: `$(upper(payload.status))`
+- Any valid DataWeave expression
+
 ## Supported Features
 
 DataWeave-Py currently supports a wide range of DataWeave language features:
@@ -137,6 +178,7 @@ DataWeave-Py currently supports a wide range of DataWeave language features:
 - ✅ Field selectors (`.field`, `?.field`, `[index]`)
 - ✅ Comments (line `//` and block `/* */`)
 - ✅ Default values (`payload.field default "fallback"`)
+- ✅ String interpolation (`"Hello $(payload.name)"`)
 
 ### Operators
 - ✅ Concatenation (`++`)

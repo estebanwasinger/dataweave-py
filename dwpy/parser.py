@@ -21,11 +21,19 @@ class ImportDirective:
 
 
 @dataclass
+class FunctionDeclaration:
+    name: str
+    parameters: List[Parameter]
+    body: "Expression"
+
+
+@dataclass
 class Header:
     version: str
     output: Optional[str]
     imports: List[ImportDirective]
     variables: List[VarDeclaration]
+    functions: List[FunctionDeclaration]
 
 
 
@@ -65,6 +73,11 @@ class Identifier(Expression):
 @dataclass
 class StringLiteral(Expression):
     value: str
+
+
+@dataclass
+class InterpolatedString(Expression):
+    parts: List[Expression]  # Mix of StringLiteral and other expressions
 
 
 @dataclass
@@ -154,6 +167,7 @@ TOKEN_REGEX = re.compile(
   | (?P<EQ>==)
   | (?P<NEQ>!=)
   | (?P<ARROW>->)
+  | (?P<DIV>/)
   | (?P<GT>>)
   | (?P<LT><)
   | (?P<LBRACE>\{)
@@ -382,6 +396,13 @@ class Parser:
                     function=Identifier(name="_binary_times"),
                     arguments=[expr, right],
                 )
+            elif token_type == "DIV":
+                self.advance()
+                right = self.parse_postfix()
+                expr = FunctionCall(
+                    function=Identifier(name="_binary_divide"),
+                    arguments=[expr, right],
+                )
             else:
                 break
         return expr
@@ -573,7 +594,11 @@ class Parser:
             return self.parse_list()
         if token_type == "STRING":
             self.advance()
-            return StringLiteral(value=_unescape_string(value or ""))
+            unescaped = _unescape_string(value or "")
+            # Check for string interpolation
+            if "$(" in unescaped:
+                return self._parse_interpolated_string(unescaped)
+            return StringLiteral(value=unescaped)
         if token_type == "NUMBER":
             self.advance()
             return NumberLiteral(value=float(value))  # type: ignore[arg-type]
@@ -628,19 +653,77 @@ class Parser:
                 self.expect("COMMA")
         return ListLiteral(elements=elements)
 
+    def _parse_interpolated_string(self, content: str) -> Expression:
+        """Parse a string with $(expression) interpolations."""
+        parts: List[Expression] = []
+        pos = 0
+        
+        while pos < len(content):
+            # Find the next interpolation
+            start = content.find("$(", pos)
+            
+            if start == -1:
+                # No more interpolations, add remaining string
+                if pos < len(content):
+                    parts.append(StringLiteral(value=content[pos:]))
+                break
+            
+            # Add the string literal before the interpolation
+            if start > pos:
+                parts.append(StringLiteral(value=content[pos:start]))
+            
+            # Find the matching closing parenthesis
+            paren_depth = 1
+            idx = start + 2  # Start after "$("
+            while idx < len(content) and paren_depth > 0:
+                if content[idx] == '(':
+                    paren_depth += 1
+                elif content[idx] == ')':
+                    paren_depth -= 1
+                idx += 1
+            
+            if paren_depth != 0:
+                raise ParseError("Unclosed interpolation expression in string")
+            
+            # Parse the expression inside $(...)
+            expr_source = content[start + 2:idx - 1]
+            expr = parse_expression_from_source(expr_source)
+            parts.append(expr)
+            
+            pos = idx
+        
+        # If no parts, return an empty string
+        if not parts:
+            return StringLiteral(value="")
+        
+        # If only one part and it's a string literal, return it directly
+        if len(parts) == 1 and isinstance(parts[0], StringLiteral):
+            return parts[0]
+        
+        return InterpolatedString(parts=parts)
+
 
 def _unescape_string(value: str) -> str:
     return bytes(value[1:-1], "utf-8").decode("unicode_escape")
 
 
 def parse_script(source: str) -> Script:
-    header_split = source.split("---", 1)
-    if len(header_split) != 2:
-        raise ParseError("Script must contain body separator '---'")
-    header_source = header_split[0].strip()
-    body_source = header_split[1].strip()
-    header = _parse_header(header_source)
-    body_expr = parse_expression_from_source(body_source)
+    stripped = source.strip()
+    if "---" not in stripped:
+        if not stripped:
+            raise ParseError("Script body cannot be empty")
+        header = Header(
+            version="2.0",
+            output=None,
+            imports=[],
+            variables=[],
+            functions=[],
+        )
+        body_expr = parse_expression_from_source(stripped)
+        return Script(header=header, body=body_expr)
+    header_source, body_source = stripped.split("---", 1)
+    header = _parse_header(header_source.strip())
+    body_expr = parse_expression_from_source(body_source.strip())
     return Script(header=header, body=body_expr)
 
 
@@ -656,6 +739,7 @@ def _parse_header(header_source: str) -> Header:
     output: Optional[str] = None
     imports: List[ImportDirective] = []
     variables: List[VarDeclaration] = []
+    functions: List[FunctionDeclaration] = []
 
     in_block_comment = False
     for idx, raw_line in enumerate(header_source.splitlines(), start=1):
@@ -697,6 +781,10 @@ def _parse_header(header_source: str) -> Header:
             expression = parse_expression_from_source(expr_part.strip())
             variables.append(VarDeclaration(name=name, expression=expression))
             continue
+        if line.startswith("fun "):
+            function = _parse_header_function(line[len("fun ") :].strip(), idx)
+            functions.append(function)
+            continue
         raise ParseError(f"Unsupported header directive '{line}' at header line {idx}")
 
     if version is None:
@@ -707,7 +795,77 @@ def _parse_header(header_source: str) -> Header:
         output=output,
         imports=imports,
         variables=variables,
+        functions=functions,
     )
+
+
+def _parse_header_function(source: str, line_no: int) -> FunctionDeclaration:
+    if "=" not in source:
+        raise ParseError(f"Invalid function declaration at header line {line_no}")
+    signature_part, body_part = source.split("=", 1)
+    signature_part = signature_part.strip()
+    body_part = body_part.strip()
+    if not body_part:
+        raise ParseError(f"Missing function body at header line {line_no}")
+    match = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)(?:<[^>]*>)?\s*\((.*)\)$", signature_part)
+    if not match:
+        raise ParseError(f"Invalid function signature at header line {line_no}")
+    name = match.group(1)
+    params_source = match.group(2)
+    parameters = _parse_header_function_parameters(params_source)
+    body_expr = parse_expression_from_source(body_part)
+    return FunctionDeclaration(name=name, parameters=parameters, body=body_expr)
+
+
+def _parse_header_function_parameters(params_source: str) -> List[Parameter]:
+    params_source = params_source.strip()
+    if not params_source:
+        return []
+    parts = _split_top_level(params_source, ",")
+    parameters: List[Parameter] = []
+    for part in parts:
+        segment = part.strip()
+        if not segment:
+            continue
+        name_section = segment
+        default_expr: Optional[Expression] = None
+        equals_split = _split_top_level(segment, "=", maxsplit=1)
+        if len(equals_split) == 2:
+            name_section = equals_split[0].strip()
+            default_source = equals_split[1].strip()
+            if not default_source:
+                raise ParseError("Default parameter expression cannot be empty")
+            default_expr = parse_expression_from_source(default_source)
+        if ":" in name_section:
+            name_section = name_section.split(":", 1)[0].strip()
+        name = name_section.strip()
+        if not name:
+            raise ParseError("Function parameter name cannot be empty")
+        parameters.append(Parameter(name=name, default=default_expr))
+    return parameters
+
+
+def _split_top_level(source: str, delimiter: str, *, maxsplit: int = -1) -> List[str]:
+    if delimiter not in source:
+        return [source]
+    result: List[str] = []
+    current: List[str] = []
+    depth = 0
+    splits_done = 0
+    for char in source:
+        if char in "({[":
+            depth += 1
+        elif char in ")}]":
+            if depth > 0:
+                depth -= 1
+        if char == delimiter and depth == 0 and (maxsplit < 0 or splits_done < maxsplit):
+            result.append("".join(current))
+            current = []
+            splits_done += 1
+            continue
+        current.append(char)
+    result.append("".join(current))
+    return result
 
 INFIX_SPECIAL = {
     "map": "_infix_map",

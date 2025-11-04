@@ -486,6 +486,44 @@ def builtin_matches(text: Any, pattern: Any) -> bool:
     return bool(regex.fullmatch(str(text)))
 
 
+MODULE_EXPORTS: Dict[str, List[str]] = {
+    "dw::core::Strings": [
+        "contains",
+        "endsWith",
+        "startsWith",
+        "joinBy",
+        "splitBy",
+        "lower",
+        "upper",
+        "trim",
+        "sizeOf",
+    ],
+    "dw::core::Objects": [
+        "entrySet",
+        "nameSet",
+        "keySet",
+        "valueSet",
+        "mergeWith",
+        "divideBy",
+        "takeWhile",
+        "everyEntry",
+        "someEntry",
+    ],
+}
+
+
+def resolve_module_exports(module: str) -> Dict[str, Callable[..., Any]]:
+    exports: Dict[str, Callable[..., Any]] = {}
+    names = MODULE_EXPORTS.get(module)
+    if not names:
+        return exports
+    for name in names:
+        func = CORE_FUNCTIONS.get(name)
+        if func is not None:
+            exports[name] = func
+    return exports
+
+
 def builtin_filter_object(obj: Any, criteria: Callable[..., Any]) -> Any:
     if obj is None:
         return None
@@ -502,6 +540,145 @@ def builtin_filter_object(obj: Any, criteria: Callable[..., Any]) -> Any:
 
 def _normalise_group_key(raw_key: Any) -> str:
     return str(_hashable_key(raw_key))
+
+
+def builtin_divide_by(items: Any, amount: Any) -> List[Any]:
+    try:
+        size = int(amount)
+    except (TypeError, ValueError):
+        raise TypeError("divideBy expects a numeric amount")
+    if size <= 0:
+        return []
+    if items is None:
+        return []
+    if isinstance(items, Mapping):
+        groups: List[Dict[Any, Any]] = []
+        current: Dict[Any, Any] = {}
+        for key, value in items.items():
+            current[key] = value
+            if len(current) == size:
+                groups.append(current)
+                current = {}
+        if current:
+            groups.append(current)
+        return groups
+    iterable: Iterable[Any]
+    if isinstance(items, (list, tuple)):
+        iterable = items
+    else:
+        iterable = _coerce_iterable(items)
+    groups: List[List[Any]] = []
+    current: List[Any] = []
+    for value in iterable:
+        current.append(value)
+        if len(current) == size:
+            groups.append(current)
+            current = []
+    if current:
+        groups.append(current)
+    return groups
+
+
+def builtin_filter(items: Any, condition: Callable[..., Any]) -> Any:
+    if items is None:
+        return [] if not isinstance(items, Mapping) else {}
+    if condition is None:
+        return dict(items) if isinstance(items, Mapping) else list(_coerce_iterable(items))
+    if isinstance(items, Mapping):
+        result: Dict[Any, Any] = {}
+        for index, (key, value) in enumerate(items.items()):
+            if invoke_lambda(condition, value, key, index):
+                result[key] = value
+        return result
+    result = []
+    for index, value in enumerate(_coerce_iterable(items)):
+        if invoke_lambda(condition, value, index):
+            result.append(value)
+    return result
+
+
+def builtin_entry_set(obj: Any) -> Any:
+    return builtin_entries_of(obj)
+
+
+def builtin_name_set(obj: Any) -> Optional[List[str]]:
+    if obj is None:
+        return None
+    if not isinstance(obj, Mapping):
+        raise TypeError("nameSet expects an object")
+    return [str(key) for key in obj.keys()]
+
+
+def builtin_key_set(obj: Any) -> Optional[List[Any]]:
+    if obj is None:
+        return None
+    if not isinstance(obj, Mapping):
+        raise TypeError("keySet expects an object")
+    return list(obj.keys())
+
+
+def builtin_value_set(obj: Any) -> Optional[List[Any]]:
+    if obj is None:
+        return None
+    if not isinstance(obj, Mapping):
+        raise TypeError("valueSet expects an object")
+    return list(obj.values())
+
+
+def builtin_merge_with(source: Any, target: Any) -> Any:
+    if source is None:
+        return dict(target) if isinstance(target, Mapping) else target
+    if target is None:
+        return dict(source) if isinstance(source, Mapping) else source
+    if not isinstance(source, Mapping) or not isinstance(target, Mapping):
+        raise TypeError("mergeWith expects objects")
+    result = dict(source)
+    for key in target.keys():
+        result.pop(key, None)
+    result.update(target)
+    return result
+
+
+def builtin_take_while(obj: Any, condition: Callable[..., Any]) -> Any:
+    if obj is None:
+        return {}
+    if not isinstance(obj, Mapping):
+        raise TypeError("takeWhile expects an object")
+    if condition is None:
+        raise TypeError("takeWhile expects a condition function")
+    result: Dict[Any, Any] = {}
+    for index, (key, value) in enumerate(obj.items()):
+        if invoke_lambda(condition, value, key, index):
+            result[key] = value
+        else:
+            break
+    return result
+
+
+def builtin_every_entry(obj: Any, condition: Callable[..., Any]) -> bool:
+    if obj is None:
+        return True
+    if not isinstance(obj, Mapping):
+        raise TypeError("everyEntry expects an object")
+    if condition is None:
+        raise TypeError("everyEntry expects a condition function")
+    for index, (key, value) in enumerate(obj.items()):
+        if not invoke_lambda(condition, value, key, index):
+            return False
+    return True
+
+
+def builtin_some_entry(obj: Any, condition: Callable[..., Any]) -> bool:
+    if obj is None:
+        return False
+    if not isinstance(obj, Mapping):
+        raise TypeError("someEntry expects an object")
+    if condition is None:
+        raise TypeError("someEntry expects a condition function")
+    for index, (key, value) in enumerate(obj.items()):
+        if invoke_lambda(condition, value, key, index):
+            return True
+    return False
 
 
 def builtin_group_by(items: Any, criteria: Callable[..., Any]) -> Any:
@@ -603,10 +780,20 @@ CORE_FUNCTIONS: Dict[str, Callable[..., Any]] = {
     "contains": builtin_contains,
     "endsWith": builtin_endswith,
     "entriesOf": builtin_entries_of,
+    "entrySet": builtin_entry_set,
     "isBlank": builtin_is_blank,
     "isDecimal": builtin_is_decimal,
     "filterObject": builtin_filter_object,
     "find": builtin_find,
+    "divideBy": builtin_divide_by,
+    "mergeWith": builtin_merge_with,
+    "filter": builtin_filter,
+    "nameSet": builtin_name_set,
+    "keySet": builtin_key_set,
+    "valueSet": builtin_value_set,
+    "takeWhile": builtin_take_while,
+    "everyEntry": builtin_every_entry,
+    "someEntry": builtin_some_entry,
     "floor": builtin_floor,
     "flatMap": builtin_flat_map,
     "flatten": builtin_flatten,
