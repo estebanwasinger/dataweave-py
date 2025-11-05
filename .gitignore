@@ -1,8 +1,8 @@
-# Python-generated files
+# Python
 __pycache__/
-*.py[oc]
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
+*.so
 .Python
 build/
 develop-eggs/
@@ -22,72 +22,28 @@ wheels/
 MANIFEST
 
 # Virtual environments
-.venv/
 venv/
-ENV/
 env/
-.virtualenv
+ENV/
+.venv
 
-# Python testing
-.pytest_cache/
-.tox/
-.coverage
-.coverage.*
-htmlcov/
-*.cover
-.hypothesis/
-.pytype/
-coverage.xml
-
-# Jupyter Notebook
-.ipynb_checkpoints/
-*.ipynb_checkpoints
-
-# IDE and Editor files
+# IDEs
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-.project
-.pydevproject
-.settings/
-*.sublime-project
-*.sublime-workspace
-
-# OS-specific files
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
 
-# uv package manager
-.uv/
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
 
-# Type checking
-.mypy_cache/
-.dmypy.json
-dmypy.json
+# Jupyter
+.ipynb_checkpoints
+*.ipynb
 
-# Compiled native extensions
-*.so
-
-# Runtime artifacts (downloaded dependencies)
-runtime-*.jar
-runtime-*/
-
-# Documentation builds
-docs/_build/
-docs/_static/
-docs/_templates/
-
-# Logs
-*.log
-
-# Local development files
-.env
-.envrc
-*.local
+# uv
+uv.lock

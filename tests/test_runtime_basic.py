@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 import dwpy.parser as parser
-from dwpy.runtime import DataWeaveRuntime
+from dwpy.runtime import DataWeaveRuntime, DataWeaveEvaluationError
 
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -535,3 +535,42 @@ output application/json
 """
     result = runtime.execute(script, {})
     assert result == [{"hi": "Esteban"}] * 10
+
+
+def test_string_literal_coerced_to_number():
+    runtime = DataWeaveRuntime()
+    script = """%dw 2.0
+output application/json
+---
+"3" as Number
+"""
+    result = runtime.execute(script, {})
+    assert result == 3
+
+
+def test_function_with_return_type_annotation():
+    runtime = DataWeaveRuntime()
+    script = """%dw 2.0
+output text/plain
+fun toNumber(aString): Number = aString as Number
+---
+toNumber("3") + 5
+"""
+    result = runtime.execute(script, {})
+    assert result == 8
+
+
+def test_plus_operator_type_error_message():
+    runtime = DataWeaveRuntime()
+    script = """%dw 2.0
+output text/plain
+---
+"a" + 5
+"""
+    with pytest.raises(DataWeaveEvaluationError) as exc:
+        runtime.execute(script, {})
+
+    message = str(exc.value)
+    assert "You called the function '+'" in message
+    assert "(Number, Number)" in message
+    assert "Location:" in message

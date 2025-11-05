@@ -4,6 +4,7 @@ import logging
 import re
 import inspect
 import copy
+from datetime import date, datetime, time, timedelta
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Mapping, Tuple
@@ -16,11 +17,28 @@ MODULE_BASE_PATH = Path(__file__).resolve().parent / "modules"
 LOGGER = logging.getLogger(__name__)
 
 
+class DataWeaveEvaluationError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        line: Optional[int] = None,
+        column: Optional[int] = None,
+        length: int = 1,
+        original: Optional[BaseException] = None,
+    ) -> None:
+        super().__init__(message)
+        self.line = line
+        self.column = column
+        self.length = max(length, 1)
+        self.original = original
+
+
 @dataclass
 class EvaluationContext:
     payload: Any
     variables: Dict[str, Any]
     header: Optional[parser.Header] = None
+    line_offset: int = 0
 
 
 @dataclass
@@ -66,6 +84,7 @@ class DefinedFunction:
     parameters: List[parser.Parameter]
     body: parser.Expression
     context: EvaluationContext
+    return_type: Optional[parser.TypeSpec]
 
     def __call__(self, *args: Any) -> Any:
         local_vars: Dict[str, Any] = dict(self.context.variables)
@@ -92,7 +111,10 @@ class DefinedFunction:
             variables=local_vars,
             header=self.context.header,
         )
-        return self.runtime._evaluate(self.body, body_ctx)
+        result = self.runtime._evaluate(self.body, body_ctx)
+        if self.return_type is not None:
+            result = self.runtime._coerce_value(result, self.return_type, None, body_ctx)
+        return result
 
 
 class DataWeaveRuntime:
@@ -122,27 +144,73 @@ class DataWeaveRuntime:
     def execute(
         self, script_source: str, payload: Any, vars: Optional[Dict[str, Any]] = None
     ) -> Any:
-        script = parser.parse_script(script_source)
+        try:
+            script = parser.parse_script(script_source)
+        except parser.ParseError as err:
+            formatted = self._format_error_message(
+                script_source,
+                str(err),
+                err.line,
+                err.column,
+            )
+            raise parser.ParseError(formatted, err.line, err.column) from err
         variables = dict(vars or {})
-        context = EvaluationContext(payload=payload, variables=variables, header=script.header)
+        header_context = EvaluationContext(
+            payload=payload,
+            variables=variables,
+            header=script.header,
+            line_offset=0,
+        )
         if self._enable_module_imports:
             imported = self._resolve_imports(script.header.imports)
-            context.variables.update(imported)
+            header_context.variables.update(imported)
         for function_decl in script.header.functions:
-            context.variables[function_decl.name] = DefinedFunction(
+            header_context.variables[function_decl.name] = DefinedFunction(
                 runtime=self,
                 parameters=function_decl.parameters,
                 body=function_decl.body,
-                context=context,
+                context=header_context,
+                return_type=function_decl.return_type,
             )
         for declaration in script.header.variables:
-            value = self._evaluate(declaration.expression, context)
-            context.variables[declaration.name] = value
-        return self._evaluate(script.body, context)
+            value = self._evaluate(declaration.expression, header_context)
+            header_context.variables[declaration.name] = value
+        body_line_offset = self._compute_body_line_offset(script_source)
+        body_context = EvaluationContext(
+            payload=payload,
+            variables=header_context.variables,
+            header=script.header,
+            line_offset=body_line_offset,
+        )
+        try:
+            return self._evaluate(script.body, body_context)
+        except DataWeaveEvaluationError as err:
+            formatted = self._format_error_message(
+                script_source,
+                str(err),
+                err.line,
+                err.column,
+                err.length,
+            )
+            raise DataWeaveEvaluationError(
+                formatted,
+                err.line,
+                err.column,
+                err.length,
+                err.original or err,
+            ) from (err.original or err)
 
     def _evaluate(self, expr: parser.Expression, ctx: EvaluationContext) -> Any:
         if isinstance(expr, parser.ObjectLiteral):
-            return {key: self._evaluate(value, ctx) for key, value in expr.fields}
+            result_obj: Dict[str, Any] = {}
+            for key_expr, value_expr in expr.fields:
+                key_value = self._evaluate(key_expr, ctx)
+                if isinstance(key_value, str):
+                    key_str = key_value
+                else:
+                    key_str = self._to_string(key_value)
+                result_obj[key_str] = self._evaluate(value_expr, ctx)
+            return result_obj
         if isinstance(expr, parser.ListLiteral):
             return [self._evaluate(item, ctx) for item in expr.elements]
         if isinstance(expr, parser.StringLiteral):
@@ -161,7 +229,13 @@ class DataWeaveRuntime:
         if isinstance(expr, parser.NullLiteral):
             return None
         if isinstance(expr, parser.Identifier):
-            return self._resolve_identifier(expr.name, ctx)
+            return self._resolve_identifier(
+                expr.name,
+                ctx,
+                line=expr.line,
+                column=expr.column,
+                length=len(expr.name or ""),
+            )
         if isinstance(expr, parser.PropertyAccess):
             base = self._evaluate(expr.value, ctx)
             try:
@@ -223,18 +297,50 @@ class DataWeaveRuntime:
                 if matches:
                     return self._evaluate(case.expression, match_context)
             return None
+        if isinstance(expr, parser.TypeCoercion):
+            value = self._evaluate(expr.expression, ctx)
+            options = self._evaluate(expr.options, ctx) if expr.options else None
+            return self._coerce_value(value, expr.target, options, ctx)
         raise TypeError(f"Unsupported expression: {expr!r}")
 
-    def _resolve_identifier(self, name: str, ctx: EvaluationContext) -> Any:
+    def _resolve_identifier(
+        self,
+        name: str,
+        ctx: EvaluationContext,
+        *,
+        line: Optional[int] = None,
+        column: Optional[int] = None,
+        length: int = 1,
+    ) -> Any:
         if name == "payload":
             return ctx.payload
         if name == "vars":
             return ctx.variables
         if name in self._builtins:
-            return self._builtins[name]
+            builtin = self._builtins[name]
+            if name == "_binary_plus" and line is not None:
+                offset = ctx.line_offset if ctx else 0
+
+                def plus_wrapper(left: Any, right: Any, _builtin=builtin) -> Any:
+                    actual_line = line + offset if line is not None else None
+                    return _builtin(
+                        left,
+                        right,
+                        line=actual_line,
+                        column=column,
+                    )
+
+                return plus_wrapper
+            return builtin
         if name in ctx.variables:
             return ctx.variables[name]
-        raise NameError(f"Unknown identifier '{name}'")
+        actual_line = line + ctx.line_offset if line is not None else None
+        raise DataWeaveEvaluationError(
+            f"Unable to resolve reference of `{name}`.",
+            line=actual_line,
+            column=column,
+            length=max(length, 1),
+        )
 
     def _resolve_property(self, base: Any, attribute: str) -> Any:
         if base is None:
@@ -296,9 +402,64 @@ class DataWeaveRuntime:
             return json.dumps(value)
         return str(value)
 
-    @staticmethod
-    def _func_binary_plus(left: Any, right: Any) -> Any:
-        return (left or 0) + (right or 0)
+    def _func_binary_plus(
+        self,
+        left: Any,
+        right: Any,
+        *,
+        line: Optional[int] = None,
+        column: Optional[int] = None,
+    ) -> Any:
+        def is_period(value: Any) -> bool:
+            return isinstance(value, timedelta)
+
+        def ensure_datetime(value: datetime, delta: timedelta) -> datetime:
+            return value + delta
+
+        if isinstance(left, (int, float, bool)) and isinstance(right, (int, float, bool)):
+            left_num = float(left)
+            right_num = float(right)
+            result = left_num + right_num
+            return int(result) if result.is_integer() else result
+
+        if isinstance(left, list):
+            right_list = (
+                list(right)
+                if isinstance(right, (list, tuple))
+                else [right]
+            )
+            return list(left) + right_list
+
+        if isinstance(left, (datetime, date)) and is_period(right):
+            if isinstance(left, datetime):
+                return ensure_datetime(left, right)
+            return (datetime.combine(left, time()) + right).date()
+
+        if isinstance(left, time) and is_period(right):
+            base = datetime.combine(date(1970, 1, 1), left)
+            result = (base + right).time()
+            return result
+
+        if is_period(left) and isinstance(right, datetime):
+            return ensure_datetime(right, left)
+
+        if is_period(left) and isinstance(right, date):
+            return (datetime.combine(right, time()) + left).date()
+
+        if is_period(left) and isinstance(right, time):
+            base = datetime.combine(date(1970, 1, 1), right)
+            return (left + base).time()
+
+        if isinstance(left, timedelta) and isinstance(right, timedelta):
+            return left + right
+
+        message = self._format_plus_error(left, right)
+        raise DataWeaveEvaluationError(
+            message,
+            line=line,
+            column=column,
+            length=1,
+        )
 
     @staticmethod
     def _func_binary_times(left: Any, right: Any) -> Any:
@@ -717,6 +878,174 @@ class DataWeaveRuntime:
         if len(spec) == 1 and spec.isupper():
             return True
         return True
+
+    def _coerce_value(
+        self,
+        value: Any,
+        type_spec: parser.TypeSpec,
+        options: Any,
+        ctx: EvaluationContext,
+    ) -> Any:
+        target_name = (type_spec.name or "Any").strip()
+        normalised = target_name.lower()
+        if normalised == "null":
+            return None
+        if value is None:
+            if normalised == "array":
+                return []
+            if normalised == "object":
+                return {}
+            return None
+        if normalised == "any":
+            return value
+        if normalised == "number":
+            return self._coerce_number(value)
+        if normalised == "string":
+            return self._coerce_string(value)
+        if normalised in {"boolean", "bool"}:
+            return self._coerce_boolean(value)
+        if normalised == "binary":
+            return self._coerce_binary(value)
+        if normalised == "array":
+            return self._coerce_array(value, type_spec.generics, options, ctx)
+        if normalised == "object":
+            return self._coerce_object(value, type_spec.generics, options, ctx)
+        if normalised == "date" or normalised == "datetime":
+            return self._coerce_string(value)
+        return value
+
+    @staticmethod
+    def _coerce_number(value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return 1 if value else 0
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return int(value) if float(value).is_integer() else float(value)
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            try:
+                number = float(text)
+            except ValueError as exc:
+                raise TypeError(f"Cannot coerce string '{value}' to Number") from exc
+            return int(number) if number.is_integer() else number
+        raise TypeError(f"Cannot coerce {type(value).__name__} to Number")
+
+    @staticmethod
+    def _coerce_string(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        return str(value)
+
+    @staticmethod
+    def _coerce_boolean(value: Any) -> Optional[bool]:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"true", "yes", "1"}:
+                return True
+            if lowered in {"false", "no", "0", ""}:
+                return False
+            raise TypeError(f"Cannot coerce string '{value}' to Boolean")
+        return bool(value)
+
+    @staticmethod
+    def _coerce_binary(value: Any) -> bytes:
+        if value is None:
+            return b""
+        if isinstance(value, (bytes, bytearray)):
+            return bytes(value)
+        if isinstance(value, str):
+            return value.encode("utf-8")
+        raise TypeError(f"Cannot coerce {type(value).__name__} to Binary")
+
+    def _coerce_array(
+        self,
+        value: Any,
+        generics: List[parser.TypeSpec],
+        options: Any,
+        ctx: EvaluationContext,
+    ) -> List[Any]:
+        iterable = self._to_iterable(value)
+        if not generics:
+            return list(iterable)
+        coerced: List[Any] = []
+        inner_type = generics[0]
+        for item in iterable:
+            coerced.append(self._coerce_value(item, inner_type, options, ctx))
+        return coerced
+
+    def _coerce_object(
+        self,
+        value: Any,
+        generics: List[parser.TypeSpec],
+        options: Any,
+        ctx: EvaluationContext,
+    ) -> Dict[str, Any]:
+        if not isinstance(value, Mapping):
+            raise TypeError(f"Cannot coerce {type(value).__name__} to Object")
+        result: Dict[str, Any] = {}
+        if generics:
+            inner_type = generics[0]
+            for key, item in value.items():
+                result[str(key)] = self._coerce_value(item, inner_type, options, ctx)
+            return result
+        for key, item in value.items():
+            result[str(key)] = item
+        return result
+
+    @staticmethod
+    def _dw_type_name(value: Any) -> str:
+        if value is None:
+            return "Null"
+        if isinstance(value, bool):
+            return "Boolean"
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return "Number"
+        if isinstance(value, str):
+            return "String"
+        if isinstance(value, (list, tuple)):
+            return "Array"
+        if isinstance(value, Mapping):
+            return "Object"
+        if isinstance(value, datetime):
+            return "DateTime"
+        if isinstance(value, date):
+            return "Date"
+        if isinstance(value, time):
+            return "Time"
+        if isinstance(value, timedelta):
+            return "Period"
+        return type(value).__name__
+
+    @staticmethod
+    def _preview_value(value: Any) -> str:
+        if isinstance(value, str):
+            return f'"{value}"'
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if value is None:
+            return "null"
+        return str(value)
+
+    @staticmethod
+    def _compute_body_line_offset(source: str) -> int:
+        for index, line_text in enumerate(source.splitlines(), start=1):
+            if line_text.strip() == "---":
+                return index
+        return 0
+
     def _evaluate_string_literal(self, template: str, ctx: EvaluationContext) -> str:
         result: List[str] = []
         i = 0
@@ -748,3 +1077,60 @@ class DataWeaveRuntime:
                 result.append(template[i])
                 i += 1
         return "".join(result)
+
+    @staticmethod
+    def _format_error_message(
+        source: str,
+        message: str,
+        line: Optional[int],
+        column: Optional[int],
+        length: int = 1,
+        location: str = "main",
+    ) -> str:
+        if line is None or column is None:
+            if line is None and column is None:
+                return message
+            location_line = f"Location:\n{location} (line: {line}, column: {column})"
+            return f"{message}\n\n{location_line}"
+        lines = source.splitlines()
+        if line < 1 or line > len(lines):
+            location_line = f"Location:\n{location} (line: {line}, column: {column})"
+            return f"{message}\n\n{location_line}"
+        snippet_line = lines[line - 1]
+        line_label = f"{line}"
+        gutter = f"{line_label}| "
+        pointer_offset = len(gutter) + max(column - 1, 0)
+        caret_span = "^" * max(length, 1)
+        pointer_line = " " * pointer_offset + caret_span
+        location_line = f"Location:\n{location} (line: {line}, column: {column})"
+        return (
+            f"{message}\n\n"
+            f"{gutter}{snippet_line}\n"
+            f"{pointer_line}\n\n"
+            f"{location_line}"
+        )
+
+    def _format_plus_error(self, left: Any, right: Any) -> str:
+        allowed = [
+            "(Array, Any)",
+            "(Date, Period)",
+            "(DateTime, Period)",
+            "(LocalDateTime, Period)",
+            "(LocalTime, Period)",
+            "(Number, Number)",
+            "(Period, DateTime)",
+            "(Period, LocalDateTime)",
+            "(Period, Time)",
+            "(Period, Date)",
+            "(Period, LocalTime)",
+            "(Time, Period)",
+        ]
+        lines = [
+            "You called the function '+' with these arguments:",
+            f"  1: {self._dw_type_name(left)} ({self._preview_value(left)})",
+            f"  2: {self._dw_type_name(right)} ({self._preview_value(right)})",
+            "",
+            "But it expects one of these combinations:",
+        ]
+        lines.extend(f"  {combo}" for combo in allowed)
+        return "\n".join(lines)

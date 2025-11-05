@@ -1,15 +1,65 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "dataweave-py"
 version = "0.1.0"
 description = "DataWeave interpreter running natively on Python"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = [
-
+license = {text = "MIT"}
+authors = [
+    {name = "Your Name", email = "your.email@example.com"}
 ]
+maintainers = [
+    {name = "Your Name", email = "your.email@example.com"}
+]
+keywords = [
+    "dataweave",
+    "data-transformation",
+    "etl",
+    "mulesoft",
+    "interpreter",
+    "functional-programming"
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Interpreters",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+]
+dependencies = []
 
-[dependency-groups]
+[project.urls]
+Homepage = "https://github.com/estebanwasinger/dataweave-py"
+Documentation = "https://github.com/estebanwasinger/dataweave-py#readme"
+Repository = "https://github.com/estebanwasinger/dataweave-py"
+Issues = "https://github.com/estebanwasinger/dataweave-py/issues"
+
+[project.optional-dependencies]
 dev = [
     "pytest>=8.4.2",
     "ipykernel>=7.1.0",
+]
+
+[tool.setuptools]
+packages = ["dwpy"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+dwpy = ["modules/**/*.dwl", "modules/**/*.bdwl"]
+
+[dependency-groups]
+dev = [
+    "build>=1.3.0",
+    "pydantic>=2.12.3",
+    "twine>=6.2.0",
 ]
