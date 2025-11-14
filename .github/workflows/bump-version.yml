@@ -24,7 +24,7 @@ jobs:
         uses: astral-sh/setup-uv@v3
 
       - name: Bump version with uv
-        run: uv version "${{ github.event.inputs.bump_type }}"
+        run: uv version --bump "${{ github.event.inputs.bump_type }}"
 
       - name: Regenerate lock file
         run: uv lock
