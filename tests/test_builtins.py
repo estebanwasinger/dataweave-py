@@ -138,7 +138,7 @@ var numbers = payload.values -- [3]
         "meta": {"id": 1},
     }
 
-    result = runtime.execute(script.read_text(), payload=payload)
+    result = runtime.execute(script.read_text(), payload=payload, render_output=False)
     assert result["concatenated"] == [1, 2, 3, 4]
     assert result["filtered"] == [2, 3]
     assert result["upperName"] == "DW"

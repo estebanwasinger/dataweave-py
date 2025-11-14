@@ -56,6 +56,7 @@ class Expression:
 class Parameter:
     name: str
     default: Optional["Expression"] = None
+    type_annotation: Optional["TypeSpec"] = None
 
 
 @dataclass
@@ -932,6 +933,7 @@ def _parse_header_function_parameters(params_source: str) -> List[Parameter]:
             continue
         name_section = segment
         default_expr: Optional[Expression] = None
+        type_annotation: Optional[TypeSpec] = None
         equals_split = _split_top_level(segment, "=", maxsplit=1)
         if len(equals_split) == 2:
             name_section = equals_split[0].strip()
@@ -940,11 +942,15 @@ def _parse_header_function_parameters(params_source: str) -> List[Parameter]:
                 raise ParseError("Default parameter expression cannot be empty")
             default_expr = parse_expression_from_source(default_source)
         if ":" in name_section:
-            name_section = name_section.split(":", 1)[0].strip()
+            name_part, type_part = name_section.split(":", 1)
+            name_section = name_part.strip()
+            type_source = type_part.strip()
+            if type_source:
+                type_annotation = _parse_type_spec_string(type_source)
         name = name_section.strip()
         if not name:
             raise ParseError("Function parameter name cannot be empty")
-        parameters.append(Parameter(name=name, default=default_expr))
+        parameters.append(Parameter(name=name, default=default_expr, type_annotation=type_annotation))
     return parameters
 
 

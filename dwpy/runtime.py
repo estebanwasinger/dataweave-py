@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Mapping, Set, Tuple
 
 from . import builtins, parser
+from .formats import FormatRegistry, FormatError
 
 try:  # pragma: no cover - optional dependency guard
     import pandas as pd  # type: ignore
@@ -44,6 +45,13 @@ class EvaluationContext:
     variables: Dict[str, Any]
     header: Optional[parser.Header] = None
     line_offset: int = 0
+
+
+@dataclass
+class OutputDirective:
+    mime_type: str
+    format_id: str
+    properties: Dict[str, Any]
 
 
 @dataclass
@@ -131,6 +139,30 @@ class DefinedFunction:
 
 
 @dataclass
+class OverloadedFunction:
+    runtime: "DataWeaveRuntime"
+    functions: List[DefinedFunction]
+
+    def add(self, function: DefinedFunction) -> None:
+        self.functions.append(function)
+
+    def __call__(self, *args: Any) -> Any:
+        for function in self.functions:
+            if self._matches(function, args):
+                return function(*args)
+        return self.functions[-1](*args)
+
+    def _matches(self, function: DefinedFunction, args: Tuple[Any, ...]) -> bool:
+        expected_params = function.parameters
+        for index, param in enumerate(expected_params):
+            if index >= len(args):
+                break
+            if not self.runtime._matches_type_annotation(args[index], param.type_annotation):
+                return False
+        return True
+
+
+@dataclass
 class ImplicitLambdaCallable:
     runtime: "DataWeaveRuntime"
     body: parser.Expression
@@ -202,8 +234,16 @@ class DataWeaveRuntime:
         )
 
     def execute(
-        self, script_source: str, payload: Any, vars: Optional[Dict[str, Any]] = None
+        self,
+        script_source: str,
+        payload: Any,
+        vars: Optional[Dict[str, Any]] = None,
+        *,
+        payload_format: Optional[str] = None,
+        payload_format_options: Optional[Dict[str, Any]] = None,
+        render_output: bool = True,
     ) -> Any:
+        payload = self._convert_input_format(payload, payload_format, payload_format_options)
         payload = self._normalise_input_value(payload)
         provided_vars = vars or {}
         variables = {
@@ -229,13 +269,23 @@ class DataWeaveRuntime:
             imported = self._resolve_imports(script.header.imports)
             header_context.variables.update(imported)
         for function_decl in script.header.functions:
-            header_context.variables[function_decl.name] = DefinedFunction(
+            defined_function = DefinedFunction(
                 runtime=self,
                 parameters=function_decl.parameters,
                 body=function_decl.body,
                 context=header_context,
                 return_type=function_decl.return_type,
             )
+            existing_function = header_context.variables.get(function_decl.name)
+            if isinstance(existing_function, OverloadedFunction):
+                existing_function.add(defined_function)
+            elif isinstance(existing_function, DefinedFunction):
+                header_context.variables[function_decl.name] = OverloadedFunction(
+                    runtime=self,
+                    functions=[existing_function, defined_function],
+                )
+            else:
+                header_context.variables[function_decl.name] = defined_function
         for declaration in script.header.variables:
             value = self._evaluate(declaration.expression, header_context)
             header_context.variables[declaration.name] = value
@@ -247,7 +297,7 @@ class DataWeaveRuntime:
             line_offset=body_line_offset,
         )
         try:
-            return self._evaluate(script.body, body_context)
+            result = self._evaluate(script.body, body_context)
         except DataWeaveEvaluationError as err:
             formatted = self._format_error_message(
                 script_source,
@@ -263,6 +313,10 @@ class DataWeaveRuntime:
                 err.length,
                 err.original or err,
             ) from (err.original or err)
+        if not render_output:
+            return result
+        directive = self._parse_output_directive(script.header.output)
+        return self._render_output(result, directive)
 
     def _normalise_input_value(self, value: Any) -> Any:
         if PANDAS_AVAILABLE:
@@ -279,6 +333,118 @@ class DataWeaveRuntime:
         if isinstance(value, tuple):
             return [self._normalise_input_value(item) for item in value]
         return value
+
+    def _convert_input_format(
+        self,
+        value: Any,
+        format_name: Optional[str],
+        options: Optional[Dict[str, Any]],
+    ) -> Any:
+        if format_name is None:
+            return value
+        try:
+            return FormatRegistry.read(value, format_name, options or {})
+        except FormatError as err:
+            raise DataWeaveEvaluationError(str(err)) from err
+
+    def _render_output(
+        self,
+        value: Any,
+        directive: Optional[OutputDirective],
+    ) -> Any:
+        if directive is None or directive.format_id == "python":
+            return value
+        try:
+            return FormatRegistry.write(value, directive.format_id, directive.properties)
+        except FormatError as err:
+            raise DataWeaveEvaluationError(str(err)) from err
+
+    def _parse_output_directive(self, directive: Optional[str]) -> Optional[OutputDirective]:
+        if not directive:
+            return None
+        import shlex
+
+        try:
+            tokens = shlex.split(directive)
+        except ValueError as err:
+            raise DataWeaveEvaluationError(f"Invalid output directive: {directive}") from err
+        if not tokens:
+            return None
+        idx = 0
+        first = tokens[idx]
+        idx += 1
+        mime_value: Optional[str] = None
+        format_token: Optional[str] = None
+        if idx < len(tokens) and tokens[idx].lower() == "with":
+            mime_value = first
+            idx += 1
+            if idx >= len(tokens):
+                raise DataWeaveEvaluationError("Missing writer format after 'with' in output directive")
+            format_token = tokens[idx]
+            idx += 1
+        else:
+            if "/" in first:
+                mime_value = first
+            else:
+                format_token = first
+        if format_token is None:
+            format_token = mime_value
+        if format_token is None:
+            raise DataWeaveEvaluationError("Unable to determine writer format for output directive")
+        format_def = FormatRegistry.get(format_token)
+        if format_def is None:
+            raise DataWeaveEvaluationError(f"Unsupported output format '{format_token}'")
+        if mime_value is None:
+            mime_value = format_def.mime_type
+        properties = self._parse_directive_properties(tokens[idx:])
+        return OutputDirective(mime_type=mime_value, format_id=format_def.id, properties=properties)
+
+    def _parse_directive_properties(self, tokens: List[str]) -> Dict[str, Any]:
+        properties: Dict[str, Any] = {}
+        for token in tokens:
+            if "=" not in token:
+                properties[token] = True
+                continue
+            key, raw_value = token.split("=", 1)
+            properties[key] = self._coerce_property_value(raw_value)
+        return properties
+
+    @staticmethod
+    def _coerce_property_value(value: str) -> Any:
+        if not value:
+            return ""
+        unescaped = bytes(value, "utf-8").decode("unicode_escape")
+        lowered = unescaped.lower()
+        if lowered == "true":
+            return True
+        if lowered == "false":
+            return False
+        try:
+            if "." in unescaped:
+                return float(unescaped)
+            return int(unescaped)
+        except ValueError:
+            return unescaped
+
+    def _matches_type_annotation(self, value: Any, type_spec: Optional[parser.TypeSpec]) -> bool:
+        if type_spec is None:
+            return True
+        type_name = (type_spec.name or "").lower()
+        if type_name in ("any", "anytype"):
+            return True
+        if type_name == "null":
+            return value is None
+        if type_name == "object":
+            return isinstance(value, Mapping)
+        if type_name == "array":
+            return isinstance(value, list)
+        if type_name == "string":
+            return isinstance(value, str)
+        if type_name == "number":
+            return isinstance(value, (int, float))
+        if type_name == "boolean":
+            return isinstance(value, bool)
+        return True
 
     def _evaluate(self, expr: parser.Expression, ctx: EvaluationContext) -> Any:
         if isinstance(expr, parser.ObjectLiteral):
@@ -529,12 +695,9 @@ class DataWeaveRuntime:
             return int(result) if result.is_integer() else result
 
         if isinstance(left, list):
-            right_list = (
-                list(right)
-                if isinstance(right, (list, tuple))
-                else [right]
-            )
-            return list(left) + right_list
+            result_list = list(left)
+            result_list.append(right)
+            return result_list
 
         if isinstance(left, (datetime, date)) and is_period(right):
             if isinstance(left, datetime):

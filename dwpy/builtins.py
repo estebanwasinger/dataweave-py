@@ -414,30 +414,38 @@ def builtin_entries_of(obj: Any) -> Any:
     raise TypeError("entriesOf expects an object")
 
 
-def _log_with_level(level: int, prefix: str, value: Any) -> Any:
-    message = f"{prefix} - {value}" if prefix else str(value)
+_LOG_SENTINEL = object()
+
+
+def _log_with_level(level: int, prefix: Optional[str], value: Any = _LOG_SENTINEL) -> Any:
+    actual_prefix = prefix or ""
+    actual_value = value
+    if value is _LOG_SENTINEL:
+        actual_value = prefix
+        actual_prefix = ""
+    message = f"{actual_prefix} - {actual_value}" if actual_prefix else str(actual_value)
     logging.log(level, message)
-    return value
+    return actual_value
 
 
-def builtin_log(prefix: Optional[str], value: Any) -> Any:
-    return _log_with_level(logging.WARNING, prefix or "", value)
+def builtin_log(prefix: Optional[str], value: Any = _LOG_SENTINEL) -> Any:
+    return _log_with_level(logging.WARNING, prefix, value)
 
 
-def builtin_log_debug(prefix: Optional[str], value: Any) -> Any:
-    return _log_with_level(logging.DEBUG, prefix or "", value)
+def builtin_log_debug(prefix: Optional[str], value: Any = _LOG_SENTINEL) -> Any:
+    return _log_with_level(logging.DEBUG, prefix, value)
 
 
-def builtin_log_info(prefix: Optional[str], value: Any) -> Any:
-    return _log_with_level(logging.INFO, prefix or "", value)
+def builtin_log_info(prefix: Optional[str], value: Any = _LOG_SENTINEL) -> Any:
+    return _log_with_level(logging.INFO, prefix, value)
 
 
-def builtin_log_warn(prefix: Optional[str], value: Any) -> Any:
-    return _log_with_level(logging.WARNING, prefix or "", value)
+def builtin_log_warn(prefix: Optional[str], value: Any = _LOG_SENTINEL) -> Any:
+    return _log_with_level(logging.WARNING, prefix, value)
 
 
-def builtin_log_error(prefix: Optional[str], value: Any) -> Any:
-    return _log_with_level(logging.ERROR, prefix or "", value)
+def builtin_log_error(prefix: Optional[str], value: Any = _LOG_SENTINEL) -> Any:
+    return _log_with_level(logging.ERROR, prefix, value)
 
 
 def builtin_pow(base: Any, exponent: Any) -> Any:

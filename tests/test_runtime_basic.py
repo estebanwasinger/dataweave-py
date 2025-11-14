@@ -1,11 +1,18 @@
 import json
 from pathlib import Path
+import textwrap
 
 import pandas as pd
 import pytest
 
 import dwpy.parser as parser
 from dwpy.runtime import DataWeaveRuntime, DataWeaveEvaluationError
+
+
+class PythonResultRuntime(DataWeaveRuntime):
+    def execute(self, *args, **kwargs):
+        kwargs.setdefault("render_output", False)
+        return super().execute(*args, **kwargs)
 
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -25,7 +32,7 @@ output application/json
     }
 
     runtime = DataWeaveRuntime()
-    result = runtime.execute(script, payload)
+    result = runtime.execute(script, payload, render_output=False)
 
     assert result == {
         "id": "A123",
@@ -45,7 +52,7 @@ var greeting = upper("hello")
 """
 
     runtime = DataWeaveRuntime()
-    result = runtime.execute(script, payload={})
+    result = runtime.execute(script, payload={}, render_output=False)
 
     assert result == {
         "message": "HELLO",
@@ -64,7 +71,7 @@ var summary = greeting ++ " WORLD"
 """
 
     runtime = DataWeaveRuntime()
-    result = runtime.execute(script, payload={})
+    result = runtime.execute(script, payload={}, render_output=False)
 
     assert result == {
         "message": "HELLO WORLD",
@@ -83,7 +90,7 @@ var greeting = upper("hello")
 """
 
     runtime = DataWeaveRuntime()
-    result = runtime.execute(script, payload={})
+    result = runtime.execute(script, payload={}, render_output=False)
 
     assert result["message"] == "HELLO"
 
@@ -109,14 +116,35 @@ var captured = (vars.requestTime default now())
         script,
         payload=payload,
         vars={"requestTime": "2024-05-05T12:00:00Z"},
+        render_output=False,
     )
 
     assert result["id"] == "A123"
     assert result["status"] == "CONFIRMED"
     assert result["generatedAt"] == "2024-05-05T12:00:00Z"
 
-    fallback = runtime.execute(script, payload=payload, vars={})
+    fallback = runtime.execute(script, payload=payload, vars={}, render_output=False)
     assert fallback["generatedAt"].endswith("Z")
+
+
+def test_payload_accepts_json_string_when_format_specified():
+    script = """%dw 2.0
+output application/python
+---
+{
+  upper: upper(payload.name)
+}
+"""
+    payload = '{"name": "mule"}'
+    runtime = DataWeaveRuntime()
+
+    result = runtime.execute(
+        script,
+        payload=payload,
+        payload_format="application/json",
+    )
+
+    assert result == {"upper": "MULE"}
 
 
 def test_payload_accepts_dataframe_input():
@@ -136,7 +164,7 @@ payload map ((item) -> {
     )
 
     runtime = DataWeaveRuntime()
-    result = runtime.execute(script, payload=payload)
+    result = runtime.execute(script, payload=payload, render_output=False)
 
     assert result == [
         {"identifier": 1, "city": "London"},
@@ -160,9 +188,108 @@ output application/json
     )
 
     runtime = DataWeaveRuntime()
-    result = runtime.execute(script, payload={}, vars={"source": vars_df})
+    result = runtime.execute(script, payload={}, vars={"source": vars_df}, render_output=False)
 
     assert result["names"] == ["ALICE", "BOB"]
+
+
+def test_output_directive_serialises_to_json():
+    script = """%dw 2.0
+output application/json indent=2
+---
+{
+  id: payload.id,
+  tags: payload.tags
+}
+"""
+    runtime = DataWeaveRuntime()
+    payload = {"id": 1, "tags": ["a", "b"]}
+
+    raw = runtime.execute(script, payload=payload)
+    parsed = json.loads(raw)
+
+    assert parsed == payload
+    assert raw.count("\n") > 1  # pretty printed
+
+
+def test_output_directive_returns_python_when_requested():
+    script = """%dw 2.0
+output application/python
+---
+payload
+"""
+    runtime = PythonResultRuntime()
+    payload = {"a": 1}
+
+    result = runtime.execute(script, payload=payload)
+
+    assert result == payload
+
+
+def test_output_csv_with_custom_separator():
+    script = """%dw 2.0
+output application/csv separator=";" header=true
+---
+[
+  { name: "Jane", age: 30 },
+  { name: "Bob", age: 25 }
+]
+"""
+    runtime = DataWeaveRuntime()
+    payload = {}
+
+    csv_data = runtime.execute(script, payload=payload)
+
+    assert "name;age" in csv_data
+    assert "Jane;30" in csv_data
+
+
+def test_payload_csv_parsing_with_header():
+    script = """%dw 2.0
+output application/python
+---
+payload map ((item) -> item.city)
+"""
+    csv_input = textwrap.dedent(
+        """\
+        name,city
+        Ana,London
+        Bob,Berlin
+        """
+    ).strip()
+    runtime = PythonResultRuntime()
+
+    result = runtime.execute(
+        script,
+        payload=csv_input,
+        payload_format="application/csv",
+    )
+
+    assert result == ["London", "Berlin"]
+
+
+def test_payload_csv_respects_separator_option():
+    script = """%dw 2.0
+output application/python
+---
+payload[0].city
+"""
+    csv_input = textwrap.dedent(
+        """\
+        name;city
+        Ana;Lisbon
+        """
+    ).strip()
+    runtime = PythonResultRuntime()
+
+    result = runtime.execute(
+        script,
+        payload=csv_input,
+        payload_format="csv",
+        payload_format_options={"separator": ";"},
+    )
+
+    assert result == "Lisbon"
 
 
 def test_reduction_over_items_for_total():
@@ -181,7 +308,7 @@ output application/json
         ]
     }
 
-    runtime = DataWeaveRuntime()
+    runtime = PythonResultRuntime()
     result = runtime.execute(script, payload=payload)
 
     assert result["total"] == pytest.approx(40.99, rel=1e-9)
@@ -202,7 +329,7 @@ output application/json
         ]
     }
 
-    runtime = DataWeaveRuntime()
+    runtime = PythonResultRuntime()
     result = runtime.execute(script, payload=payload)
 
     assert result["projected"] == [5, 7]
@@ -227,7 +354,7 @@ output application/json
         "discount": 5,
     }
 
-    runtime = DataWeaveRuntime()
+    runtime = PythonResultRuntime()
     result = runtime.execute(script, payload=payload)
 
     assert len(result["filtered"]) == 2
@@ -257,7 +384,7 @@ output application/json
         "orderId": "Z9",
     }
 
-    runtime = DataWeaveRuntime()
+    runtime = PythonResultRuntime()
     result = runtime.execute(script, payload=payload)
 
     assert result["id"] == "Z9"
@@ -278,7 +405,7 @@ output application/json
 """
     payload = {"status": "confirmed"}
 
-    runtime = DataWeaveRuntime()
+    runtime = PythonResultRuntime()
     result = runtime.execute(script, payload=payload)
 
     assert result["normalized"] == "CONFIRMED"
@@ -298,7 +425,7 @@ output application/json
   }
 }
 """
-    runtime = DataWeaveRuntime()
+    runtime = PythonResultRuntime()
 
     result_large = runtime.execute(script, payload={"total": 150})
     assert result_large["bucket"] == "large"
@@ -324,7 +451,7 @@ var x = payload.values[0]
         "values": [2, 3],
     }
 
-    runtime = DataWeaveRuntime()
+    runtime = PythonResultRuntime()
     result = runtime.execute(script, payload=payload)
 
     assert result["id"] == "IDX-1"
@@ -342,7 +469,7 @@ var city = payload.user?.address?.city default "UNKNOWN"
 }
 """
 
-    runtime = DataWeaveRuntime()
+    runtime = PythonResultRuntime()
     result = runtime.execute(script, payload={})
     assert result["city"] == "UNKNOWN"
 
@@ -361,7 +488,7 @@ output application/json
   id: payload.orderId,,
 }
 """
-    runtime = DataWeaveRuntime()
+    runtime = PythonResultRuntime()
     with pytest.raises(parser.ParseError) as exc:
         runtime.execute(script, payload={})
 
@@ -379,7 +506,7 @@ def test_fixture_parity_sample_script():
     payload = json.loads(payload_path.read_text())
     expected = json.loads(expected_path.read_text())
 
-    runtime = DataWeaveRuntime()
+    runtime = PythonResultRuntime()
     result = runtime.execute(
         script_source,
         payload=payload,
@@ -423,7 +550,7 @@ output application/json
         "phrase": "a-b-c",
     }
 
-    runtime = DataWeaveRuntime()
+    runtime = PythonResultRuntime()
     result = runtime.execute(script, payload=payload)
 
     assert result["distinct"] == [1, 2, 3]
@@ -465,7 +592,7 @@ output application/json
         ],
     }
 
-    runtime = DataWeaveRuntime()
+    runtime = PythonResultRuntime()
     result = runtime.execute(script, payload=payload)
 
     assert result["infixContains"] is True
@@ -485,7 +612,7 @@ output application/json
 
 
 def test_random_functions_available():
-    runtime = DataWeaveRuntime()
+    runtime = PythonResultRuntime()
     result = runtime.execute(
         "%dw 2.0\noutput application/json\n---\n{ price: randomInt(1000), ratio: random() }",
         {}
@@ -495,7 +622,7 @@ def test_random_functions_available():
 
 
 def test_numeric_range_to_operator():
-    runtime = DataWeaveRuntime()
+    runtime = PythonResultRuntime()
     result = runtime.execute(
         "%dw 2.0\noutput application/json\n---\n{ up: 1 to 5, down: 5 to 1 }",
         {}
@@ -505,7 +632,7 @@ def test_numeric_range_to_operator():
 
 
 def test_numeric_range_with_legacy_lambda_syntax():
-    runtime = DataWeaveRuntime()
+    runtime = PythonResultRuntime()
     result = runtime.execute(
         "%dw 2.0\noutput application/json\n---\n1 to 5 map ((value) -> value * 2)",
         {}
@@ -514,7 +641,7 @@ def test_numeric_range_with_legacy_lambda_syntax():
 
 
 def test_import_star_from_strings_module():
-    runtime = DataWeaveRuntime()
+    runtime = PythonResultRuntime()
     script = """%dw 2.0
 output application/json
 import * from dw::core::Strings
@@ -526,7 +653,7 @@ upper(payload.name)
 
 
 def test_import_named_function_with_alias():
-    runtime = DataWeaveRuntime()
+    runtime = PythonResultRuntime()
     script = """%dw 2.0
 output application/json
 import trim as tidy from dw::core::Strings
@@ -538,7 +665,7 @@ tidy(payload.value)
 
 
 def test_import_from_module_file():
-    runtime = DataWeaveRuntime()
+    runtime = PythonResultRuntime()
     script = """%dw 2.0
 output application/json
 import keysOf, valuesOf from dw::core::Objects
@@ -554,13 +681,13 @@ import keysOf, valuesOf from dw::core::Objects
 
 
 def test_body_only_script_without_header():
-    runtime = DataWeaveRuntime()
+    runtime = PythonResultRuntime()
     result = runtime.execute("payload.name", {"name": "hello"})
     assert result == "hello"
 
 
 def test_header_defined_function_invocation():
-    runtime = DataWeaveRuntime()
+    runtime = PythonResultRuntime()
     script = """%dw 2.0
 output application/json
 fun toUpper(aString) = upper(aString)
@@ -572,7 +699,7 @@ toUpper(\"h\" ++ \"el\" ++ lower(\"LO\"))
 
 
 def test_map_over_range_generates_objects():
-    runtime = DataWeaveRuntime()
+    runtime = PythonResultRuntime()
     script = """%dw 2.0
 output application/json
 ---
@@ -585,7 +712,7 @@ output application/json
 
 
 def test_map_with_implicit_placeholders():
-    runtime = DataWeaveRuntime()
+    runtime = PythonResultRuntime()
     script = """%dw 2.0
 output application/json
 ---
@@ -596,7 +723,7 @@ output application/json
 
 
 def test_map_using_only_index_placeholder():
-    runtime = DataWeaveRuntime()
+    runtime = PythonResultRuntime()
     script = """%dw 2.0
 output application/json
 ---
@@ -607,7 +734,7 @@ output application/json
 
 
 def test_filter_with_placeholder_condition():
-    runtime = DataWeaveRuntime()
+    runtime = PythonResultRuntime()
     script = """%dw 2.0
 output application/json
 ---
@@ -618,7 +745,7 @@ output application/json
 
 
 def test_string_literal_coerced_to_number():
-    runtime = DataWeaveRuntime()
+    runtime = PythonResultRuntime()
     script = """%dw 2.0
 output application/json
 ---
@@ -629,7 +756,7 @@ output application/json
 
 
 def test_function_with_return_type_annotation():
-    runtime = DataWeaveRuntime()
+    runtime = PythonResultRuntime()
     script = """%dw 2.0
 output text/plain
 fun toNumber(aString): Number = aString as Number
@@ -654,3 +781,87 @@ output text/plain
     assert "You called the function '+'" in message
     assert "(Number, Number)" in message
     assert "Location:" in message
+
+
+def test_plus_operator_appends_arrays_as_values():
+    runtime = DataWeaveRuntime()
+    script = """%dw 2.0
+output application/json
+---
+[2] + [2]
+"""
+    result = runtime.execute(script, {})
+    assert json.loads(result) == [2, [2]]
+
+
+def test_plus_operator_appends_scalar_values_to_arrays():
+    runtime = DataWeaveRuntime()
+    script = """%dw 2.0
+output application/json
+---
+[2] + 2
+"""
+    result = runtime.execute(script, {})
+    assert json.loads(result) == [2, 2]
+
+
+def test_recursive_node_processing_logs_and_flattens_hierarchy():
+    runtime = PythonResultRuntime()
+    script = """%dw 2.0
+fun processNode(node: Object) = [log(node.name)] ++ flatten((node.children map ((item, index) -> processNode(item))))
+fun processNode(node: Null) = []
+---
+processNode(payload)
+"""
+    payload = {
+        "name": "Net Operating Income",
+        "children": [
+            {
+                "name": "Revenues",
+                "children": [
+                    {
+                        "name": "Rental Income",
+                        "children": [
+                            {"name": "Base Rent", "children": []},
+                            {"name": "Base Rent Concession", "children": []},
+                        ],
+                    },
+                    {
+                        "name": "Tenant CAM Reimbursements",
+                        "children": [
+                            {"name": "Electric", "children": []},
+                            {"name": "Miscellaneous", "children": []},
+                        ],
+                    },
+                    {
+                        "name": "Monthly Maintenance",
+                        "children": [
+                            {"name": "Monthly Maintenance OPEX Concession", "children": []},
+                        ],
+                    },
+                    {
+                        "name": "Other Charges",
+                        "children": [
+                            {"name": "Storage", "children": []},
+                        ],
+                    },
+                ],
+            }
+        ],
+    }
+
+    result = runtime.execute(script, payload)
+    assert result == [
+        "Net Operating Income",
+        "Revenues",
+        "Rental Income",
+        "Base Rent",
+        "Base Rent Concession",
+        "Tenant CAM Reimbursements",
+        "Electric",
+        "Miscellaneous",
+        "Monthly Maintenance",
+        "Monthly Maintenance OPEX Concession",
+        "Other Charges",
+        "Storage",
+    ]

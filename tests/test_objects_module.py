@@ -3,7 +3,7 @@ from dwpy.runtime import DataWeaveRuntime
 
 def _execute(script: str):
     runtime = DataWeaveRuntime()
-    return runtime.execute(script, payload={})
+    return runtime.execute(script, payload={}, render_output=False)
 
 
 def test_entry_set_returns_key_value_descriptions():

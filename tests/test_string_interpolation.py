@@ -3,9 +3,15 @@ import pytest
 from dwpy.runtime import DataWeaveRuntime
 
 
+class PythonResultRuntime(DataWeaveRuntime):
+    def execute(self, *args, **kwargs):
+        kwargs.setdefault("render_output", False)
+        return super().execute(*args, **kwargs)
+
+
 @pytest.fixture
 def runtime():
-    return DataWeaveRuntime()
+    return PythonResultRuntime()
 
 
 def test_basic_string_interpolation(runtime):
@@ -229,6 +235,5 @@ output application/json
         {"price": 19.99},
     )
     assert result == "Price: 19.99"
-
 
 
