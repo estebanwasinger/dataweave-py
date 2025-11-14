@@ -292,6 +292,133 @@ payload[0].city
     assert result == "Lisbon"
 
 
+def test_payload_xml_parsing_with_wildcard_selection():
+    runtime = DataWeaveRuntime()
+    script = """%dw 2.0
+output application/json
+type Currency = String { format: "\\$#,###.00" }
+---
+{
+  books: (payload.items.*item) map ((item) -> {
+    book: {
+      price: item.price as Currency
+    }
+  })
+}
+"""
+    xml_payload = """<items>
+    <item>
+        <price>22.30</price>
+    </item>
+    <item>
+        <price>20.31</price>
+    </item>
+</items>"""
+
+    result = runtime.execute(
+        script,
+        payload=xml_payload,
+        payload_format="application/xml",
+    )
+    parsed = json.loads(result)
+    prices = [entry["book"]["price"] for entry in parsed["books"]]
+    assert prices == ["22.30", "20.31"]
+
+
+XML_TREE_PAYLOAD = """<root>
+    <name>John</name>
+    <children>
+        <name a="b">Jane</name>
+        <name>John</name>
+    </children>
+</root>"""
+
+
+def test_xml_attribute_access_returns_first_attribute_value():
+    runtime = PythonResultRuntime()
+    script = """%dw 2.0
+---
+payload.root.children.name.@a
+"""
+    result = runtime.execute(
+        script,
+        payload=XML_TREE_PAYLOAD,
+        payload_format="application/xml",
+    )
+    assert result == "b"
+
+
+def test_xml_property_without_wildcard_returns_first_match():
+    runtime = PythonResultRuntime()
+    script = """%dw 2.0
+---
+payload.root.children.name
+"""
+    result = runtime.execute(
+        script,
+        payload=XML_TREE_PAYLOAD,
+        payload_format="application/xml",
+    )
+    assert result == "Jane"
+
+
+def test_xml_children_structure_preserves_entries_for_json_output():
+    runtime = DataWeaveRuntime()
+    script = """%dw 2.0
+output application/json
+---
+payload.root.children
+"""
+    raw = runtime.execute(
+        script,
+        payload=XML_TREE_PAYLOAD,
+        payload_format="application/xml",
+    )
+    assert raw == '{"name":"Jane","name":"John"}'
+
+
+def test_xml_like_python_mapping_collapses_to_text_value():
+    runtime = PythonResultRuntime()
+    script = """%dw 2.0
+---
+payload.root.children.name
+"""
+    payload = {
+        "root": {
+            "children": {
+                "name": {
+                    "@b": "c",
+                    "#text": "Jane",
+                }
+            }
+        }
+    }
+    result = runtime.execute(script, payload=payload)
+    assert result == "Jane"
+
+
+def test_value_set_with_xml_children_returns_flat_strings():
+    runtime = DataWeaveRuntime()
+    script = """%dw 2.0
+output json
+import * from dw::core::Objects
+---
+valueSet(payload.root.children)
+"""
+    raw = runtime.execute(
+        script,
+        payload="""<root>
+    <name>John</name>
+    <children>
+        <name b="c">Jane</name>
+        <name>John</name>
+    </children>
+</root>""",
+        payload_format="xml",
+    )
+    assert json.loads(raw) == ["Jane", "John"]
+
+
 def test_reduction_over_items_for_total():
     script = """%dw 2.0
 output application/json

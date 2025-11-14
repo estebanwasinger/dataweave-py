@@ -3,8 +3,10 @@ from __future__ import annotations
 import csv
 import io
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
+import xml.etree.ElementTree as ET
 
 
 class FormatError(ValueError):
@@ -13,6 +15,15 @@ class FormatError(ValueError):
 
 Reader = Callable[[Any, Dict[str, Any]], Any]
 Writer = Callable[[Any, Dict[str, Any]], Any]
+
+
+class XMLNodeList(list):
+    """List wrapper used to mark XML repeated elements."""
+
+
+class XMLNodeDict(dict):
+    """Dictionary wrapper used to mark XML element nodes."""
+
 
 
 @dataclass(frozen=True)
@@ -103,6 +114,15 @@ def _register_builtin_formats() -> None:
         ),
         aliases=["csv", "text/csv"],
     )
+    FormatRegistry.register(
+        FormatDefinition(
+            id="xml",
+            mime_type="application/xml",
+            reader=_xml_reader,
+            writer=_xml_writer,
+        ),
+        aliases=["xml", "text/xml"],
+    )
 
 
 def _ensure_text(value: Any, options: Dict[str, Any]) -> str:
@@ -135,12 +155,146 @@ def _json_writer(value: Any, options: Dict[str, Any]) -> str:
     if "ensure_ascii" in options:
         ensure_ascii = _to_bool(options.get("ensure_ascii"))
     sort_keys = _to_bool(options.get("sort_keys", False))
-    return json.dumps(
-        value,
-        indent=indent,
-        ensure_ascii=ensure_ascii,
-        sort_keys=sort_keys,
-    )
+    encoder = _JSONEncoder(indent=indent, ensure_ascii=ensure_ascii, sort_keys=sort_keys)
+    return encoder.encode(value)
+
+
+class _JSONEncoder:
+    def __init__(self, indent: Optional[int], ensure_ascii: bool, sort_keys: bool) -> None:
+        self.indent = indent if indent is not None and indent >= 0 else None
+        self.ensure_ascii = ensure_ascii
+        self.sort_keys = sort_keys
+
+    def encode(self, value: Any, level: int = 0) -> str:
+        if isinstance(value, XMLNodeDict):
+            return self._encode_object(value, level)
+        if isinstance(value, Mapping):
+            return self._encode_object(value, level)
+        if isinstance(value, XMLNodeList):
+            return self._encode_array(list(value), level)
+        if isinstance(value, list):
+            return self._encode_array(value, level)
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return json.dumps(value, ensure_ascii=self.ensure_ascii)
+        return json.dumps(value, ensure_ascii=self.ensure_ascii)
+
+    def _encode_object(self, obj: Mapping[str, Any], level: int) -> str:
+        if not obj:
+            return "{}"
+        items = obj.items()
+        if self.sort_keys:
+            items = sorted(items, key=lambda kv: kv[0])
+        key_values: list[tuple[str, Any]] = []
+        for key, value in items:
+            if isinstance(value, XMLNodeList):
+                for entry in value:
+                    key_values.append((key, entry))
+            else:
+                key_values.append((key, value))
+        parts = []
+        for key, value in key_values:
+            normalized = self._normalize_value(value)
+            encoded_key = json.dumps(key, ensure_ascii=self.ensure_ascii)
+            encoded_value = self._encode_normalized(normalized, level + 1)
+            if self.indent is None:
+                parts.append(f"{encoded_key}:{encoded_value}")
+            else:
+                pad = " " * self.indent * (level + 1)
+                parts.append(f"{pad}{encoded_key}: {encoded_value}")
+        if self.indent is None:
+            return "{" + ",".join(parts) + "}"
+        else:
+            newline = "\n"
+            closing_pad = " " * self.indent * level
+            return "{" + newline + (",\n".join(parts)) + newline + closing_pad + "}"
+
+    def _encode_array(self, items: list[Any], level: int) -> str:
+        if not items:
+            return "[]"
+        parts = []
+        for item in items:
+            normalized = self._normalize_value(item)
+            encoded = self._encode_normalized(normalized, level + 1)
+            if self.indent is None:
+                parts.append(encoded)
+            else:
+                pad = " " * self.indent * (level + 1)
+                parts.append(f"{pad}{encoded}")
+        if self.indent is None:
+            return "[" + ",".join(parts) + "]"
+        else:
+            newline = "\n"
+            closing_pad = " " * self.indent * level
+            return "[" + newline + (",\n".join(parts)) + newline + closing_pad + "]"
+
+    def _encode_normalized(self, value: Any, level: int) -> str:
+        if isinstance(value, dict):
+            return self._encode_standard_object(value, level)
+        if isinstance(value, list):
+            return self._encode_standard_array(value, level)
+        return json.dumps(value, ensure_ascii=self.ensure_ascii)
+
+    def _encode_standard_object(self, obj: Mapping[str, Any], level: int) -> str:
+        if not obj:
+            return "{}"
+        items = obj.items()
+        if self.sort_keys:
+            items = sorted(items, key=lambda kv: kv[0])
+        parts = []
+        for key, value in items:
+            encoded_key = json.dumps(key, ensure_ascii=self.ensure_ascii)
+            encoded_value = self._encode_normalized(value, level + 1)
+            if self.indent is None:
+                parts.append(f"{encoded_key}:{encoded_value}")
+            else:
+                pad = " " * self.indent * (level + 1)
+                parts.append(f"{pad}{encoded_key}: {encoded_value}")
+        if self.indent is None:
+            return "{" + ",".join(parts) + "}"
+        newline = "\n"
+        closing_pad = " " * self.indent * level
+        return "{" + newline + (",\n".join(parts)) + newline + closing_pad + "}"
+
+    def _encode_standard_array(self, items: list[Any], level: int) -> str:
+        if not items:
+            return "[]"
+        parts = []
+        for item in items:
+            encoded = self._encode_normalized(item, level + 1)
+            if self.indent is None:
+                parts.append(encoded)
+            else:
+                pad = " " * self.indent * (level + 1)
+                parts.append(f"{pad}{encoded}")
+        if self.indent is None:
+            return "[" + ",".join(parts) + "]"
+        newline = "\n"
+        closing_pad = " " * self.indent * level
+        return "[" + newline + (",\n".join(parts)) + newline + closing_pad + "]"
+
+    def _normalize_value(self, value: Any) -> Any:
+        if isinstance(value, XMLNodeDict):
+            text_value = None
+            normalized_children: Dict[str, Any] = {}
+            for key, child in value.items():
+                if key == "#text":
+                    text_value = self._normalize_value(child)
+                    continue
+                if key.startswith("@"):
+                    continue
+                normalized_children[key] = self._normalize_value(child)
+            if normalized_children:
+                return normalized_children
+            if text_value is not None:
+                return text_value
+            return ""
+        if isinstance(value, XMLNodeList):
+            return [self._normalize_value(item) for item in value]
+        if isinstance(value, list):
+            return [self._normalize_value(item) for item in value]
+        if isinstance(value, Mapping):
+            return {key: self._normalize_value(val) for key, val in value.items()}
+        return value
 
 
 def _csv_reader(value: Any, options: Dict[str, Any]) -> Any:
@@ -201,6 +355,79 @@ def _csv_writer(value: Any, options: Dict[str, Any]) -> str:
             else:
                 writer.writerow([row])
     return output.getvalue()
+
+
+def _xml_reader(value: Any, options: Dict[str, Any]) -> Any:
+    text = _ensure_text(value, options)
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError as err:
+        raise FormatError(f"Invalid XML input: {err}") from err
+    return {root.tag: _element_to_value(root)}
+
+
+def _element_to_value(element: ET.Element) -> Any:
+    children = list(element)
+    text = (element.text or "").strip()
+    if not children and not element.attrib:
+        return text
+    result: XMLNodeDict = XMLNodeDict()
+    for attr_name, attr_value in element.attrib.items():
+        result[f"@{attr_name}"] = attr_value
+    for child in children:
+        child_value = _element_to_value(child)
+        existing = result.get(child.tag)
+        if existing is None:
+            result[child.tag] = child_value
+        else:
+            if not isinstance(existing, XMLNodeList):
+                node_list = XMLNodeList()
+                node_list.append(existing)
+                result[child.tag] = node_list
+            result[child.tag].append(child_value)
+    if text:
+        if children or element.attrib:
+            result["#text"] = text
+        else:
+            return text
+    return result
+
+
+def _xml_writer(value: Any, options: Dict[str, Any]) -> str:
+    if isinstance(value, Mapping) and len(value) == 1 and "root" not in options:
+        root_name, root_value = next(iter(value.items()))
+    else:
+        root_name = options.get("root", "root")
+        root_value = value
+    element = ET.Element(str(root_name))
+    _populate_xml_element(element, root_value)
+    return ET.tostring(element, encoding="unicode")
+
+
+def _populate_xml_element(element: ET.Element, value: Any) -> None:
+    if isinstance(value, Mapping):
+        for key, child_value in value.items():
+            if key.startswith("@"):
+                element.set(key[1:], str(child_value))
+                continue
+            if key == "#text":
+                element.text = str(child_value)
+                continue
+            values = child_value if isinstance(child_value, list) else [child_value]
+            for item in values:
+                child_el = ET.SubElement(element, key)
+                _populate_xml_element(child_el, item)
+        if not element.text:
+            element.text = ""
+        return
+    if isinstance(value, list):
+        for item in value:
+            child_el = ET.SubElement(element, "item")
+            _populate_xml_element(child_el, item)
+        if not element.text:
+            element.text = ""
+        return
+    element.text = "" if value is None else str(value)
 
 
 def _to_bool(value: Any) -> bool:

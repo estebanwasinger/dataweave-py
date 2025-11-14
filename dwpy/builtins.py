@@ -8,6 +8,8 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
+from .formats import XMLNodeList, XMLNodeDict
+
 
 def _coerce_iterable(value: Any) -> Iterable[Any]:
     if value is None:
@@ -630,7 +632,14 @@ def builtin_value_set(obj: Any) -> Optional[List[Any]]:
         return None
     if not isinstance(obj, Mapping):
         raise TypeError("valueSet expects an object")
-    return list(obj.values())
+    values: List[Any] = []
+    for value in obj.values():
+        if isinstance(value, XMLNodeList):
+            for entry in value:
+                values.append(_collapse_xml_node(entry))
+        else:
+            values.append(_collapse_xml_node(value))
+    return values
 
 
 def builtin_merge_with(source: Any, target: Any) -> Any:
@@ -661,6 +670,22 @@ def builtin_take_while(obj: Any, condition: Callable[..., Any]) -> Any:
         else:
             break
     return result
+
+
+def _collapse_xml_node(value: Any) -> Any:
+    if isinstance(value, XMLNodeList):
+        return [_collapse_xml_node(item) for item in value]
+    if isinstance(value, XMLNodeDict):
+        text_value = value.get("#text")
+        if text_value is not None:
+            return text_value
+        collapsed: Dict[str, Any] = {}
+        for key, child in value.items():
+            if key.startswith("@"):
+                continue
+            collapsed[key] = _collapse_xml_node(child)
+        return collapsed or text_value
+    return value
 
 
 def builtin_every_entry(obj: Any, condition: Callable[..., Any]) -> bool:

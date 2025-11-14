@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Mapping, Set, Tuple
 
 from . import builtins, parser
-from .formats import FormatRegistry, FormatError
+from .formats import FormatRegistry, FormatError, XMLNodeList, XMLNodeDict
 
 try:  # pragma: no cover - optional dependency guard
     import pandas as pd  # type: ignore
@@ -314,8 +314,10 @@ class DataWeaveRuntime:
                 err.original or err,
             ) from (err.original or err)
         if not render_output:
-            return result
+            return self._collapse_xml_nodes(result)
         directive = self._parse_output_directive(script.header.output)
+        if directive is None or directive.format_id == "python":
+            return self._collapse_xml_nodes(result)
         return self._render_output(result, directive)
 
     def _normalise_input_value(self, value: Any) -> Any:
@@ -326,6 +328,16 @@ class DataWeaveRuntime:
             if isinstance(value, pd.Series):
                 series_data = value.to_dict()
                 return self._normalise_input_value(series_data)
+        if isinstance(value, XMLNodeList):
+            normalised_list = XMLNodeList()
+            for item in value:
+                normalised_list.append(self._normalise_input_value(item))
+            return normalised_list
+        if isinstance(value, XMLNodeDict):
+            node = XMLNodeDict()
+            for key, val in value.items():
+                node[key] = self._normalise_input_value(val)
+            return node
         if isinstance(value, Mapping):
             return {key: self._normalise_input_value(val) for key, val in value.items()}
         if isinstance(value, list):
@@ -358,6 +370,31 @@ class DataWeaveRuntime:
             return FormatRegistry.write(value, directive.format_id, directive.properties)
         except FormatError as err:
             raise DataWeaveEvaluationError(str(err)) from err
+
+    def _collapse_xml_nodes(self, value: Any) -> Any:
+        if isinstance(value, XMLNodeList):
+            return [self._collapse_xml_nodes(item) for item in value]
+        if isinstance(value, XMLNodeDict):
+            collapsed: Dict[str, Any] = {}
+            for key, val in value.items():
+                collapsed[key] = self._collapse_xml_nodes(val)
+            text_value = collapsed.get("#text")
+            if text_value is not None:
+                return text_value
+            return collapsed
+        if isinstance(value, list):
+            return [self._collapse_xml_nodes(item) for item in value]
+        if isinstance(value, Mapping):
+            collapsed = {key: self._collapse_xml_nodes(val) for key, val in value.items()}
+            text_value = collapsed.get("#text")
+            if text_value is not None:
+                non_meta_keys = [
+                    key for key in collapsed.keys() if key != "#text" and not key.startswith("@")
+                ]
+                if not non_meta_keys:
+                    return text_value
+            return collapsed
+        return value
 
     def _parse_output_directive(self, directive: Optional[str]) -> Optional[OutputDirective]:
         if not directive:
@@ -617,11 +654,67 @@ class DataWeaveRuntime:
     def _resolve_property(self, base: Any, attribute: str) -> Any:
         if base is None:
             return None
+        if attribute.startswith("*"):
+            wildcard = attribute[1:]
+            return self._resolve_wildcard_property(base, wildcard)
+        if isinstance(base, list):
+            collected: List[Any] = []
+            for item in base:
+                value = self._resolve_property(item, attribute)
+                if value is None:
+                    continue
+                if isinstance(value, list):
+                    collected.extend(value)
+                else:
+                    collected.append(value)
+            if not collected:
+                return None
+            return collected if len(collected) > 1 else collected[0]
+        if isinstance(base, XMLNodeDict):
+            if attribute.startswith("@"):
+                return base.get(attribute, None)
+            value = base.get(attribute, None)
+            if isinstance(value, XMLNodeList):
+                return value[0] if value else None
+            return value
         if isinstance(base, dict):
-            return base.get(attribute, None)
+            if attribute.startswith("@"):
+                return base.get(attribute, None)
+            value = base.get(attribute, None)
+            if isinstance(value, XMLNodeList):
+                return value[0] if value else None
+            return value
         if hasattr(base, attribute):
             return getattr(base, attribute)
+        if attribute.startswith("@"):
+            return None
         raise TypeError(f"Cannot access attribute '{attribute}' on {type(base).__name__}")
+
+    def _resolve_wildcard_property(self, base: Any, attribute: str) -> Any:
+        nodes: List[Any]
+        if isinstance(base, list):
+            nodes = base
+        else:
+            nodes = [base]
+        results: List[Any] = []
+        for node in nodes:
+            if not isinstance(node, Mapping):
+                continue
+            if attribute:
+                value = node.get(attribute)
+                if value is None:
+                    continue
+                if isinstance(value, list):
+                    results.extend(value)
+                else:
+                    results.append(value)
+            else:
+                for value in node.values():
+                    if isinstance(value, list):
+                        results.extend(value)
+                    else:
+                        results.append(value)
+        return results
 
     def _resolve_index(self, base: Any, index: Any) -> Any:
         if base is None:
@@ -656,6 +749,8 @@ class DataWeaveRuntime:
 
     @staticmethod
     def _match_values(value: Any, pattern: Any) -> bool:
+        if isinstance(value, XMLNodeList):
+            return value == pattern or (len(value) == 1 and value[0] == pattern)
         return value == pattern
 
     @staticmethod

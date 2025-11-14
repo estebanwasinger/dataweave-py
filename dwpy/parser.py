@@ -208,6 +208,7 @@ TOKEN_REGEX = re.compile(
   | (?P<DOT>\.)
   | (?P<PLUS>\+)
   | (?P<STAR>\*)
+  | (?P<AT>@)
   | (?P<EQUAL>=)
   | (?P<DOLLAR>\$\$?)
   | (?P<IDENT>[A-Za-z_][A-Za-z0-9_]*)
@@ -466,8 +467,19 @@ class Parser:
                 continue
             if token_type == "DOT":
                 self.advance()
-                attr_token = self.expect("IDENT")
-                expr = PropertyAccess(value=expr, attribute=attr_token[1])  # type: ignore[index]
+                attr_token = self.current()
+                if attr_token[0] == "STAR":
+                    self.advance()
+                    name_token = self.expect("IDENT")
+                    attribute_name = f"*{name_token[1]}"  # type: ignore[index]
+                elif attr_token[0] == "AT":
+                    self.advance()
+                    name_token = self.expect("IDENT")
+                    attribute_name = f"@{name_token[1]}"  # type: ignore[index]
+                else:
+                    name_token = self.expect("IDENT")
+                    attribute_name = name_token[1]  # type: ignore[index]
+                expr = PropertyAccess(value=expr, attribute=attribute_name)
             elif token_type == "SAFE_DOT":
                 self.advance()
                 attr_token = self.expect("IDENT")
@@ -504,8 +516,19 @@ class Parser:
             token_type = self.current()[0]
             if token_type == "DOT":
                 self.advance()
-                attr_token = self.expect("IDENT")
-                expr = PropertyAccess(value=expr, attribute=attr_token[1])  # type: ignore[index]
+                attr_token = self.current()
+                if attr_token[0] == "STAR":
+                    self.advance()
+                    name_token = self.expect("IDENT")
+                    attribute_name = f"*{name_token[1]}"  # type: ignore[index]
+                elif attr_token[0] == "AT":
+                    self.advance()
+                    name_token = self.expect("IDENT")
+                    attribute_name = f"@{name_token[1]}"  # type: ignore[index]
+                else:
+                    name_token = self.expect("IDENT")
+                    attribute_name = name_token[1]  # type: ignore[index]
+                expr = PropertyAccess(value=expr, attribute=attribute_name)
             elif token_type == "SAFE_DOT":
                 self.advance()
                 attr_token = self.expect("IDENT")
@@ -849,6 +872,8 @@ def _parse_header(header_source: str) -> Header:
             continue
         if line.startswith("import "):
             imports.append(ImportDirective(raw=line[len("import ") :].strip()))
+            continue
+        if line.startswith("type "):
             continue
         if line.startswith("var "):
             declaration_source = line[len("var ") :].strip()
