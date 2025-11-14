@@ -10,10 +10,10 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
-    {name = "Your Name", email = "your.email@example.com"}
+    {name = "Esteban Wasinger", email = "estebanwasinger@gmail.com"}
 ]
 maintainers = [
-    {name = "Your Name", email = "your.email@example.com"}
+    {name = "Esteban Wasinger", email = "estebanwasinger@gmail.com"}
 ]
 keywords = [
     "dataweave",
@@ -36,7 +36,10 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Operating System :: OS Independent",
 ]
-dependencies = []
+dependencies = [
+    "pandas>=2.3.3",
+    "pydantic>=2.12.3",
+]
 
 [project.urls]
 Homepage = "https://github.com/estebanwasinger/dataweave-py"

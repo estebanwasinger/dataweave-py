@@ -11,6 +11,11 @@ from typing import Any, Callable, Dict, List, Optional, Mapping, Set, Tuple
 
 from . import builtins, parser
 
+try:  # pragma: no cover - optional dependency guard
+    import pandas as pd  # type: ignore
+except Exception:  # pragma: no cover
+    pd = None
+PANDAS_AVAILABLE = pd is not None
 
 Missing = object()
 MODULE_BASE_PATH = Path(__file__).resolve().parent / "modules"
@@ -199,6 +204,11 @@ class DataWeaveRuntime:
     def execute(
         self, script_source: str, payload: Any, vars: Optional[Dict[str, Any]] = None
     ) -> Any:
+        payload = self._normalise_input_value(payload)
+        provided_vars = vars or {}
+        variables = {
+            name: self._normalise_input_value(value) for name, value in provided_vars.items()
+        }
         try:
             script = parser.parse_script(script_source)
         except parser.ParseError as err:
@@ -209,7 +219,6 @@ class DataWeaveRuntime:
                 err.column,
             )
             raise parser.ParseError(formatted, err.line, err.column) from err
-        variables = dict(vars or {})
         header_context = EvaluationContext(
             payload=payload,
             variables=variables,
@@ -254,6 +263,22 @@ class DataWeaveRuntime:
                 err.length,
                 err.original or err,
             ) from (err.original or err)
+
+    def _normalise_input_value(self, value: Any) -> Any:
+        if PANDAS_AVAILABLE:
+            if isinstance(value, pd.DataFrame):
+                records = value.to_dict(orient="records")
+                return [self._normalise_input_value(record) for record in records]
+            if isinstance(value, pd.Series):
+                series_data = value.to_dict()
+                return self._normalise_input_value(series_data)
+        if isinstance(value, Mapping):
+            return {key: self._normalise_input_value(val) for key, val in value.items()}
+        if isinstance(value, list):
+            return [self._normalise_input_value(item) for item in value]
+        if isinstance(value, tuple):
+            return [self._normalise_input_value(item) for item in value]
+        return value
 
     def _evaluate(self, expr: parser.Expression, ctx: EvaluationContext) -> Any:
         if isinstance(expr, parser.ObjectLiteral):

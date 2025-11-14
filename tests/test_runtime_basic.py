@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 import dwpy.parser as parser
@@ -116,6 +117,52 @@ var captured = (vars.requestTime default now())
 
     fallback = runtime.execute(script, payload=payload, vars={})
     assert fallback["generatedAt"].endswith("Z")
+
+
+def test_payload_accepts_dataframe_input():
+    script = """%dw 2.0
+output application/json
+---
+payload map ((item) -> {
+  identifier: item.id,
+  city: item.city
+})
+"""
+    payload = pd.DataFrame(
+        [
+            {"id": 1, "city": "London"},
+            {"id": 2, "city": "Berlin"},
+        ]
+    )
+
+    runtime = DataWeaveRuntime()
+    result = runtime.execute(script, payload=payload)
+
+    assert result == [
+        {"identifier": 1, "city": "London"},
+        {"identifier": 2, "city": "Berlin"},
+    ]
+
+
+def test_vars_accept_dataframe_inputs():
+    script = """%dw 2.0
+output application/json
+---
+{
+  names: vars.source map ((item) -> upper(item.name))
+}
+"""
+    vars_df = pd.DataFrame(
+        [
+            {"name": "alice"},
+            {"name": "Bob"},
+        ]
+    )
+
+    runtime = DataWeaveRuntime()
+    result = runtime.execute(script, payload={}, vars={"source": vars_df})
+
+    assert result["names"] == ["ALICE", "BOB"]
 
 
 def test_reduction_over_items_for_total():
