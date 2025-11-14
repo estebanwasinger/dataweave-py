@@ -1,0 +1,52 @@
+name: Bump Version
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: "SemVer bump (patch, minor, major, or explicit version)"
+        required: true
+        default: patch
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Bump version with uv
+        run: uv version "${{ github.event.inputs.bump_type }}"
+
+      - name: Regenerate lock file
+        run: uv lock
+
+      - name: Read version
+        id: version
+        run: |
+          NEW_VERSION=$(python - <<'PY'
+import tomllib
+from pathlib import Path
+data = tomllib.loads(Path("pyproject.toml").read_text())
+print(data["project"]["version"])
+PY
+)
+          echo "value=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml uv.lock
+          git commit -m "chore(release): bump version to ${{ steps.version.outputs.value }}"
+
+      - name: Push changes
+        run: git push
