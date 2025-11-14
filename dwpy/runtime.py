@@ -7,7 +7,7 @@ import copy
 from datetime import date, datetime, time, timedelta
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Mapping, Tuple
+from typing import Any, Callable, Dict, List, Optional, Mapping, Set, Tuple
 
 from . import builtins, parser
 
@@ -70,6 +70,14 @@ class LambdaCallable:
                     )
                 else:
                     raise TypeError(f"Missing argument '{parameter.name}' for lambda")
+        if self.parameters:
+            first_param = self.parameters[0].name
+            if first_param in local_vars:
+                local_vars.setdefault("$", local_vars[first_param])
+        if len(self.parameters) > 1:
+            second_param = self.parameters[1].name
+            if second_param in local_vars:
+                local_vars.setdefault("$$", local_vars[second_param])
         body_ctx = EvaluationContext(
             payload=self.payload,
             variables=local_vars,
@@ -117,7 +125,52 @@ class DefinedFunction:
         return result
 
 
+@dataclass
+class ImplicitLambdaCallable:
+    runtime: "DataWeaveRuntime"
+    body: parser.Expression
+    closure_variables: Dict[str, Any]
+    payload: Any
+    header: Optional[parser.Header]
+    placeholders: Set[int]
+
+    def __post_init__(self) -> None:
+        if 2 in self.placeholders:
+            self.parameters = [
+                parser.Parameter(name="$"),
+                parser.Parameter(name="$$"),
+            ]
+        else:
+            self.parameters = [parser.Parameter(name="$")]
+
+    def __call__(self, *args: Any) -> Any:
+        local_vars: Dict[str, Any] = dict(self.closure_variables)
+        value = args[0] if args else None
+        index = args[1] if len(args) > 1 else None
+        local_vars["$"] = value
+        local_vars["$$"] = index
+        body_ctx = EvaluationContext(
+            payload=self.payload,
+            variables=local_vars,
+            header=self.header,
+        )
+        return self.runtime._evaluate(self.body, body_ctx)
+
+
 class DataWeaveRuntime:
+    _IMPLICIT_LAMBDA_ARGUMENTS: Dict[str, Tuple[int, ...]] = {
+        "_infix_map": (1,),
+        "_infix_filter": (1,),
+        "_infix_flatMap": (1,),
+        "_infix_reduce": (1,),
+        "_infix_distinctBy": (1,),
+        "map": (1,),
+        "filter": (1,),
+        "flatMap": (1,),
+        "reduce": (1,),
+        "distinctBy": (1,),
+    }
+
     def __init__(self, *, enable_module_imports: bool = True) -> None:
         self._enable_module_imports = enable_module_imports
         self._builtins: Dict[str, Callable[..., Any]] = dict(builtins.CORE_FUNCTIONS)
@@ -138,6 +191,8 @@ class DataWeaveRuntime:
                 "_binary_lt": self._func_binary_lt,
                 "_binary_gte": self._func_binary_gte,
                 "_binary_lte": self._func_binary_lte,
+                "_binary_and": self._func_binary_and,
+                "_binary_or": self._func_binary_or,
             }
         )
 
@@ -215,6 +270,15 @@ class DataWeaveRuntime:
             return [self._evaluate(item, ctx) for item in expr.elements]
         if isinstance(expr, parser.StringLiteral):
             return self._evaluate_string_literal(expr.value, ctx)
+        if isinstance(expr, parser.Placeholder):
+            placeholder_name = "$" if expr.level == 1 else "$$"
+            if placeholder_name in ctx.variables:
+                return ctx.variables[placeholder_name]
+            raise DataWeaveEvaluationError(
+                f"Placeholder '{placeholder_name}' is not defined in this context",
+                line=expr.line or None,
+                column=expr.column or None,
+            )
         if isinstance(expr, parser.InterpolatedString):
             result_parts = []
             for part in expr.parts:
@@ -250,7 +314,24 @@ class DataWeaveRuntime:
             return self._resolve_index(base, index)
         if isinstance(expr, parser.FunctionCall):
             function = self._evaluate(expr.function, ctx)
-            args = [self._evaluate(argument, ctx) for argument in expr.arguments]
+            placeholder_positions = self._resolve_placeholder_argument_indexes(expr.function)
+            args: List[Any] = []
+            for idx, argument in enumerate(expr.arguments):
+                if idx in placeholder_positions and not isinstance(argument, parser.LambdaExpression):
+                    placeholders = self._collect_placeholders(argument)
+                    if placeholders:
+                        args.append(
+                            ImplicitLambdaCallable(
+                                runtime=self,
+                                body=argument,
+                                closure_variables=dict(ctx.variables),
+                                payload=ctx.payload,
+                                header=ctx.header,
+                                placeholders=placeholders,
+                            )
+                        )
+                        continue
+                args.append(self._evaluate(argument, ctx))
             if not callable(function):
                 raise TypeError(f"Expression {expr.function!r} is not callable")
             return function(*args)
@@ -572,8 +653,82 @@ class DataWeaveRuntime:
     def _func_binary_lte(left: Any, right: Any) -> bool:
         return left <= right
 
+    def _func_binary_and(self, left: Any, right: Any) -> bool:
+        return self._is_truthy(left) and self._is_truthy(right)
+
+    def _func_binary_or(self, left: Any, right: Any) -> bool:
+        return self._is_truthy(left) or self._is_truthy(right)
+
     def _call_sequence_lambda(self, function: Callable[..., Any], item: Any, index: int) -> Any:
         return builtins.invoke_lambda(function, item, index)
+
+    def _collect_placeholders(self, expr: parser.Expression) -> Set[int]:
+        placeholders: Set[int] = set()
+
+        def visit(node: parser.Expression) -> None:
+            if isinstance(node, parser.Placeholder):
+                placeholders.add(node.level)
+                return
+            if isinstance(node, parser.LambdaExpression):
+                return
+            if isinstance(node, parser.ObjectLiteral):
+                for key_expr, value_expr in node.fields:
+                    visit(key_expr)
+                    visit(value_expr)
+                return
+            if isinstance(node, parser.ListLiteral):
+                for element in node.elements:
+                    visit(element)
+                return
+            if isinstance(node, parser.InterpolatedString):
+                for part in node.parts:
+                    visit(part)
+                return
+            if isinstance(node, parser.PropertyAccess):
+                visit(node.value)
+                return
+            if isinstance(node, parser.IndexAccess):
+                visit(node.value)
+                visit(node.index)
+                return
+            if isinstance(node, parser.FunctionCall):
+                visit(node.function)
+                for argument in node.arguments:
+                    visit(argument)
+                return
+            if isinstance(node, parser.DefaultOp):
+                visit(node.left)
+                visit(node.right)
+                return
+            if isinstance(node, parser.IfExpression):
+                visit(node.condition)
+                visit(node.when_true)
+                visit(node.when_false)
+                return
+            if isinstance(node, parser.MatchExpression):
+                visit(node.value)
+                for case in node.cases:
+                    if case.pattern is not None:
+                        pattern = case.pattern
+                        if pattern.matcher is not None:
+                            visit(pattern.matcher)
+                        if pattern.guard is not None:
+                            visit(pattern.guard)
+                    visit(case.expression)
+                return
+            if isinstance(node, parser.TypeCoercion):
+                visit(node.expression)
+                if node.options is not None:
+                    visit(node.options)
+                return
+
+        visit(expr)
+        return placeholders
+
+    def _resolve_placeholder_argument_indexes(self, function_expr: parser.Expression) -> Tuple[int, ...]:
+        if isinstance(function_expr, parser.Identifier):
+            return self._IMPLICIT_LAMBDA_ARGUMENTS.get(function_expr.name, ())
+        return ()
 
     def _resolve_imports(self, imports: List[parser.ImportDirective]) -> Dict[str, Callable[..., Any]]:
         resolved: Dict[str, Callable[..., Any]] = {}

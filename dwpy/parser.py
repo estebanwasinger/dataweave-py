@@ -90,6 +90,13 @@ class Identifier(Expression):
 
 
 @dataclass
+class Placeholder(Expression):
+    level: int
+    line: int = 0
+    column: int = 0
+
+
+@dataclass
 class StringLiteral(Expression):
     value: str
 
@@ -201,6 +208,7 @@ TOKEN_REGEX = re.compile(
   | (?P<PLUS>\+)
   | (?P<STAR>\*)
   | (?P<EQUAL>=)
+  | (?P<DOLLAR>\$\$?)
   | (?P<IDENT>[A-Za-z_][A-Za-z0-9_]*)
   """,
     re.VERBOSE,
@@ -671,6 +679,10 @@ class Parser:
         if token_type == "IDENT":
             self.advance()
             return Identifier(name=value or "", line=token[2], column=token[3])
+        if token_type == "DOLLAR":
+            self.advance()
+            placeholder_text = value or ""
+            return Placeholder(level=len(placeholder_text), line=token[2], column=token[3])
         if token_type == "LPAREN":
             lambda_expr = self._maybe_parse_lambda_expression()
             if lambda_expr is not None:
@@ -696,6 +708,10 @@ class Parser:
                         key_expr = self._parse_interpolated_string(unescaped)
                     else:
                         key_expr = StringLiteral(value=unescaped)
+                elif key_token[0] == "LPAREN":
+                    self.advance()
+                    key_expr = self.parse_expression()
+                    self.expect("RPAREN")
                 else:
                     ident = self.expect("IDENT")
                     key_expr = StringLiteral(value=ident[1] or "")
@@ -1022,6 +1038,8 @@ INFIX_SPECIAL = {
     "flatMap": "_infix_flatMap",
     "distinctBy": "_infix_distinctBy",
     "to": "_infix_to",
+    "and": "_binary_and",
+    "or": "_binary_or",
 }
 
 RESERVED_INFIX_STOP = {

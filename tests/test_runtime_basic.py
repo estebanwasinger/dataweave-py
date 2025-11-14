@@ -537,6 +537,39 @@ output application/json
     assert result == [{"hi": "Esteban"}] * 10
 
 
+def test_map_with_implicit_placeholders():
+    runtime = DataWeaveRuntime()
+    script = """%dw 2.0
+output application/json
+---
+["jose", "pedro", "mateo"] map { ($$): $ }
+"""
+    result = runtime.execute(script, {})
+    assert result == [{"0": "jose"}, {"1": "pedro"}, {"2": "mateo"}]
+
+
+def test_map_using_only_index_placeholder():
+    runtime = DataWeaveRuntime()
+    script = """%dw 2.0
+output application/json
+---
+["a", "b", "c"] map $$
+"""
+    result = runtime.execute(script, {})
+    assert result == [0, 1, 2]
+
+
+def test_filter_with_placeholder_condition():
+    runtime = DataWeaveRuntime()
+    script = """%dw 2.0
+output application/json
+---
+[9, 2, 3, 4, 5] filter (($$ > 1) and ($ < 5))
+"""
+    result = runtime.execute(script, {})
+    assert result == [3, 4]
+
+
 def test_string_literal_coerced_to_number():
     runtime = DataWeaveRuntime()
     script = """%dw 2.0
