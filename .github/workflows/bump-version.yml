@@ -32,13 +32,7 @@ jobs:
       - name: Read version
         id: version
         run: |
-          NEW_VERSION=$(python - <<'PY'
-import tomllib
-from pathlib import Path
-data = tomllib.loads(Path("pyproject.toml").read_text())
-print(data["project"]["version"])
-PY
-)
+          NEW_VERSION=$(python -c "import tomllib, pathlib; data = tomllib.loads(pathlib.Path('pyproject.toml').read_text()); print(data['project']['version'])")
           echo "value=$NEW_VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Commit changes
