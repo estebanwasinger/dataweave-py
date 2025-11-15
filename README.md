@@ -2,6 +2,18 @@
 
 A native Python implementation of the DataWeave data transformation language, providing powerful data transformation capabilities directly in Python without requiring the JVM.
 
+Install from PyPI:
+
+```bash
+uv add dataweave-py
+```
+
+or
+
+```bash
+pip install dataweave-py
+```
+
 ## Overview
 
 DataWeave-Py (`dwpy`) is a Python interpreter for the DataWeave language, originally developed by MuleSoft for data transformation in the Mule runtime. This project brings DataWeave's expressive transformation syntax and rich feature set to the Python ecosystem, enabling:
@@ -357,4 +369,3 @@ For questions, issues, or contributions:
 ---
 
 **Note**: This is an independent Python implementation and is not officially supported by MuleSoft. For production use cases requiring full DataWeave compatibility, please use the official JVM-based runtime.
-
