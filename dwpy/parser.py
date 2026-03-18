@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Sequence, Tuple
 
 
@@ -32,12 +32,19 @@ class FunctionDeclaration:
 
 
 @dataclass
+class TypeDefinition:
+    name: str
+    type: "TypeSpec"
+
+
+@dataclass
 class Header:
     version: str
     output: Optional[str]
     imports: List[ImportDirective]
     variables: List[VarDeclaration]
     functions: List[FunctionDeclaration]
+    types: List[TypeDefinition]
 
 
 
@@ -52,17 +59,49 @@ class Expression:
     pass
 
 
+class TypeSpec:
+    pass
+
+
+@dataclass
+class ReferenceTypeSpec(TypeSpec):
+    name: str
+    generics: List["TypeSpec"]
+
+
+@dataclass
+class ObjectTypeSpec(TypeSpec):
+    fields: List[Tuple[str, TypeSpec, bool, bool]] = field(default_factory=list)
+    is_open: bool = True
+
+
+@dataclass
+class UnionTypeSpec(TypeSpec):
+    options: List[TypeSpec]
+
+
+@dataclass
+class IntersectionTypeSpec(TypeSpec):
+    options: List[TypeSpec]
+
+
+@dataclass
+class FunctionTypeSpec(TypeSpec):
+    parameters: List["TypeSpec"]
+    return_type: TypeSpec
+
+
+@dataclass
+class LiteralTypeSpec(TypeSpec):
+    value: Any
+    base_type: TypeSpec
+
+
 @dataclass
 class Parameter:
     name: str
     default: Optional["Expression"] = None
     type_annotation: Optional["TypeSpec"] = None
-
-
-@dataclass
-class TypeSpec:
-    name: str
-    generics: List["TypeSpec"]
 
 
 @dataclass
@@ -160,6 +199,12 @@ class IfExpression(Expression):
 
 
 @dataclass
+class DoExpression(Expression):
+    header: Header
+    body: "Expression"
+
+
+@dataclass
 class MatchPattern:
     binding: Optional[str] = None
     matcher: Optional[Expression] = None
@@ -178,7 +223,7 @@ class MatchExpression(Expression):
     cases: List[MatchCase]
 
 
-Token = Tuple[str, Optional[str], int, int]
+Token = Tuple[str, Optional[str], int, int, int, int]
 
 
 TOKEN_REGEX = re.compile(
@@ -189,11 +234,14 @@ TOKEN_REGEX = re.compile(
   | (?P<DIFF>--)
   | (?P<SAFE_DOT>\?\.)
   | (?P<CONCAT>\+\+)
+  | (?P<PIPE>\|)
+  | (?P<AMP>&)
   | (?P<GTE>>=)
   | (?P<LTE><=)
   | (?P<EQ>==)
   | (?P<NEQ>!=)
   | (?P<ARROW>->)
+  | (?P<MINUS>-)
   | (?P<DIV>/)
   | (?P<GT>>)
   | (?P<LT><)
@@ -264,26 +312,28 @@ class Tokenizer:
             text = match.group(kind)
             start_line = self.line
             start_column = self.column
+            start_offset = self.pos
             self._advance(text)
             self.pos = match.end()
+            end_offset = self.pos
 
             if kind == "WHITESPACE":
                 continue
 
             if kind == "IDENT":
                 if text == "default":
-                    tokens.append(("DEFAULT", None, start_line, start_column))
+                    tokens.append(("DEFAULT", None, start_line, start_column, start_offset, end_offset))
                     continue
                 if text in ("true", "false"):
-                    tokens.append(("BOOLEAN", text, start_line, start_column))
+                    tokens.append(("BOOLEAN", text, start_line, start_column, start_offset, end_offset))
                     continue
                 if text == "null":
-                    tokens.append(("NULL", None, start_line, start_column))
+                    tokens.append(("NULL", None, start_line, start_column, start_offset, end_offset))
                     continue
 
-            tokens.append((kind, text, start_line, start_column))
+            tokens.append((kind, text, start_line, start_column, start_offset, end_offset))
 
-        tokens.append(("EOF", None, self.line, self.column))
+        tokens.append(("EOF", None, self.line, self.column, self.pos, self.pos))
         return tokens
 
     def _advance(self, text: str) -> None:
@@ -296,9 +346,10 @@ class Tokenizer:
 
 
 class Parser:
-    def __init__(self, tokens: Sequence[Token]):
+    def __init__(self, tokens: Sequence[Token], source: str):
         self.tokens = list(tokens)
         self.index = 0
+        self.source = source
 
     def current(self) -> Token:
         return self.tokens[self.index]
@@ -308,6 +359,9 @@ class Parser:
         if token[0] != "EOF":
             self.index += 1
         return token
+
+    def at_end(self) -> bool:
+        return self.current()[0] == "EOF"
 
     def expect(self, kind: str) -> Token:
         token = self.current()
@@ -416,6 +470,13 @@ class Parser:
                 right = self.parse_multiplicative()
                 expr = FunctionCall(
                     function=Identifier(name="_binary_concat"),
+                    arguments=[expr, right],
+                )
+            elif token_type == "MINUS":
+                self.advance()
+                right = self.parse_multiplicative()
+                expr = FunctionCall(
+                    function=Identifier(name="_binary_minus"),
                     arguments=[expr, right],
                 )
             elif token_type == "DIFF":
@@ -545,19 +606,58 @@ class Parser:
         return expr
 
     def _parse_type_spec(self) -> TypeSpec:
-        ident = self.expect("IDENT")
-        name = ident[1] or ""
-        generics: List[TypeSpec] = []
-        if self.current()[0] == "LT":
-            self.advance()
-            while True:
-                generics.append(self._parse_type_spec())
-                if self.current()[0] == "COMMA":
+        def parse_primary() -> TypeSpec:
+            token = self.current()
+            ttype = token[0]
+            tvalue = token[1]
+            if ttype == "IDENT":
+                self.advance()
+                name = tvalue or ""
+                generics: List[TypeSpec] = []
+                if self.current()[0] == "LT":
                     self.advance()
-                    continue
-                self.expect("GT")
-                break
-        return TypeSpec(name=name, generics=generics)
+                    while True:
+                        generics.append(self._parse_type_spec())
+                        if self.current()[0] == "COMMA":
+                            self.advance()
+                            continue
+                        self.expect("GT")
+                        break
+                ref = ReferenceTypeSpec(name=name, generics=generics)
+                # Skip metadata blocks after type references (e.g., String { format: \"...\" })
+                if self.current()[0] == "LBRACE":
+                    depth = 0
+                    while not self.at_end():
+                        curr = self.current()[0]
+                        if curr == "LBRACE":
+                            depth += 1
+                        elif curr == "RBRACE":
+                            depth -= 1
+                            if depth == 0:
+                                self.advance()
+                                break
+                        self.advance()
+                    if depth != 0:
+                        raise ParseError("Unterminated type annotation block", token[2], token[3])
+                return ref
+            raise ParseError(f"Expected type name or identifier, found {ttype}", token[2], token[3])
+
+        left = parse_primary()
+        while self.current()[0] in {"PIPE", "AMP"}:
+            op = self.current()[0]
+            self.advance()
+            right = parse_primary()
+            if op == "PIPE":
+                if isinstance(left, UnionTypeSpec):
+                    left.options.append(right)
+                else:
+                    left = UnionTypeSpec(options=[left, right])
+            else:
+                if isinstance(left, IntersectionTypeSpec):
+                    left.options.append(right)
+                else:
+                    left = IntersectionTypeSpec(options=[left, right])
+        return left
 
     def parse_call(self, function_expr: Expression) -> Expression:
         self.expect("LPAREN")
@@ -680,6 +780,14 @@ class Parser:
         token = self.current()
         token_type = token[0]
         value = token[1]
+        if token_type == "IDENT" and value == "do":
+            return self.parse_do_expression()
+        if token_type == "IDENT" and value == "match":
+            self.advance()
+            value_expr = self.parse_expression()
+            if self.current()[0] != "LBRACE":
+                raise ParseError("Expected '{' after match expression")
+            return self.parse_match_expression(value_expr)
         if token_type == "LBRACE":
             return self.parse_object()
         if token_type == "LBRACKET":
@@ -718,6 +826,39 @@ class Parser:
         raise ParseError(
             f"Unexpected token {token_type} at line {token[2]}, column {token[3]}"
         )
+
+    def parse_do_expression(self) -> Expression:
+        do_token = self.current()
+        self.advance()
+        lbrace_token = self.expect("LBRACE")
+        content_start = lbrace_token[4] + 1
+
+        depth = 1
+        scan_index = self.index
+        closing_token: Optional[Token] = None
+        while scan_index < len(self.tokens):
+            token = self.tokens[scan_index]
+            kind = token[0]
+            if kind == "LBRACE":
+                depth += 1
+            elif kind == "RBRACE":
+                depth -= 1
+                if depth == 0:
+                    closing_token = token
+                    break
+            scan_index += 1
+
+        if closing_token is None:
+            raise ParseError(
+                f"Unterminated do block at line {do_token[2]}, column {do_token[3]}",
+                do_token[2],
+                do_token[3],
+            )
+
+        content_end = closing_token[4]
+        inner_source = self.source[content_start:content_end]
+        self.index = scan_index + 1
+        return _parse_do_block_content(inner_source)
 
     def parse_object(self) -> Expression:
         self.expect("LBRACE")
@@ -814,7 +955,8 @@ def _unescape_string(value: str) -> str:
 
 def parse_script(source: str) -> Script:
     stripped = source.strip()
-    if "---" not in stripped:
+    delimiter_line = _find_top_level_script_delimiter_line(stripped)
+    if delimiter_line is None:
         if not stripped:
             raise ParseError("Script body cannot be empty")
         header = Header(
@@ -823,19 +965,99 @@ def parse_script(source: str) -> Script:
             imports=[],
             variables=[],
             functions=[],
+            types=[],
         )
         body_expr = parse_expression_from_source(stripped)
         return Script(header=header, body=body_expr)
-    header_source, body_source = stripped.split("---", 1)
+    lines = stripped.splitlines()
+    header_source = "\n".join(lines[:delimiter_line])
+    body_source = "\n".join(lines[delimiter_line + 1 :])
     header = _parse_header(header_source.strip())
     body_expr = parse_expression_from_source(body_source.strip())
     return Script(header=header, body=body_expr)
 
 
+def _find_top_level_script_delimiter_line(source: str) -> Optional[int]:
+    lines = source.splitlines()
+    curly = 0
+    square = 0
+    paren = 0
+    quote: Optional[str] = None
+    escaped = False
+    in_block_comment = False
+
+    def update_balances(line: str) -> None:
+        nonlocal curly, square, paren, quote, escaped, in_block_comment
+        i = 0
+        while i < len(line):
+            ch = line[i]
+            nxt = line[i + 1] if i + 1 < len(line) else ""
+
+            if in_block_comment:
+                if ch == "*" and nxt == "/":
+                    in_block_comment = False
+                    i += 2
+                    continue
+                i += 1
+                continue
+
+            if quote is not None:
+                if escaped:
+                    escaped = False
+                    i += 1
+                    continue
+                if ch == "\\":
+                    escaped = True
+                    i += 1
+                    continue
+                if ch == quote:
+                    quote = None
+                i += 1
+                continue
+
+            if ch == "/" and nxt == "*":
+                in_block_comment = True
+                i += 2
+                continue
+            if ch == "/" and nxt == "/":
+                break
+
+            if ch in ("'", '"'):
+                quote = ch
+                i += 1
+                continue
+            if ch == "{":
+                curly += 1
+            elif ch == "}":
+                curly -= 1
+            elif ch == "[":
+                square += 1
+            elif ch == "]":
+                square -= 1
+            elif ch == "(":
+                paren += 1
+            elif ch == ")":
+                paren -= 1
+            i += 1
+
+    for index, line in enumerate(lines):
+        if (
+            line.strip() == "---"
+            and curly == 0
+            and square == 0
+            and paren == 0
+            and quote is None
+            and not in_block_comment
+        ):
+            return index
+        update_balances(line)
+    return None
+
+
 def parse_expression_from_source(source: str) -> Expression:
     tokenizer = Tokenizer(source)
     tokens = tokenizer.tokens()
-    parser_instance = Parser(tokens)
+    parser_instance = Parser(tokens, source)
     return parser_instance.parse_expression_eof()
 
 
@@ -845,64 +1067,220 @@ def _parse_header(header_source: str) -> Header:
     imports: List[ImportDirective] = []
     variables: List[VarDeclaration] = []
     functions: List[FunctionDeclaration] = []
+    types: List[TypeDefinition] = []
+
+    lines = header_source.splitlines()
+    num_lines = len(lines)
+
+    def _compute_delimiter_balance(text: str) -> Tuple[int, int, int]:
+        curly = 0
+        square = 0
+        paren = 0
+        quote: Optional[str] = None
+        escaped = False
+        in_block_comment = False
+        i = 0
+        while i < len(text):
+            ch = text[i]
+            nxt = text[i + 1] if i + 1 < len(text) else ""
+
+            if in_block_comment:
+                if ch == "*" and nxt == "/":
+                    in_block_comment = False
+                    i += 2
+                    continue
+                i += 1
+                continue
+
+            if quote is not None:
+                if escaped:
+                    escaped = False
+                    i += 1
+                    continue
+                if ch == "\\":
+                    escaped = True
+                    i += 1
+                    continue
+                if ch == quote:
+                    quote = None
+                i += 1
+                continue
+
+            if ch == "/" and nxt == "*":
+                in_block_comment = True
+                i += 2
+                continue
+            if ch == "/" and nxt == "/":
+                # Ignore until end of current line.
+                newline_idx = text.find("\n", i)
+                if newline_idx == -1:
+                    break
+                i = newline_idx + 1
+                continue
+
+            if ch in ("'", '"'):
+                quote = ch
+                i += 1
+                continue
+            if ch == "{":
+                curly += 1
+            elif ch == "}":
+                curly -= 1
+            elif ch == "[":
+                square += 1
+            elif ch == "]":
+                square -= 1
+            elif ch == "(":
+                paren += 1
+            elif ch == ")":
+                paren -= 1
+            i += 1
+        return curly, square, paren
+
+    def _needs_multiline_expression(text: str) -> bool:
+        curly, square, paren = _compute_delimiter_balance(text)
+        return curly > 0 or square > 0 or paren > 0
+
+    def _read_multiline_expression(start_line_idx: int, initial_expression: str) -> Tuple[str, int]:
+        expression = initial_expression
+        total_lines_consumed = 1
+        current_idx = start_line_idx + 1
+        while current_idx < num_lines and _needs_multiline_expression(expression):
+            expression += "\n" + lines[current_idx]
+            total_lines_consumed += 1
+            current_idx += 1
+        if _needs_multiline_expression(expression):
+            raise ParseError("Unterminated multi-line expression in header")
+        return expression, total_lines_consumed
+
+    def _read_multiline_definition(start_line_idx: int, start_col: int, start_char: str, end_char: str) -> Tuple[str, int]:
+        definition_parts = [lines[start_line_idx][start_col:]]
+        balance = definition_parts[0].count(start_char) - definition_parts[0].count(end_char)
+        total_lines_consumed = 1
+        current_idx = start_line_idx + 1
+        while current_idx < num_lines and balance > 0:
+            line_to_add = lines[current_idx]
+            definition_parts.append(line_to_add)
+            balance += line_to_add.count(start_char)
+            balance -= line_to_add.count(end_char)
+            current_idx += 1
+            total_lines_consumed += 1
+            if balance == 0:
+                break
+        if balance > 0:
+            raise ParseError("Unterminated multi-line definition in header")
+        return "\n".join(definition_parts), total_lines_consumed
 
     in_block_comment = False
-    for idx, raw_line in enumerate(header_source.splitlines(), start=1):
+    idx = 0
+    while idx < num_lines:
+        raw_line = lines[idx]
         line = raw_line.strip()
+        line_number = idx + 1
+
         if in_block_comment:
             if "*/" in line:
                 in_block_comment = False
+            idx += 1
             continue
         if line.startswith("/*"):
             if not line.endswith("*/"):
                 in_block_comment = True
+            idx += 1
             continue
         if line.startswith("//"):
+            idx += 1
             continue
         if not line:
+            idx += 1
             continue
         if line.startswith("%dw"):
             parts = line.split()
             if len(parts) < 2:
-                raise ParseError(f"Invalid %dw directive at header line {idx}", idx, 1)
+                raise ParseError(f"Invalid %dw directive at header line {line_number}", line_number, 1)
             version = parts[1]
+            idx += 1
             continue
         if line.startswith("output"):
             output = line[len("output") :].strip() or None
+            idx += 1
             continue
         if line.startswith("import "):
             imports.append(ImportDirective(raw=line[len("import ") :].strip()))
+            idx += 1
             continue
         if line.startswith("type "):
+            remaining_line_from_type_keyword = line[len("type ") :]
+            equals_pos_in_remaining = _find_top_level_char(remaining_line_from_type_keyword, "=")
+            if equals_pos_in_remaining == -1:
+                raise ParseError(f"Invalid type definition (missing top-level '=') at header line {line_number}", line_number, 1)
+
+            name_part = remaining_line_from_type_keyword[:equals_pos_in_remaining].strip()
+            type_definition_start_str = remaining_line_from_type_keyword[equals_pos_in_remaining + 1 :].strip()
+            if not name_part:
+                raise ParseError(f"Type name cannot be empty at header line {line_number}", line_number, 1)
+
+            full_type_spec_string = type_definition_start_str
+            lines_to_advance = 1
+
+            start_char_match = re.search(r"[{([<]", type_definition_start_str)
+            if start_char_match:
+                start_char_val = start_char_match.group(0)
+                end_char_val = {"{": "}", "(": ")", "[": "]", "<": ">"}[start_char_val]
+                first_line_balance = type_definition_start_str.count(start_char_val) - type_definition_start_str.count(end_char_val)
+                if first_line_balance > 0 or (
+                    start_char_match.start() != -1 and type_definition_start_str.find(end_char_val, start_char_match.start()) == -1
+                ):
+                    search_offset = raw_line.find(type_definition_start_str)
+                    if search_offset == -1:
+                        search_offset = raw_line.find(start_char_val)
+                    start_char_col_in_raw_line = raw_line.find(start_char_val, search_offset)
+                    if start_char_col_in_raw_line != -1:
+                        multiline_content_from_char, total_lines_for_this_type_def = _read_multiline_definition(
+                            idx, start_char_col_in_raw_line, start_char_val, end_char_val
+                        )
+                        prefix_before_start_char = type_definition_start_str[: start_char_match.start()]
+                        full_type_spec_string = prefix_before_start_char + multiline_content_from_char
+                        lines_to_advance = total_lines_for_this_type_def
+
+            try:
+                type_spec = _parse_type_spec_string(full_type_spec_string.strip())
+            except ParseError as e:
+                raise ParseError(f"Invalid type expression for '{name_part}' at header line {line_number}: {e}", line_number, 1) from e
+
+            types.append(TypeDefinition(name=name_part, type=type_spec))
+            idx += lines_to_advance
             continue
         if line.startswith("var "):
             declaration_source = line[len("var ") :].strip()
             if "=" not in declaration_source:
-                raise ParseError(
-                    f"Invalid var declaration (missing '=') at header line {idx}",
-                    idx,
-                    1,
-                )
+                raise ParseError(f"Invalid var declaration (missing '=') at header line {line_number}", line_number, 1)
             name_part, expr_part = declaration_source.split("=", 1)
             name = name_part.strip()
             if not name:
-                raise ParseError(
-                    f"Variable name cannot be empty at header line {idx}",
-                    idx,
-                    1,
-                )
-            expression = parse_expression_from_source(expr_part.strip())
+                raise ParseError(f"Variable name cannot be empty at header line {line_number}", line_number, 1)
+            expr_source = expr_part.strip()
+            lines_to_advance = 1
+            if _needs_multiline_expression(expr_source):
+                expr_source, lines_to_advance = _read_multiline_expression(idx, expr_source)
+            expression = parse_expression_from_source(expr_source.strip())
             variables.append(VarDeclaration(name=name, expression=expression))
+            idx += lines_to_advance
             continue
         if line.startswith("fun "):
-            function = _parse_header_function(line[len("fun ") :].strip(), idx)
+            function_source = line[len("fun ") :].strip()
+            lines_to_advance = 1
+            if "=" in function_source:
+                signature_part, body_part = function_source.split("=", 1)
+                body_source = body_part.strip()
+                if _needs_multiline_expression(body_source):
+                    body_source, lines_to_advance = _read_multiline_expression(idx, body_source)
+                    function_source = f"{signature_part.strip()} = {body_source.strip()}"
+            function = _parse_header_function(function_source, line_number)
             functions.append(function)
+            idx += lines_to_advance
             continue
-        raise ParseError(
-            f"Unsupported header directive '{line}' at header line {idx}",
-            idx,
-            1,
-        )
+        raise ParseError(f"Unsupported header directive '{line}' at header line {line_number}", line_number, 1)
 
     if version is None:
         raise ParseError("Missing %dw directive")
@@ -913,6 +1291,7 @@ def _parse_header(header_source: str) -> Header:
         imports=imports,
         variables=variables,
         functions=functions,
+        types=types,
     )
 
 
@@ -944,6 +1323,15 @@ def _parse_header_function(source: str, line_no: int) -> FunctionDeclaration:
         body=body_expr,
         return_type=return_type,
     )
+
+
+def _parse_do_block_content(content_source: str) -> DoExpression:
+    inner = content_source.strip()
+    if not inner:
+        raise ParseError("Do block cannot be empty")
+    wrapped_script = "%dw 2.0\n" + inner
+    script = parse_script(wrapped_script)
+    return DoExpression(header=script.header, body=script.body)
 
 
 def _parse_header_function_parameters(params_source: str) -> List[Parameter]:
@@ -1002,6 +1390,19 @@ def _split_top_level(source: str, delimiter: str, *, maxsplit: int = -1) -> List
     return result
 
 
+def _find_top_level_char(source: str, char_to_find: str, *, start_index: int = 0) -> int:
+    depth = 0
+    for i, char in enumerate(source[start_index:], start=start_index):
+        if char in "({[":
+            depth += 1
+        elif char in ")]}":
+            if depth > 0:
+                depth -= 1
+        if char == char_to_find and depth == 0:
+            return i
+    return -1
+
+
 def _parse_type_spec_string(source: str) -> TypeSpec:
     parser = _TypeSpecParser(source)
     type_spec = parser.parse_type_spec()
@@ -1024,6 +1425,12 @@ class _TypeSpecParser:
             return None
         return self.source[self.index]
 
+    def peek(self, offset: int) -> Optional[str]:
+        idx = self.index + offset
+        if idx >= len(self.source):
+            return None
+        return self.source[idx]
+
     def advance(self) -> Optional[str]:
         if self.at_end():
             return None
@@ -1038,13 +1445,56 @@ class _TypeSpecParser:
     def parse_identifier(self) -> str:
         self.skip_whitespace()
         start = self.index
-        while not self.at_end() and (self.source[self.index].isalnum() or self.source[self.index] in "_:"):
+        while not self.at_end() and (self.source[self.index].isalnum() or self.source[self.index] == "_"):
             self.index += 1
         if start == self.index:
-            raise ParseError("Expected type name")
+            raise ParseError("Expected type name or identifier")
         return self.source[start:self.index]
 
     def parse_type_spec(self) -> TypeSpec:
+        left_type = self._parse_primary_type()
+        self.skip_whitespace()
+        while not self.at_end():
+            # Stop if we are about to hit a closed-object terminator
+            if self.current() == "}" or (self.current() == "|" and self.peek(1) == "}"):
+                break
+            if self.current() == "|":
+                self.advance()
+                right_type = self._parse_primary_type()
+                if isinstance(left_type, UnionTypeSpec):
+                    left_type.options.append(right_type)
+                else:
+                    left_type = UnionTypeSpec(options=[left_type, right_type])
+            elif self.current() == "&":
+                self.advance()
+                right_type = self._parse_primary_type()
+                if isinstance(left_type, IntersectionTypeSpec):
+                    left_type.options.append(right_type)
+                else:
+                    left_type = IntersectionTypeSpec(options=[left_type, right_type])
+            else:
+                break
+            self.skip_whitespace()
+        return left_type
+
+    def _parse_primary_type(self) -> TypeSpec:
+        self.skip_whitespace()
+        current_char = self.current()
+
+        if current_char == "{":
+            return self.parse_object_type()
+        elif current_char == "(":
+            return self.parse_function_type_or_grouped_type()
+        elif current_char == '"':
+            return self.parse_string_literal_type()
+        elif current_char and (current_char.isdigit() or current_char == "-"):
+            return self.parse_number_literal_type()
+        elif self.source[self.index :].startswith("true") or self.source[self.index :].startswith("false"):
+            return self.parse_boolean_literal_type()
+        else:
+            return self.parse_reference_type()
+
+    def parse_reference_type(self) -> ReferenceTypeSpec:
         name = self.parse_identifier()
         generics: List[TypeSpec] = []
         self.skip_whitespace()
@@ -1060,7 +1510,172 @@ class _TypeSpecParser:
                     self.advance()
                     break
                 raise ParseError("Unterminated generic specification")
-        return TypeSpec(name=name, generics=generics)
+        # Ignore metadata/annotations after the type, e.g. String { format: \"...\" }
+        self.skip_whitespace()
+        if self.current() == "{":
+            depth = 0
+            while not self.at_end():
+                ch = self.current()
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        self.advance()
+                        break
+                self.advance()
+            if depth != 0:
+                raise ParseError("Unterminated type annotation block")
+        return ReferenceTypeSpec(name=name, generics=generics)
+
+    def parse_function_type_or_grouped_type(self) -> TypeSpec:
+        if self.current() != "(":
+            raise ParseError("Expected '(' for function type or grouped type")
+        self.advance()  # Consume '('
+        self.skip_whitespace()
+
+        params: List[TypeSpec] = []
+        if self.current() != ")":
+            while True:
+                self.skip_whitespace()
+                save_index = self.index
+                try:
+                    maybe_name = self.parse_identifier()
+                    self.skip_whitespace()
+                    if self.current() == ":":
+                        self.advance()
+                        self.skip_whitespace()
+                        param_type = self.parse_type_spec()
+                    else:
+                        self.index = save_index
+                        param_type = self.parse_type_spec()
+                except ParseError:
+                    self.index = save_index
+                    param_type = self.parse_type_spec()
+
+                params.append(param_type)
+                self.skip_whitespace()
+                if self.current() == ",":
+                    self.advance()
+                    self.skip_whitespace()
+                    continue
+                break
+
+        self.skip_whitespace()
+        if self.current() != ")":
+            raise ParseError("Expected ')' to close function type or grouped type")
+        self.advance()  # Consume ')'
+        self.skip_whitespace()
+
+        if self.current() == "-" and self.peek(1) == ">":
+            self.advance()  # Consume -
+            self.advance()  # Consume >
+            self.skip_whitespace()
+            return_type = self.parse_type_spec()
+            return FunctionTypeSpec(parameters=params, return_type=return_type)
+        else:
+            if len(params) == 1:
+                return params[0]
+            raise ParseError("Invalid grouped type or malformed function type.")
+
+    def parse_string_literal_type(self) -> LiteralTypeSpec:
+        self.advance()
+        start = self.index
+        while not self.at_end() and self.current() != '"':
+            if self.current() == "\\" and self.peek(1) == '"':
+                self.advance()
+                self.advance()
+            else:
+                self.advance()
+        value = self.source[start : self.index]
+        if self.current() != '"':
+            raise ParseError("Unterminated string literal type")
+        self.advance()
+        return LiteralTypeSpec(value=value, base_type=ReferenceTypeSpec(name="String", generics=[]))
+
+    def parse_number_literal_type(self) -> LiteralTypeSpec:
+        start = self.index
+        if self.current() == "-":
+            self.advance()
+        while not self.at_end() and self.current().isdigit():
+            self.advance()
+        if self.current() == ".":
+            self.advance()
+            while not self.at_end() and self.current().isdigit():
+                self.advance()
+        number_str = self.source[start : self.index]
+        try:
+            value = int(number_str) if "." not in number_str else float(number_str)
+            return LiteralTypeSpec(value=value, base_type=ReferenceTypeSpec(name="Number", generics=[]))
+        except ValueError as e:
+            raise ParseError(f"Invalid number literal type: {number_str}") from e
+
+    def parse_boolean_literal_type(self) -> LiteralTypeSpec:
+        if self.source[self.index :].startswith("true"):
+            self.index += 4
+            return LiteralTypeSpec(value=True, base_type=ReferenceTypeSpec(name="Boolean", generics=[]))
+        if self.source[self.index :].startswith("false"):
+            self.index += 5
+            return LiteralTypeSpec(value=False, base_type=ReferenceTypeSpec(name="Boolean", generics=[]))
+        raise ParseError("Expected 'true' or 'false' for boolean literal type")
+
+    def parse_object_type(self) -> ObjectTypeSpec:
+        if self.current() != "{":
+            raise ParseError("Expected '{' for object type")
+        self.advance()
+        is_closed = False
+        if self.current() == "|":
+            is_closed = True
+            self.advance()
+            self.skip_whitespace()
+
+        fields: List[Tuple[str, TypeSpec, bool, bool]] = []
+        while not self.at_end():
+            self.skip_whitespace()
+            if self.current() in {"|", "}"}:
+                break
+
+            key = self.parse_identifier()
+            is_optional = False
+            is_repeatable = False
+            self.skip_whitespace()
+            if self.current() == "*":
+                is_repeatable = True
+                self.advance()
+                self.skip_whitespace()
+            if self.current() == "?":
+                is_optional = True
+                self.advance()
+
+            self.skip_whitespace()
+            if self.current() != ":":
+                raise ParseError("Expected ':' in type field definition")
+            self.advance()
+
+            field_type = self.parse_type_spec()
+            fields.append((key, field_type, is_optional, is_repeatable))
+
+            self.skip_whitespace()
+            if self.current() == ",":
+                self.advance()
+                continue
+            if self.current() in {"|", "}"}:
+                break
+            raise ParseError("Expected ',' or '}' in object type")
+
+        self.skip_whitespace()
+        if is_closed:
+            if self.current() == "|":
+                self.advance()
+            if self.current() != "}":
+                raise ParseError("Expected '|}' to close object type")
+            self.advance()
+        else:
+            if self.current() != "}":
+                raise ParseError("Expected '}' to close object type")
+            self.advance()
+
+        return ObjectTypeSpec(fields=fields, is_open=not is_closed)
 
 INFIX_SPECIAL = {
     "map": "_infix_map",

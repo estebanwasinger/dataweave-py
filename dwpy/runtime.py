@@ -4,9 +4,20 @@ import logging
 import re
 import inspect
 import copy
-from datetime import date, datetime, time, timedelta
+import os
+import json
+import math
+import uuid as uuid_lib
+import hashlib
+import hmac
+from datetime import date, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
+from decimal import Decimal, InvalidOperation, localcontext
 from dataclasses import dataclass
+from importlib import metadata as importlib_metadata
 from pathlib import Path
+from urllib.parse import urlparse
+from urllib.request import urlopen
 from typing import Any, Callable, Dict, List, Optional, Mapping, Set, Tuple
 
 from . import builtins, parser
@@ -195,6 +206,25 @@ class ImplicitLambdaCallable:
 
 
 class DataWeaveRuntime:
+    _MD2_S_TABLE: Tuple[int, ...] = (
+        41, 46, 67, 201, 162, 216, 124, 1, 61, 54, 84, 161, 236, 240, 6, 19,
+        98, 167, 5, 243, 192, 199, 115, 140, 152, 147, 43, 217, 188, 76, 130, 202,
+        30, 155, 87, 60, 253, 212, 224, 22, 103, 66, 111, 24, 138, 23, 229, 18,
+        190, 78, 196, 214, 218, 158, 222, 73, 160, 251, 245, 142, 187, 47, 238, 122,
+        169, 104, 121, 145, 21, 178, 7, 63, 148, 194, 16, 137, 11, 34, 95, 33,
+        128, 127, 93, 154, 90, 144, 50, 39, 53, 62, 204, 231, 191, 247, 151, 3,
+        255, 25, 48, 179, 72, 165, 181, 209, 215, 94, 146, 42, 172, 86, 170, 198,
+        79, 184, 56, 210, 150, 164, 125, 182, 118, 252, 107, 226, 156, 116, 4, 241,
+        69, 157, 112, 89, 100, 113, 135, 32, 134, 91, 207, 101, 230, 45, 168, 2,
+        27, 96, 37, 173, 174, 176, 185, 246, 28, 70, 97, 105, 52, 64, 126, 15,
+        85, 71, 163, 35, 221, 81, 175, 58, 195, 92, 249, 206, 186, 197, 234, 38,
+        44, 83, 13, 110, 133, 40, 132, 9, 211, 223, 205, 244, 65, 129, 77, 82,
+        106, 220, 55, 200, 108, 193, 171, 250, 36, 225, 123, 8, 12, 189, 177, 74,
+        120, 136, 149, 139, 227, 99, 232, 109, 233, 203, 213, 254, 59, 0, 29, 57,
+        242, 239, 183, 14, 102, 88, 208, 228, 166, 119, 114, 248, 235, 117, 75, 10,
+        49, 68, 80, 180, 143, 237, 31, 26, 219, 153, 141, 51, 159, 17, 131, 20,
+    )
+
     _IMPLICIT_LAMBDA_ARGUMENTS: Dict[str, Tuple[int, ...]] = {
         "_infix_map": (1,),
         "_infix_filter": (1,),
@@ -230,8 +260,10 @@ class DataWeaveRuntime:
                 "_binary_lte": self._func_binary_lte,
                 "_binary_and": self._func_binary_and,
                 "_binary_or": self._func_binary_or,
+                "native": self._func_native,
             }
         )
+        self._native_functions = self._build_native_function_registry()
 
     def execute(
         self,
@@ -265,30 +297,7 @@ class DataWeaveRuntime:
             header=script.header,
             line_offset=0,
         )
-        if self._enable_module_imports:
-            imported = self._resolve_imports(script.header.imports)
-            header_context.variables.update(imported)
-        for function_decl in script.header.functions:
-            defined_function = DefinedFunction(
-                runtime=self,
-                parameters=function_decl.parameters,
-                body=function_decl.body,
-                context=header_context,
-                return_type=function_decl.return_type,
-            )
-            existing_function = header_context.variables.get(function_decl.name)
-            if isinstance(existing_function, OverloadedFunction):
-                existing_function.add(defined_function)
-            elif isinstance(existing_function, DefinedFunction):
-                header_context.variables[function_decl.name] = OverloadedFunction(
-                    runtime=self,
-                    functions=[existing_function, defined_function],
-                )
-            else:
-                header_context.variables[function_decl.name] = defined_function
-        for declaration in script.header.variables:
-            value = self._evaluate(declaration.expression, header_context)
-            header_context.variables[declaration.name] = value
+        self._populate_context_from_header(script.header, header_context)
         body_line_offset = self._compute_body_line_offset(script_source)
         body_context = EvaluationContext(
             payload=payload,
@@ -581,6 +590,16 @@ class DataWeaveRuntime:
             condition_value = self._evaluate(expr.condition, ctx)
             branch = expr.when_true if self._is_truthy(condition_value) else expr.when_false
             return self._evaluate(branch, ctx)
+        if isinstance(expr, parser.DoExpression):
+            scoped_variables = dict(ctx.variables)
+            do_context = EvaluationContext(
+                payload=ctx.payload,
+                variables=scoped_variables,
+                header=expr.header,
+                line_offset=ctx.line_offset,
+            )
+            self._populate_context_from_header(expr.header, do_context)
+            return self._evaluate(expr.body, do_context)
         if isinstance(expr, parser.MatchExpression):
             value = self._evaluate(expr.value, ctx)
             for case in expr.cases:
@@ -734,6 +753,852 @@ class DataWeaveRuntime:
             return base[index]
         except (TypeError, KeyError, IndexError):
             return None
+
+    def _populate_context_from_header(
+        self,
+        header: parser.Header,
+        context: EvaluationContext,
+    ) -> None:
+        if self._enable_module_imports:
+            imported = self._resolve_imports(header.imports)
+            context.variables.update(imported)
+
+        for function_decl in header.functions:
+            defined_function = DefinedFunction(
+                runtime=self,
+                parameters=function_decl.parameters,
+                body=function_decl.body,
+                context=context,
+                return_type=function_decl.return_type,
+            )
+            existing_function = context.variables.get(function_decl.name)
+            if isinstance(existing_function, OverloadedFunction):
+                existing_function.add(defined_function)
+            elif isinstance(existing_function, DefinedFunction):
+                context.variables[function_decl.name] = OverloadedFunction(
+                    runtime=self,
+                    functions=[existing_function, defined_function],
+                )
+            else:
+                context.variables[function_decl.name] = defined_function
+
+        for declaration in header.variables:
+            value = self._evaluate(declaration.expression, context)
+            context.variables[declaration.name] = value
+
+    def _func_native(self, identifier: Any) -> Callable[..., Any]:
+        key = str(identifier)
+        function = self._native_functions.get(key)
+        if function is None:
+            raise DataWeaveEvaluationError(f"Unknown native function identifier '{key}'")
+        return function
+
+    def _build_native_function_registry(self) -> Dict[str, Callable[..., Any]]:
+        return {
+            "system::read": self._func_read,
+            "system::readUrl": self._func_read_url,
+            "system::write": self._func_write,
+            "system::random": builtins.builtin_random,
+            "system::uuid": self._func_uuid,
+            "system::now": builtins.builtin_now,
+            "system::log": builtins.builtin_log,
+            "system::EvaluateCompatibilityFlagFunctionValue": self._func_evaluate_compatibility_flag,
+            "system::ArrayAppendArrayFunctionValue": builtins.binary_concat,
+            "system::StringAppendStringFunctionValue": builtins.binary_concat,
+            "system::ObjectAppendObjectFunctionValue": builtins.binary_concat,
+            "system::ArrayMapFunctionValue": self._func_infix_map,
+            "system::ArrayFilterFunctionValue": self._func_infix_filter,
+            "system::ArrayReduceFunctionValue": self._func_infix_reduce,
+            "system::MapObjectObjectFunctionValue": self._func_map_object,
+            "system::PluckObjectFunctionValue": builtins.builtin_pluck,
+            "system::ObjectFilterFunctionValue": builtins.builtin_filter_object,
+            "system::ArrayGroupByFunctionValue": builtins.builtin_group_by,
+            "system::ObjectGroupByFunctionValue": builtins.builtin_group_by,
+            "system::ArrayFindFunctionValue": builtins.builtin_find,
+            "system::StringFindRegexFunctionValue": builtins.builtin_find,
+            "system::StringFindStringFunctionValue": builtins.builtin_find,
+            "system::ArrayDistinctFunctionValue": self._func_infix_distinct_by,
+            "system::ObjectDistinctFunctionValue": self._func_object_distinct_by,
+            "system::ArrayContainsFunctionValue": builtins.builtin_contains,
+            "system::StringStringContainsFunctionValue": builtins.builtin_contains,
+            "system::StringRegexContainsFunctionValue": builtins.builtin_contains,
+            "system::ArrayOrderByFunctionValue": builtins.builtin_order_by,
+            "system::ObjectOrderByFunctionValue": builtins.builtin_order_by,
+            "system::ArraySizeOfFunctionValue": builtins.builtin_size_of,
+            "system::ObjectSizeOfFunctionValue": builtins.builtin_size_of,
+            "system::StringSizeOfFunctionValue": builtins.builtin_size_of,
+            "system::BinarySizeOfFunctionValue": builtins.builtin_size_of,
+            "system::ArrayFlattenFunctionValue": builtins.builtin_flatten,
+            "system::StringEndsWithFunctionValue": builtins.builtin_endswith,
+            "system::StringSplitStringFunctionValue": builtins.builtin_split_by,
+            "system::StringSplitRegexFunctionValue": builtins.builtin_split_by,
+            "system::StringStartsWithFunctionValue": builtins.builtin_startswith,
+            "system::StringMatchesFunctionValue": builtins.builtin_matches,
+            "system::StringRegexMatchFunctionValue": builtins.builtin_match,
+            "system::StringLowerFunctionValue": builtins.builtin_lower,
+            "system::StringTrimFunctionValue": builtins.builtin_trim,
+            "system::StringUpperFunctionValue": self._func_upper,
+            "system::PowNumberFunctionValue": builtins.builtin_pow,
+            "system::ModuleNumberFunctionValue": builtins.builtin_mod,
+            "system::SqrtNumberFunctionValue": self._func_sqrt,
+            "system::AbsNumberFunctionValue": builtins.builtin_abs,
+            "system::CeilNumberFunctionValue": builtins.builtin_ceil,
+            "system::FloorNumberFunctionValue": builtins.builtin_floor,
+            "system::TypeOfAnyFunctionValue": self._func_type_of_any,
+            "system::RoundNumberFunctionValue": builtins.builtin_round,
+            "system::EmptyArrayFunctionValue": builtins.builtin_is_empty,
+            "system::EmptyStringFunctionValue": builtins.builtin_is_empty,
+            "system::EmptyObjectFunctionValue": builtins.builtin_is_empty,
+            "system::LeapDateTimeFunctionValue": builtins.builtin_is_leap_year,
+            "system::LeapLocalDateFunctionValue": builtins.builtin_is_leap_year,
+            "system::LeapLocalDateTimeFunctionValue": builtins.builtin_is_leap_year,
+            "system::DecimalNumberFunctionValue": builtins.builtin_is_decimal,
+            "system::IntegerNumberFunctionValue": builtins.builtin_is_integer,
+            "system::ToRangeFunctionValue": builtins.builtin_to,
+            "system::daysBetween": self._func_days_between,
+            "system::ArrayRemoveFunctionValue": builtins.binary_diff,
+            "system::ObjectRemoveFunctionValue": builtins.binary_diff,
+            "system::StringScanFunctionValue": self._func_scan,
+            "system::ReplaceStringRegexFunctionValue": self._func_replace_regex,
+            "system::ReplaceStringStringFunctionValue": self._func_replace_string,
+            "system::StringReduceFunctionValue": self._func_string_reduce,
+            "system::SinFunctionValue": lambda angle: math.sin(self._coerce_number(angle)),
+            "system::CosFunctionValue": lambda angle: math.cos(self._coerce_number(angle)),
+            "system::TanFunctionValue": lambda angle: math.tan(self._coerce_number(angle)),
+            "system::ASinFunctionValue": self._func_asin,
+            "system::ACosFunctionValue": self._func_acos,
+            "system::ATanFunctionValue": lambda angle: math.atan(self._coerce_number(angle)),
+            "system::LognFunctionValue": self._func_logn,
+            "system::Log10FunctionValue": self._func_log10,
+            "system::BigDecimalAdditionFunctionValue": self._func_decimal_add,
+            "system::BigDecimalSubtractionFunctionValue": self._func_decimal_subtract,
+            "system::BigDecimalDivisionFunctionValue": self._func_decimal_divide,
+            "system::BigDecimalMultiplicationFunctionValue": self._func_decimal_multiply,
+            "system::BigDecimalPowerFunctionValue": self._func_decimal_pow,
+            "system::BigDecimalSqrtFunctionValue": self._func_decimal_sqrt,
+            "system::BigDecimalRoundFunctionValue": self._func_decimal_round,
+            "system::StringWithRadixToNumber": self._func_from_radix_number,
+            "system::NumberToRadixFunction": self._func_to_radix_number,
+            "system::BinaryAppendBinaryFunctionValue": builtins.binary_concat,
+            "system::ReadLinesFunctionValue": self._func_read_lines_with,
+            "system::WriteLinesFunctionValue": self._func_write_lines_with,
+            "system::FromMimeTypeString": self._func_mime_from_string,
+            "system::ToMimeTypeString": self._func_mime_to_string,
+            "system::IsHandledBy": self._func_mime_is_handled_by,
+            "system::env": self._func_env,
+            "system::fail": self._func_fail,
+            "system::RunScriptFunctionValue": self._func_run_script,
+            "system::EvalScriptFunctionValue": self._func_eval_script,
+            "system::DataFormatDescriptorsFunctionValue": self._func_data_format_descriptors,
+            "system::wait": self._func_wait,
+            "system::try": self._func_try,
+            "system::location": self._func_location,
+            "system::props": self._func_props,
+            "system::version": self._func_version,
+            "system::FindDataFormatDescriptorByMimeFunctionValue": self._func_find_data_format_descriptor_by_mime,
+            "system::HashFunctionValue": self._func_hash_with,
+            "system::HMACFunctionValue": self._func_hmac_binary,
+            "system::LocalDateAppendLocalTimeFunctionValue": self._func_date_append_time,
+            "system::LocalTimeAppendLocalDateFunctionValue": self._func_time_append_date,
+            "system::LocalDateAppendTimeFunctionValue": self._func_date_append_time,
+            "system::TimeAppendLocalDateFunctionValue": self._func_time_append_date,
+            "system::LocalDateAppendTimeZoneFunctionValue": self._func_date_append_timezone,
+            "system::TimeZoneAppendLocalDateFunctionValue": self._func_timezone_append_date,
+            "system::LocalDateTimeAppendTimeZoneFunctionValue": self._func_datetime_append_timezone,
+            "system::TimeZoneAppendLocalDateTimeFunctionValue": self._func_timezone_append_datetime,
+            "system::LocalTimeAppendTimeZoneFunctionValue": self._func_time_append_timezone,
+            "system::TimeZoneValueAppendLocalTimeFunctionValue": self._func_timezone_append_time,
+        }
+
+    @staticmethod
+    def _coerce_number(value: Any) -> float:
+        if isinstance(value, bool):
+            return 1.0 if value else 0.0
+        if isinstance(value, (int, float)):
+            return float(value)
+        return float(str(value))
+
+    @staticmethod
+    def _func_upper(value: Any) -> Any:
+        if value is None:
+            return None
+        return str(value).upper()
+
+    def _func_sqrt(self, value: Any) -> Any:
+        number = self._coerce_number(value)
+        if number < 0:
+            return float("nan")
+        result = math.sqrt(number)
+        return int(result) if float(result).is_integer() else result
+
+    def _func_asin(self, value: Any) -> Any:
+        number = self._coerce_number(value)
+        if number < -1 or number > 1:
+            return float("nan")
+        return math.asin(number)
+
+    def _func_acos(self, value: Any) -> Any:
+        number = self._coerce_number(value)
+        if number < -1 or number > 1:
+            return float("nan")
+        return math.acos(number)
+
+    def _func_logn(self, value: Any) -> Any:
+        number = self._coerce_number(value)
+        if number <= 0:
+            return float("nan")
+        return math.log(number)
+
+    def _func_log10(self, value: Any) -> Any:
+        number = self._coerce_number(value)
+        if number <= 0:
+            return float("nan")
+        return math.log10(number)
+
+    def _func_date_append_time(self, left: Any, right: Any) -> datetime:
+        if isinstance(left, date) and isinstance(right, time):
+            return datetime.combine(left, right)
+        if isinstance(left, time) and isinstance(right, date):
+            return datetime.combine(right, left)
+        raise TypeError("Expected (Date, Time) or (Time, Date)")
+
+    def _func_time_append_date(self, left: Any, right: Any) -> datetime:
+        return self._func_date_append_time(left, right)
+
+    def _func_date_append_timezone(self, value: Any, tz: Any) -> datetime:
+        if not isinstance(value, date):
+            raise TypeError("Expected Date as first argument")
+        return datetime.combine(value, time.min).replace(tzinfo=self._coerce_timezone(tz))
+
+    def _func_timezone_append_date(self, tz: Any, value: Any) -> datetime:
+        return self._func_date_append_timezone(value, tz)
+
+    def _func_datetime_append_timezone(self, value: Any, tz: Any) -> datetime:
+        if not isinstance(value, datetime):
+            raise TypeError("Expected DateTime as first argument")
+        return value.replace(tzinfo=self._coerce_timezone(tz))
+
+    def _func_timezone_append_datetime(self, tz: Any, value: Any) -> datetime:
+        return self._func_datetime_append_timezone(value, tz)
+
+    def _func_time_append_timezone(self, value: Any, tz: Any) -> time:
+        if not isinstance(value, time):
+            raise TypeError("Expected Time as first argument")
+        return value.replace(tzinfo=self._coerce_timezone(tz))
+
+    def _func_timezone_append_time(self, tz: Any, value: Any) -> time:
+        return self._func_time_append_timezone(value, tz)
+
+    @staticmethod
+    def _coerce_timezone(value: Any) -> Any:
+        if isinstance(value, datetime):
+            return value.tzinfo
+        if isinstance(value, time):
+            return value.tzinfo
+        if isinstance(value, str):
+            token = value.strip().strip("|")
+            if token == "Z":
+                return timezone.utc
+            if re.fullmatch(r"[+-]\d{2}:\d{2}", token):
+                sign = 1 if token[0] == "+" else -1
+                hours, minutes = token[1:].split(":")
+                delta = timedelta(hours=int(hours), minutes=int(minutes))
+                return timezone(sign * delta)
+            try:
+                return ZoneInfo(token)
+            except Exception:
+                return timezone.utc
+        return timezone.utc
+
+    def _func_map_object(self, value: Any, mapper: Callable[..., Any]) -> Any:
+        if value is None:
+            return None
+        if not isinstance(value, Mapping):
+            raise TypeError("mapObject expects an object")
+        result: Dict[Any, Any] = {}
+        for index, (key, item) in enumerate(value.items()):
+            mapped = builtins.invoke_lambda(mapper, item, key, index)
+            if mapped is None:
+                continue
+            if not isinstance(mapped, Mapping):
+                raise TypeError("mapObject mapper must return an object")
+            result.update(mapped)
+        return result
+
+    def _func_object_distinct_by(self, value: Any, criteria: Callable[..., Any]) -> Any:
+        if value is None:
+            return None
+        if not isinstance(value, Mapping):
+            raise TypeError("distinctBy expects an object")
+        seen: List[Any] = []
+        result: Dict[Any, Any] = {}
+        for key, item in value.items():
+            marker = builtins._hashable_key(builtins.invoke_lambda(criteria, item, key))
+            if marker in seen:
+                continue
+            seen.append(marker)
+            result[key] = item
+        return result
+
+    def _func_string_reduce(self, value: Any, callback: Callable[..., Any]) -> Any:
+        if value is None:
+            return None
+        text = str(value)
+        accumulator: Any = Missing
+        for char in text:
+            if accumulator is Missing:
+                accumulator = builtins.invoke_lambda(callback, char)
+            else:
+                accumulator = builtins.invoke_lambda(callback, char, accumulator)
+        return None if accumulator is Missing else accumulator
+
+    def _func_scan(self, text: Any, matcher: Any) -> List[List[str]]:
+        if text is None:
+            return []
+        pattern = self._coerce_regex_pattern(matcher)
+        compiled = re.compile(pattern)
+        result: List[List[str]] = []
+        for match in compiled.finditer(str(text)):
+            result.append([match.group(0)] + list(match.groups()))
+        return result
+
+    def _func_replace_regex(
+        self, text: Any, matcher: Any
+    ) -> Callable[[Callable[..., Any]], str]:
+        pattern = self._coerce_regex_pattern(matcher)
+        compiled = re.compile(pattern)
+        source = "" if text is None else str(text)
+
+        def replace_with(callback: Callable[..., Any]) -> str:
+            index = -1
+
+            def repl(match: re.Match[str]) -> str:
+                nonlocal index
+                index += 1
+                groups = [match.group(0)] + list(match.groups())
+                return str(builtins.invoke_lambda(callback, groups, index))
+
+            return compiled.sub(repl, source)
+
+        return replace_with
+
+    def _func_replace_string(
+        self, text: Any, matcher: Any
+    ) -> Callable[[Callable[..., Any]], str]:
+        source = "" if text is None else str(text)
+        needle = "" if matcher is None else str(matcher)
+
+        def replace_with(callback: Callable[..., Any]) -> str:
+            if needle == "":
+                return source
+            parts: List[str] = []
+            cursor = 0
+            index = 0
+            while True:
+                pos = source.find(needle, cursor)
+                if pos < 0:
+                    parts.append(source[cursor:])
+                    break
+                parts.append(source[cursor:pos])
+                replacement = builtins.invoke_lambda(callback, [needle], index)
+                parts.append("" if replacement is None else str(replacement))
+                cursor = pos + len(needle)
+                index += 1
+            return "".join(parts)
+
+        return replace_with
+
+    @staticmethod
+    def _coerce_regex_pattern(matcher: Any) -> str:
+        pattern = "" if matcher is None else str(matcher)
+        if pattern.startswith("/") and pattern.endswith("/") and len(pattern) >= 2:
+            return pattern[1:-1]
+        return pattern
+
+    def _func_type_of_any(self, value: Any) -> str:
+        return self._dw_type_name(value)
+
+    def _func_read_lines_with(self, content: Any, charset: Any) -> List[str]:
+        if isinstance(content, (bytes, bytearray)):
+            encoding = "utf-8" if charset is None else str(charset)
+            text = bytes(content).decode(encoding)
+        else:
+            text = "" if content is None else str(content)
+        return text.splitlines()
+
+    def _func_write_lines_with(self, content: Any, charset: Any) -> bytes:
+        if content is None:
+            return b""
+        if not isinstance(content, list):
+            raise TypeError("writeLinesWith expects an array of strings")
+        encoding = "utf-8" if charset is None else str(charset)
+        text = "\n".join("" if line is None else str(line) for line in content)
+        return text.encode(encoding)
+
+    def _func_from_radix_number(self, number_str: Any, radix: Any) -> Any:
+        base = int(self._coerce_number(radix))
+        value = int(str(number_str).strip(), base)
+        return value
+
+    def _func_to_radix_number(self, number: Any, radix: Any) -> str:
+        base = int(self._coerce_number(radix))
+        if base < 2 or base > 36:
+            raise ValueError("Radix must be between 2 and 36")
+        value = int(self._coerce_number(number))
+        digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+        if value == 0:
+            return "0"
+        sign = "-" if value < 0 else ""
+        value = abs(value)
+        parts: List[str] = []
+        while value:
+            value, rem = divmod(value, base)
+            parts.append(digits[rem])
+        return sign + "".join(reversed(parts))
+
+    def _func_mime_from_string(self, mime_type: Any) -> Dict[str, Any]:
+        text = "" if mime_type is None else str(mime_type).strip()
+        try:
+            type_part, *param_parts = [segment.strip() for segment in text.split(";")]
+            if "/" not in type_part:
+                raise ValueError(f"Unable to find a sub type in `{text}`.")
+            major, sub = [segment.strip() for segment in type_part.split("/", 1)]
+            if not major or not sub:
+                raise ValueError(f"Invalid MIME type `{text}`.")
+            parameters: Dict[str, str] = {}
+            for token in param_parts:
+                if "=" not in token:
+                    continue
+                key, value = token.split("=", 1)
+                parameters[key.strip()] = value.strip()
+            return {
+                "success": True,
+                "result": {
+                    "type": major,
+                    "subtype": sub,
+                    "parameters": parameters,
+                },
+            }
+        except Exception as err:
+            return {"success": False, "error": {"message": str(err)}}
+
+    def _func_mime_to_string(self, mime_type: Any) -> str:
+        if not isinstance(mime_type, Mapping):
+            raise TypeError("toString expects a MIME object")
+        major = str(mime_type.get("type", "")).strip()
+        sub = str(mime_type.get("subtype", "")).strip()
+        if not major or not sub:
+            raise ValueError("MIME object requires 'type' and 'subtype'")
+        base = f"{major}/{sub}"
+        parameters = mime_type.get("parameters", {})
+        if isinstance(parameters, Mapping) and parameters:
+            suffix = ";".join(f"{key}={value}" for key, value in parameters.items())
+            return f"{base};{suffix}"
+        return base
+
+    def _func_mime_is_handled_by(self, base: Any, other: Any) -> bool:
+        if not isinstance(base, Mapping) or not isinstance(other, Mapping):
+            return False
+        base_type = str(base.get("type", "")).strip()
+        base_sub = str(base.get("subtype", "")).strip()
+        other_type = str(other.get("type", "")).strip()
+        other_sub = str(other.get("subtype", "")).strip()
+        if base_type not in {"*", other_type}:
+            return False
+        if base_sub == "*":
+            return True
+        if base_sub.endswith("*+xml"):
+            return other_sub.endswith("+xml")
+        return base_sub in {"*", other_sub}
+
+    def _func_env(self) -> Dict[str, str]:
+        return dict(os.environ)
+
+    def _func_props(self) -> Dict[str, str]:
+        return dict(os.environ)
+
+    def _func_fail(self, message: Any = "Error") -> Any:
+        raise DataWeaveEvaluationError(str(message))
+
+    @staticmethod
+    def _func_wait(value: Any, timeout: Any) -> Any:  # noqa: ARG004
+        return value
+
+    def _func_try(self, delegate: Callable[..., Any]) -> Dict[str, Any]:
+        try:
+            result = builtins.invoke_lambda(delegate)
+            return {"success": True, "result": result}
+        except Exception as err:
+            return {
+                "success": False,
+                "error": {
+                    "kind": type(err).__name__,
+                    "message": str(err),
+                },
+            }
+
+    @staticmethod
+    def _func_location(value: Any) -> Dict[str, Any]:  # noqa: ARG004
+        return {"locationString": "Unknown location", "text": ""}
+
+    def _func_version(self) -> str:
+        try:
+            return importlib_metadata.version("dataweave-py")
+        except Exception:
+            return "0.0.0"
+
+    def _func_data_format_descriptors(self) -> List[Dict[str, Any]]:
+        descriptors: List[Dict[str, Any]] = []
+        for definition in FormatRegistry._FORMATS.values():  # type: ignore[attr-defined]
+            descriptors.append(
+                {
+                    "name": definition.id,
+                    "binary": definition.id == "python",
+                    "extensions": [],
+                    "defaultMimeType": definition.mime_type,
+                    "acceptedMimeTypes": [definition.mime_type],
+                    "readerProperties": [],
+                    "writerProperties": [],
+                }
+            )
+        return descriptors
+
+    def _func_find_data_format_descriptor_by_mime(self, mime: Any) -> Any:
+        mime_text = self._mime_to_text(mime)
+        for descriptor in self._func_data_format_descriptors():
+            if mime_text in descriptor.get("acceptedMimeTypes", []):
+                return descriptor
+        return None
+
+    @staticmethod
+    def _mime_to_text(value: Any) -> str:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, Mapping):
+            major = value.get("type")
+            sub = value.get("subtype")
+            if major is not None and sub is not None:
+                return f"{major}/{sub}"
+        return str(value)
+
+    def _func_read(self, string_to_parse: Any, content_type: Any = "application/dw", reader_properties: Any = None) -> Any:
+        content_type_text = "application/dw" if content_type is None else str(content_type)
+        options = reader_properties if isinstance(reader_properties, Mapping) else {}
+        if content_type_text.startswith("application/dw"):
+            script_text = self._decode_text_content(string_to_parse, options)
+            source = script_text.strip()
+            if not source:
+                return None
+            if source.startswith("%dw"):
+                return self.execute(source, payload={}, render_output=False)
+            expr = parser.parse_expression_from_source(source)
+            ctx = EvaluationContext(payload={}, variables={}, header=None)
+            return self._evaluate(expr, ctx)
+        format_name = content_type_text.split(";", 1)[0].strip()
+        return self._convert_input_format(string_to_parse, format_name, dict(options))
+
+    def _func_read_url(self, url: Any, content_type: Any = "application/dw", reader_properties: Any = None) -> Any:
+        resource = "" if url is None else str(url)
+        content = self._load_resource_bytes(resource)
+        return self._func_read(content, content_type, reader_properties)
+
+    def _func_write(self, value: Any, content_type: Any = "application/dw", writer_properties: Any = None) -> Any:
+        content_type_text = "application/dw" if content_type is None else str(content_type)
+        options = writer_properties if isinstance(writer_properties, Mapping) else {}
+        if content_type_text.startswith("application/dw"):
+            if isinstance(value, (Mapping, list)):
+                return json.dumps(value, ensure_ascii=False)
+            if isinstance(value, (bytes, bytearray)):
+                return bytes(value)
+            return "" if value is None else str(value)
+        format_name = content_type_text.split(";", 1)[0].strip()
+        return self._render_output(value, OutputDirective(content_type_text, format_name, dict(options)))
+
+    @staticmethod
+    def _func_uuid() -> str:
+        return str(uuid_lib.uuid4())
+
+    @staticmethod
+    def _func_evaluate_compatibility_flag(flag: Any) -> bool:  # noqa: ARG004
+        return False
+
+    def _func_hash_with(self, content: Any, algorithm: Any = "SHA-1") -> bytes:
+        text = self._resolve_hashlib_algorithm(algorithm)
+        payload = self._coerce_binary(content)
+        if text == "md2":
+            return self._md2_digest(payload)
+        digest = hashlib.new(text)
+        digest.update(payload)
+        return digest.digest()
+
+    def _func_hmac_binary(self, secret: Any, content: Any, algorithm: Any = "HmacSHA1") -> bytes:
+        algo = "sha1" if algorithm is None else str(algorithm).lower().replace("hmac", "").replace("-", "")
+        key = self._coerce_binary(secret)
+        payload = self._coerce_binary(content)
+        return hmac.new(key, payload, algo).digest()
+
+    @staticmethod
+    def _resolve_hashlib_algorithm(algorithm: Any) -> str:
+        if algorithm is None:
+            return "sha1"
+        token = str(algorithm).strip().upper().replace("_", "-")
+        mapping = {
+            "MD2": "md2",
+            "MD5": "md5",
+            "SHA1": "sha1",
+            "SHA-1": "sha1",
+            "SHA256": "sha256",
+            "SHA-256": "sha256",
+            "SHA384": "sha384",
+            "SHA-384": "sha384",
+            "SHA512": "sha512",
+            "SHA-512": "sha512",
+        }
+        resolved = mapping.get(token)
+        if resolved is None:
+            raise ValueError(
+                f"Unsupported hash algorithm '{algorithm}'. Supported values: "
+                "MD2, MD5, SHA-1, SHA-256, SHA-384, SHA-512"
+            )
+        return resolved
+
+    def _md2_digest(self, payload: bytes) -> bytes:
+        s = self._MD2_S_TABLE
+        pad_len = 16 - (len(payload) % 16)
+        padded = payload + bytes([pad_len] * pad_len)
+
+        checksum = [0] * 16
+        l_value = 0
+        for start in range(0, len(padded), 16):
+            block = padded[start : start + 16]
+            for idx in range(16):
+                c = block[idx]
+                checksum[idx] ^= s[c ^ l_value]
+                l_value = checksum[idx]
+
+        message = padded + bytes(checksum)
+        state = [0] * 48
+
+        for start in range(0, len(message), 16):
+            block = message[start : start + 16]
+            for idx in range(16):
+                state[16 + idx] = block[idx]
+                state[32 + idx] = state[16 + idx] ^ state[idx]
+            t = 0
+            for round_index in range(18):
+                for idx in range(48):
+                    state[idx] ^= s[t]
+                    t = state[idx]
+                t = (t + round_index) % 256
+
+        return bytes(state[:16])
+
+    @staticmethod
+    def _decimal_number(value: Any) -> Decimal:
+        if isinstance(value, Decimal):
+            return value
+        if isinstance(value, bool):
+            return Decimal(1 if value else 0)
+        if isinstance(value, (int, float)):
+            return Decimal(str(value))
+        return Decimal(str(value))
+
+    @staticmethod
+    def _decimal_precision(context: Any) -> Optional[int]:
+        if isinstance(context, Mapping):
+            precision = context.get("precision") or context.get("prec")
+            if precision is not None:
+                try:
+                    return int(precision)
+                except (TypeError, ValueError):
+                    return None
+        return None
+
+    def _decimal_result(self, value: Decimal) -> Any:
+        as_float = float(value)
+        return int(as_float) if as_float.is_integer() else as_float
+
+    def _func_decimal_add(self, lhs: Any, rhs: Any, ctx: Any = None) -> Any:
+        with localcontext() as decimal_ctx:
+            precision = self._decimal_precision(ctx)
+            if precision:
+                decimal_ctx.prec = precision
+            return self._decimal_result(self._decimal_number(lhs) + self._decimal_number(rhs))
+
+    def _func_decimal_subtract(self, lhs: Any, rhs: Any, ctx: Any = None) -> Any:
+        with localcontext() as decimal_ctx:
+            precision = self._decimal_precision(ctx)
+            if precision:
+                decimal_ctx.prec = precision
+            return self._decimal_result(self._decimal_number(lhs) - self._decimal_number(rhs))
+
+    def _func_decimal_divide(self, dividend: Any, divisor: Any, ctx: Any = None) -> Any:
+        with localcontext() as decimal_ctx:
+            precision = self._decimal_precision(ctx)
+            if precision:
+                decimal_ctx.prec = precision
+            try:
+                return self._decimal_result(self._decimal_number(dividend) / self._decimal_number(divisor))
+            except InvalidOperation:
+                return float("nan")
+
+    def _func_decimal_multiply(self, left_factor: Any, right_factor: Any, ctx: Any = None) -> Any:
+        with localcontext() as decimal_ctx:
+            precision = self._decimal_precision(ctx)
+            if precision:
+                decimal_ctx.prec = precision
+            return self._decimal_result(self._decimal_number(left_factor) * self._decimal_number(right_factor))
+
+    def _func_decimal_pow(self, base: Any, exponent: Any, ctx: Any = None) -> Any:
+        with localcontext() as decimal_ctx:
+            precision = self._decimal_precision(ctx)
+            if precision:
+                decimal_ctx.prec = precision
+            exp = int(self._coerce_number(exponent))
+            return self._decimal_result(self._decimal_number(base) ** exp)
+
+    def _func_decimal_sqrt(self, number: Any, ctx: Any = None) -> Any:
+        with localcontext() as decimal_ctx:
+            precision = self._decimal_precision(ctx)
+            if precision:
+                decimal_ctx.prec = precision
+            value = self._decimal_number(number)
+            if value < 0:
+                return float("nan")
+            return self._decimal_result(value.sqrt())
+
+    def _func_decimal_round(self, number: Any, ctx: Any = None) -> Any:
+        with localcontext() as decimal_ctx:
+            precision = self._decimal_precision(ctx)
+            if precision:
+                decimal_ctx.prec = precision
+            value = self._decimal_number(number)
+            return self._decimal_result(value.to_integral_value())
+
+    def _func_run_script(
+        self,
+        file_to_execute: Any,
+        fs: Any,
+        reader_inputs: Any = None,
+        input_values: Any = None,
+        configuration: Any = None,  # noqa: ARG002
+    ) -> Dict[str, Any]:
+        result = self._execute_embedded_script(file_to_execute, fs, reader_inputs, input_values)
+        if result.get("success") is True:
+            return {
+                "success": True,
+                "value": result.get("result"),
+                "logs": [],
+            }
+        return {
+            "success": False,
+            "error": result.get("error"),
+        }
+
+    def _func_eval_script(
+        self,
+        file_to_execute: Any,
+        fs: Any,
+        reader_inputs: Any = None,
+        input_values: Any = None,
+        configuration: Any = None,  # noqa: ARG002
+    ) -> Dict[str, Any]:
+        result = self._execute_embedded_script(file_to_execute, fs, reader_inputs, input_values)
+        if result.get("success") is True:
+            return {
+                "success": True,
+                "result": {
+                    "value": result.get("result"),
+                    "logs": [],
+                },
+            }
+        return {
+            "success": False,
+            "error": result.get("error"),
+        }
+
+    def _execute_embedded_script(
+        self,
+        file_to_execute: Any,
+        fs: Any,
+        reader_inputs: Any,
+        input_values: Any,
+    ) -> Dict[str, Any]:
+        try:
+            script_name = str(file_to_execute)
+            if not isinstance(fs, Mapping) or script_name not in fs:
+                raise FileNotFoundError(f"Unable to resolve script '{script_name}'")
+            script_source = fs[script_name]
+            payload = {}
+            vars_context: Dict[str, Any] = {}
+            if isinstance(reader_inputs, Mapping):
+                payload = self._extract_reader_input(reader_inputs.get("payload"))
+                for key, value in reader_inputs.items():
+                    if key == "payload":
+                        continue
+                    vars_context[key] = self._extract_reader_input(value)
+            if isinstance(input_values, Mapping):
+                vars_context.update(input_values)
+            result = self.execute(str(script_source), payload=payload, vars=vars_context, render_output=False)
+            return {"success": True, "result": result}
+        except Exception as err:
+            return {
+                "success": False,
+                "error": {
+                    "kind": type(err).__name__,
+                    "message": str(err),
+                    "location": {"locationString": "Unknown location"},
+                    "logs": [],
+                },
+            }
+
+    def _extract_reader_input(self, value: Any) -> Any:
+        if not isinstance(value, Mapping):
+            return value
+        raw = value.get("value", value)
+        mime = value.get("mimeType")
+        properties = value.get("properties", {})
+        if mime is None:
+            return raw
+        return self._func_read(raw, mime, properties)
+
+    def _decode_text_content(self, value: Any, options: Mapping[str, Any]) -> str:
+        if isinstance(value, str):
+            return value
+        encoding = str(options.get("encoding", "utf-8"))
+        if isinstance(value, (bytes, bytearray)):
+            return bytes(value).decode(encoding)
+        return str(value)
+
+    def _load_resource_bytes(self, resource: str) -> bytes:
+        parsed = urlparse(resource)
+        if resource.startswith("classpath://"):
+            relative_path = resource[len("classpath://") :].lstrip("/")
+            candidates = [
+                Path.cwd() / relative_path,
+                MODULE_BASE_PATH / relative_path,
+                Path(__file__).resolve().parent / relative_path,
+            ]
+            for candidate in candidates:
+                if candidate.exists():
+                    return candidate.read_bytes()
+            raise FileNotFoundError(f"Classpath resource not found: {resource}")
+        if parsed.scheme in {"http", "https"}:
+            with urlopen(resource) as response:  # noqa: S310
+                return response.read()
+        if parsed.scheme == "file":
+            return Path(parsed.path).read_bytes()
+        path = Path(resource)
+        if path.exists():
+            return path.read_bytes()
+        raise FileNotFoundError(f"Resource not found: {resource}")
+
+    def _func_days_between(self, start_value: Any, end_value: Any) -> int:
+        if isinstance(start_value, (date, datetime)) and isinstance(end_value, (date, datetime)):
+            start_date = start_value.date() if isinstance(start_value, datetime) else start_value
+            end_date = end_value.date() if isinstance(end_value, datetime) else end_value
+            return (end_date - start_date).days
+        return builtins.builtin_days_between(str(start_value), str(end_value))
 
     @staticmethod
     def _is_missing(value: Any) -> bool:
@@ -1078,7 +1943,7 @@ class DataWeaveRuntime:
         cleaned = re.sub(r"//.*", "", cleaned)
         cleaned = re.sub(r"(?m)^\s*@.*$", "", cleaned)
         pattern = re.compile(
-            r"^fun\s+([A-Za-z0-9_]+)(?:<[^>]*>)?\s*\((.*?)\)\s*(?::[^=]+)?=\s*((?:.|\n)*?)(?=^fun\s+|\Z)",
+            r"^fun\s+([A-Za-z0-9_]+)(?:\s*<[^>]*>)?\s*\((.*?)\)\s*(?::[^=]+)?=\s*((?:.|\n)*?)(?=^fun\s+|\Z)",
             re.MULTILINE,
         )
         functions_map: Dict[str, List[Tuple[List[str], List[Optional[str]], str]]] = {}
@@ -1089,8 +1954,9 @@ class DataWeaveRuntime:
             simplified_body = DataWeaveRuntime._simplify_module_body(body)
             if not simplified_body:
                 continue
-            if "@" in params_chunk:
-                continue
+            native_id = DataWeaveRuntime._extract_native_identifier(simplified_body)
+            if native_id is not None:
+                simplified_body = f"native({DataWeaveRuntime._dw_string_literal(native_id)})"
             param_names, param_types = DataWeaveRuntime._parse_parameters(params_chunk)
             try:
                 parser.parse_expression_from_source(simplified_body)
@@ -1105,11 +1971,20 @@ class DataWeaveRuntime:
         for name, overloads in functions_map.items():
             overload_entries: List[str] = []
             for index, (param_names, param_types, body) in enumerate(overloads):
-                params_expr = ", ".join(param_names)
-                if params_expr:
-                    header_lines.append(f"var {name}__overload_{index} = ({params_expr}) -> {body}")
+                native_id = DataWeaveRuntime._extract_native_identifier(body)
+                if native_id is not None:
+                    encoded_native_id = DataWeaveRuntime._dw_string_literal(native_id)
+                    header_lines.append(
+                        f"var {name}__overload_{index} = native({encoded_native_id})"
+                    )
                 else:
-                    header_lines.append(f"var {name}__overload_{index} = () -> {body}")
+                    params_expr = ", ".join(param_names)
+                    if params_expr:
+                        header_lines.append(
+                            f"var {name}__overload_{index} = ({params_expr}) -> {body}"
+                        )
+                    else:
+                        header_lines.append(f"var {name}__overload_{index} = () -> {body}")
                 types_expr_parts: List[str] = []
                 for type_spec in param_types:
                     if not type_spec:
@@ -1124,6 +1999,13 @@ class DataWeaveRuntime:
             export_entries.append(f"{name}: {name}__overloads")
         script = "\n".join(header_lines) + "\n---\n" + "{ " + ", ".join(export_entries) + " }"
         return script
+
+    @staticmethod
+    def _extract_native_identifier(body: str) -> Optional[str]:
+        match = re.fullmatch(r"native\(\s*(['\"])([^'\"]+)\1\s*\)", body.strip())
+        if match is None:
+            return None
+        return match.group(2)
 
     @staticmethod
     def _simplify_module_body(body: str) -> str:
@@ -1176,7 +2058,7 @@ class DataWeaveRuntime:
         names: List[str] = []
         types: List[Optional[str]] = []
         for part in parts:
-            cleaned = re.sub(r"@[\w:<>]+", "", part).strip()
+            cleaned = re.sub(r"@[\w:<>]+(?:\([^)]*\))?", "", part).strip()
             if not cleaned:
                 continue
             if ":" in cleaned:

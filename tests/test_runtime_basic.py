@@ -78,6 +78,76 @@ var summary = greeting ++ " WORLD"
     }
 
 
+def test_do_block_inside_function_returns_local_value():
+    script = """%dw 2.0
+output application/json
+fun myfun() = do {
+    var name = "DataWeave"
+    ---
+    name
+}
+---
+{ result: myfun() }
+"""
+    runtime = DataWeaveRuntime()
+    result = runtime.execute(script, payload={}, render_output=False)
+
+    assert result == {"result": "DataWeave"}
+
+
+def test_do_block_inside_header_variable_returns_local_value():
+    script = """%dw 2.0
+output application/json
+var myVar = do {
+    var name = "DataWeave"
+    ---
+    name
+}
+---
+{ result: myVar }
+"""
+    runtime = DataWeaveRuntime()
+    result = runtime.execute(script, payload={}, render_output=False)
+
+    assert result == {"result": "DataWeave"}
+
+
+def test_do_block_can_be_nested_inside_object_fields():
+    script = """%dw 2.0
+output application/json
+---
+{
+  result: do {
+    var name = "DataWeave"
+    ---
+    name
+  }
+}
+"""
+    runtime = DataWeaveRuntime()
+    result = runtime.execute(script, payload={}, render_output=False)
+
+    assert result == {"result": "DataWeave"}
+
+
+def test_script_delimiter_ignores_block_comments():
+    script = """%dw 2.0
+output application/json
+/*
+---
+*/
+var greeting = "DataWeave"
+---
+{
+  result: greeting
+}
+"""
+    runtime = DataWeaveRuntime()
+    result = runtime.execute(script, payload={}, render_output=False)
+
+    assert result == {"result": "DataWeave"}
+
+
 def test_header_import_directive_is_tolerated():
     script = """%dw 2.0
 output application/json
