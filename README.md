@@ -15,7 +15,11 @@ pip install dataweave-py
 ```
 
 ## DataWeave Playground
+
+![DataWeave Playground](./playground-image.png)
 For the best DataWeave Playground a without payload size limits DataWeave Playground, visit: [https://dataweavelang.org](https://dataweavelang.org)
+
+
 
 ## Overview
 
