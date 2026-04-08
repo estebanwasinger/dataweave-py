@@ -15,7 +15,7 @@ pip install dataweave-py
 ```
 
 ## DataWeave Playground
-For the best DataWeave Playground a without payload size limits DataWeave Playground, visit: [https://dataweave-playground.vercel.app/](https://dataweave-playground.vercel.app)
+For the best DataWeave Playground a without payload size limits DataWeave Playground, visit: [https://dataweavelang.org](https://dataweavelang.org)
 
 ## Overview
 
