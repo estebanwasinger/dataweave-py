@@ -14,6 +14,9 @@ or
 pip install dataweave-py
 ```
 
+## DataWeave Playground
+For the best DataWeave Playground a without payload size limits DataWeave Playground, visit: [https://dataweave-playground.vercel.app/](https://dataweave-playground.vercel.app)
+
 ## Overview
 
 DataWeave-Py (`dwpy`) is a Python interpreter for the DataWeave language, originally developed by MuleSoft for data transformation in the Mule runtime. This project brings DataWeave's expressive transformation syntax and rich feature set to the Python ecosystem, enabling:
