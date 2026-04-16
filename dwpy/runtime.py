@@ -21,7 +21,7 @@ from urllib.request import urlopen
 from typing import Any, Callable, Dict, List, Optional, Mapping, Set, Tuple
 
 from . import builtins, parser
-from .formats import FormatRegistry, FormatError, XMLNodeList, XMLNodeDict
+from .formats import DWObject, FormatRegistry, FormatError, XMLNodeList, XMLNodeDict
 
 try:  # pragma: no cover - optional dependency guard
     import pandas as pd  # type: ignore
@@ -165,6 +165,9 @@ class OverloadedFunction:
 
     def _matches(self, function: DefinedFunction, args: Tuple[Any, ...]) -> bool:
         expected_params = function.parameters
+        required_count = sum(1 for param in expected_params if param.default is None)
+        if len(args) < required_count or len(args) > len(expected_params):
+            return False
         for index, param in enumerate(expected_params):
             if index >= len(args):
                 break
@@ -244,6 +247,7 @@ class DataWeaveRuntime:
         self._builtins.update(
             {
                 "_binary_plus": self._func_binary_plus,
+                "_binary_minus": self._func_binary_minus,
                 "_binary_times": self._func_binary_times,
                 "_binary_divide": self._func_binary_divide,
                 "_infix_map": self._func_infix_map,
@@ -337,6 +341,11 @@ class DataWeaveRuntime:
             if isinstance(value, pd.Series):
                 series_data = value.to_dict()
                 return self._normalise_input_value(series_data)
+        if isinstance(value, DWObject):
+            node = DWObject()
+            for key, val in value.items():
+                node.add(key, self._normalise_input_value(val))
+            return node
         if isinstance(value, XMLNodeList):
             normalised_list = XMLNodeList()
             for item in value:
@@ -383,6 +392,11 @@ class DataWeaveRuntime:
     def _collapse_xml_nodes(self, value: Any) -> Any:
         if isinstance(value, XMLNodeList):
             return [self._collapse_xml_nodes(item) for item in value]
+        if isinstance(value, DWObject):
+            collapsed_object = DWObject()
+            for key, val in value.items():
+                collapsed_object.add(key, self._collapse_xml_nodes(val))
+            return collapsed_object
         if isinstance(value, XMLNodeDict):
             collapsed: Dict[str, Any] = {}
             for key, val in value.items():
@@ -494,19 +508,21 @@ class DataWeaveRuntime:
 
     def _evaluate(self, expr: parser.Expression, ctx: EvaluationContext) -> Any:
         if isinstance(expr, parser.ObjectLiteral):
-            result_obj: Dict[str, Any] = {}
+            result_obj = DWObject()
             for key_expr, value_expr in expr.fields:
                 key_value = self._evaluate(key_expr, ctx)
                 if isinstance(key_value, str):
                     key_str = key_value
                 else:
                     key_str = self._to_string(key_value)
-                result_obj[key_str] = self._evaluate(value_expr, ctx)
+                result_obj.add(key_str, self._evaluate(value_expr, ctx))
             return result_obj
         if isinstance(expr, parser.ListLiteral):
             return [self._evaluate(item, ctx) for item in expr.elements]
         if isinstance(expr, parser.StringLiteral):
             return self._evaluate_string_literal(expr.value, ctx)
+        if isinstance(expr, parser.TemporalLiteral):
+            return self._parse_temporal_literal(expr.value)
         if isinstance(expr, parser.Placeholder):
             placeholder_name = "$" if expr.level == 1 else "$$"
             if placeholder_name in ctx.variables:
@@ -547,6 +563,15 @@ class DataWeaveRuntime:
                 raise
         if isinstance(expr, parser.IndexAccess):
             base = self._evaluate(expr.value, ctx)
+            if (
+                isinstance(expr.index, parser.FunctionCall)
+                and isinstance(expr.index.function, parser.Identifier)
+                and expr.index.function.name == "_infix_to"
+                and len(expr.index.arguments) == 2
+            ):
+                start_index = self._evaluate(expr.index.arguments[0], ctx)
+                end_index = self._evaluate(expr.index.arguments[1], ctx)
+                return self._resolve_range_index(base, start_index, end_index)
             index = self._evaluate(expr.index, ctx)
             return self._resolve_index(base, index)
         if isinstance(expr, parser.FunctionCall):
@@ -688,7 +713,7 @@ class DataWeaveRuntime:
                     collected.append(value)
             if not collected:
                 return None
-            return collected if len(collected) > 1 else collected[0]
+            return collected
         if isinstance(base, XMLNodeDict):
             if attribute.startswith("@"):
                 return base.get(attribute, None)
@@ -738,14 +763,14 @@ class DataWeaveRuntime:
     def _resolve_index(self, base: Any, index: Any) -> Any:
         if base is None:
             return None
-        if isinstance(base, (list, tuple)):
-            try:
-                idx = int(index)
-            except (TypeError, ValueError):
+        if isinstance(base, (list, tuple, str)):
+            idx = self._coerce_index(index)
+            if idx is None:
                 return None
-            if idx < 0 or idx >= len(base):
+            resolved_index = self._normalise_sequence_index(idx, len(base))
+            if resolved_index is None:
                 return None
-            return base[idx]
+            return base[resolved_index]
         if isinstance(base, dict):
             key = str(index)
             return base.get(key, None)
@@ -753,6 +778,47 @@ class DataWeaveRuntime:
             return base[index]
         except (TypeError, KeyError, IndexError):
             return None
+
+    def _resolve_range_index(self, base: Any, start: Any, end: Any) -> Any:
+        if base is None:
+            return None
+        if not isinstance(base, (list, tuple, str)):
+            return None
+
+        start_index = self._coerce_index(start)
+        end_index = self._coerce_index(end)
+        if start_index is None or end_index is None:
+            return None
+
+        size = len(base)
+        resolved_start = self._normalise_sequence_index(start_index, size)
+        resolved_end = self._normalise_sequence_index(end_index, size)
+        if resolved_start is None or resolved_end is None:
+            return None
+
+        step = 1 if resolved_end >= resolved_start else -1
+        selected = [base[idx] for idx in range(resolved_start, resolved_end + step, step)]
+        if isinstance(base, str):
+            return "".join(selected)
+        return selected
+
+    @staticmethod
+    def _coerce_index(value: Any) -> Optional[int]:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _normalise_sequence_index(index: int, size: int) -> Optional[int]:
+        if size <= 0:
+            return None
+        resolved = index
+        if resolved < 0:
+            resolved = size + resolved
+        if resolved < 0 or resolved >= size:
+            return None
+        return resolved
 
     def _populate_context_from_header(
         self,
@@ -1314,6 +1380,50 @@ class DataWeaveRuntime:
         format_name = content_type_text.split(";", 1)[0].strip()
         return self._render_output(value, OutputDirective(content_type_text, format_name, dict(options)))
 
+    def _parse_temporal_literal(self, token: str) -> Any:
+        value = token.strip()
+        if not value:
+            return ""
+        if value.startswith("P"):
+            try:
+                return self._coerce_period(value)
+            except TypeError:
+                pass
+        datetime_patterns = ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S")
+        if "T" in value:
+            normalised = value
+            if normalised.endswith("Z"):
+                normalised = normalised[:-1] + "+00:00"
+            try:
+                return datetime.fromisoformat(normalised)
+            except ValueError:
+                for pattern in datetime_patterns:
+                    try:
+                        return datetime.strptime(value, pattern)
+                    except ValueError:
+                        continue
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+            try:
+                return date.fromisoformat(value)
+            except ValueError:
+                return value
+        if re.fullmatch(r"\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?(?:Z|[+-]\d{2}:\d{2})?", value):
+            time_value = value
+            if time_value.endswith("Z"):
+                time_value = time_value[:-1] + "+00:00"
+            try:
+                return time.fromisoformat(time_value)
+            except ValueError:
+                return value
+        if value == "Z":
+            return timezone.utc
+        if re.fullmatch(r"[+-]\d{2}:\d{2}", value):
+            sign = 1 if value[0] == "+" else -1
+            hours, minutes = value[1:].split(":")
+            offset = timedelta(hours=int(hours), minutes=int(minutes))
+            return timezone(sign * offset)
+        return value
+
     @staticmethod
     def _func_uuid() -> str:
         return str(uuid_lib.uuid4())
@@ -1642,12 +1752,6 @@ class DataWeaveRuntime:
         line: Optional[int] = None,
         column: Optional[int] = None,
     ) -> Any:
-        def is_period(value: Any) -> bool:
-            return isinstance(value, timedelta)
-
-        def ensure_datetime(value: datetime, delta: timedelta) -> datetime:
-            return value + delta
-
         if isinstance(left, (int, float, bool)) and isinstance(right, (int, float, bool)):
             left_num = float(left)
             right_num = float(right)
@@ -1659,28 +1763,14 @@ class DataWeaveRuntime:
             result_list.append(right)
             return result_list
 
-        if isinstance(left, (datetime, date)) and is_period(right):
-            if isinstance(left, datetime):
-                return ensure_datetime(left, right)
-            return (datetime.combine(left, time()) + right).date()
+        if isinstance(left, (datetime, date, time)) and self._is_period_value(right):
+            return self._add_temporal_and_period(left, right)
 
-        if isinstance(left, time) and is_period(right):
-            base = datetime.combine(date(1970, 1, 1), left)
-            result = (base + right).time()
-            return result
+        if self._is_period_value(left) and isinstance(right, (datetime, date, time)):
+            return self._add_temporal_and_period(right, left)
 
-        if is_period(left) and isinstance(right, datetime):
-            return ensure_datetime(right, left)
-
-        if is_period(left) and isinstance(right, date):
-            return (datetime.combine(right, time()) + left).date()
-
-        if is_period(left) and isinstance(right, time):
-            base = datetime.combine(date(1970, 1, 1), right)
-            return (left + base).time()
-
-        if isinstance(left, timedelta) and isinstance(right, timedelta):
-            return left + right
+        if self._is_period_value(left) and self._is_period_value(right):
+            return self._combine_period_values(left, right, operation="+")
 
         message = self._format_plus_error(left, right)
         raise DataWeaveEvaluationError(
@@ -1689,6 +1779,121 @@ class DataWeaveRuntime:
             column=column,
             length=1,
         )
+
+    def _func_binary_minus(
+        self,
+        left: Any,
+        right: Any,
+        *,
+        line: Optional[int] = None,
+        column: Optional[int] = None,
+    ) -> Any:
+        if isinstance(left, (int, float, bool)) and isinstance(right, (int, float, bool)):
+            left_num = float(left)
+            right_num = float(right)
+            result = left_num - right_num
+            return int(result) if result.is_integer() else result
+
+        if isinstance(left, (datetime, date, time)) and self._is_period_value(right):
+            return self._add_temporal_and_period(left, self._negate_period_value(right))
+
+        if self._is_period_value(left) and self._is_period_value(right):
+            return self._combine_period_values(left, right, operation="-")
+
+        message = self._format_minus_error(left, right)
+        raise DataWeaveEvaluationError(
+            message,
+            line=line,
+            column=column,
+            length=1,
+        )
+
+    @staticmethod
+    def _is_period_value(value: Any) -> bool:
+        return isinstance(value, (timedelta, builtins.DWPeriod))
+
+    @staticmethod
+    def _period_to_timedelta(value: Any) -> timedelta:
+        if isinstance(value, timedelta):
+            return value
+        if isinstance(value, builtins.DWPeriod):
+            return value.as_timedelta()
+        raise TypeError("Expected a Period value")
+
+    @staticmethod
+    def _negate_period_value(value: Any) -> Any:
+        if isinstance(value, timedelta):
+            return -value
+        if isinstance(value, builtins.DWPeriod):
+            return value.negate()
+        raise TypeError("Expected a Period value")
+
+    def _add_temporal_and_period(self, temporal: Any, period_value: Any) -> Any:
+        if isinstance(period_value, builtins.DWPeriod):
+            if isinstance(temporal, datetime):
+                return self._apply_dw_period_to_datetime(temporal, period_value)
+            if isinstance(temporal, date):
+                return self._apply_dw_period_to_date(temporal, period_value)
+            if isinstance(temporal, time):
+                return self._apply_dw_period_to_time(temporal, period_value)
+            raise TypeError("Unsupported temporal value")
+        delta = self._period_to_timedelta(period_value)
+        if isinstance(temporal, datetime):
+            return temporal + delta
+        if isinstance(temporal, date):
+            return (datetime.combine(temporal, time()) + delta).date()
+        if isinstance(temporal, time):
+            base = datetime.combine(date(1970, 1, 1), temporal)
+            return (base + delta).time()
+        raise TypeError("Unsupported temporal value")
+
+    def _apply_dw_period_to_datetime(self, value: datetime, period_value: builtins.DWPeriod) -> datetime:
+        result = value
+        total_months = period_value.total_months()
+        if total_months != 0:
+            shifted = builtins._add_months_to_date(result.date(), total_months)
+            result = result.replace(year=shifted.year, month=shifted.month, day=shifted.day)
+        delta = timedelta(
+            days=period_value.days if period_value.date_based else 0,
+            hours=period_value.hours if period_value.date_based else 0,
+            minutes=period_value.minutes if period_value.date_based else 0,
+            seconds=period_value.seconds if period_value.date_based else 0,
+        )
+        if period_value.date_based:
+            return result + delta
+        return result + period_value.as_timedelta()
+
+    def _apply_dw_period_to_date(self, value: date, period_value: builtins.DWPeriod) -> date:
+        result = datetime.combine(value, time())
+        adjusted = self._apply_dw_period_to_datetime(result, period_value)
+        return adjusted.date()
+
+    def _apply_dw_period_to_time(self, value: time, period_value: builtins.DWPeriod) -> time:
+        if period_value.total_months() != 0:
+            raise TypeError("Cannot add a year/month period to a Time value")
+        base = datetime.combine(date(1970, 1, 1), value)
+        adjusted = self._apply_dw_period_to_datetime(base, period_value)
+        return adjusted.time()
+
+    @staticmethod
+    def _combine_period_values(left: Any, right: Any, *, operation: str) -> Any:
+        if isinstance(left, builtins.DWPeriod) and isinstance(right, builtins.DWPeriod):
+            if left.date_based and right.date_based:
+                left_months = left.total_months()
+                right_months = right.total_months()
+                if math.isclose(left.days, 0.0) and math.isclose(right.days, 0.0):
+                    result = left_months + right_months if operation == "+" else left_months - right_months
+                    return int(result)
+            left_seconds = left.total_seconds()
+            right_seconds = right.total_seconds()
+            result_seconds = left_seconds + right_seconds if operation == "+" else left_seconds - right_seconds
+            return int(result_seconds) if float(result_seconds).is_integer() else result_seconds
+
+        left_delta = left if isinstance(left, timedelta) else left.as_timedelta()
+        right_delta = right if isinstance(right, timedelta) else right.as_timedelta()
+        result_delta = left_delta + right_delta if operation == "+" else left_delta - right_delta
+        total_seconds = result_delta.total_seconds()
+        return int(total_seconds) if total_seconds.is_integer() else total_seconds
 
     @staticmethod
     def _func_binary_times(left: Any, right: Any) -> Any:
@@ -1729,19 +1934,39 @@ class DataWeaveRuntime:
 
     def _func_infix_reduce(self, sequence: Any, function: Callable[..., Any]) -> Any:
         iterable = self._to_iterable(sequence)
-        accumulator = Missing
-        param_count = builtins.parameter_count(function)
-        for item in iterable:
-            if accumulator is Missing:
-                accumulator = builtins.invoke_lambda(function, item)
-            else:
-                if param_count and param_count > 1:
-                    accumulator = function(item, accumulator)
-                else:
-                    accumulator = function(item)
-        if accumulator is Missing:
-            return None
+        has_default, accumulator = self._reduce_default_accumulator(function)
+        if not iterable:
+            return accumulator if has_default else None
+        start_index = 0
+        if not has_default:
+            accumulator = iterable[0]
+            start_index = 1
+        for item in iterable[start_index:]:
+            accumulator = builtins.invoke_lambda(function, item, accumulator)
         return accumulator
+
+    def _reduce_default_accumulator(self, function: Callable[..., Any]) -> Tuple[bool, Any]:
+        parameters = getattr(function, "parameters", None)
+        if not parameters or len(parameters) < 2:
+            return False, Missing
+        default_expr = parameters[1].default
+        if default_expr is None:
+            return False, Missing
+        if isinstance(function, LambdaCallable):
+            default_ctx = EvaluationContext(
+                payload=function.payload,
+                variables=dict(function.closure_variables),
+                header=function.header,
+            )
+            return True, self._evaluate(default_expr, default_ctx)
+        if isinstance(function, DefinedFunction):
+            default_ctx = EvaluationContext(
+                payload=function.context.payload,
+                variables=dict(function.context.variables),
+                header=function.context.header,
+            )
+            return True, self._evaluate(default_expr, default_ctx)
+        return False, Missing
 
     def _func_infix_filter(self, sequence: Any, function: Callable[..., Any]) -> List[Any]:
         callable_function = self._prepare_sequence_callable(function)
@@ -2194,6 +2419,8 @@ class DataWeaveRuntime:
             return isinstance(value, Mapping)
         if lower == "binary":
             return isinstance(value, (bytes, bytearray))
+        if lower == "period":
+            return isinstance(value, (timedelta, builtins.DWPeriod))
         # Fallback for generic type variables (for example T, V, etc.)
         if len(spec) == 1 and spec.isupper():
             return True
@@ -2221,17 +2448,23 @@ class DataWeaveRuntime:
         if normalised == "number":
             return self._coerce_number(value)
         if normalised == "string":
-            return self._coerce_string(value)
+            return self._coerce_string(value, options)
         if normalised in {"boolean", "bool"}:
             return self._coerce_boolean(value)
         if normalised == "binary":
             return self._coerce_binary(value)
+        if normalised == "period":
+            return self._coerce_period(value)
         if normalised == "array":
             return self._coerce_array(value, type_spec.generics, options, ctx)
         if normalised == "object":
             return self._coerce_object(value, type_spec.generics, options, ctx)
-        if normalised == "date" or normalised == "datetime":
-            return self._coerce_string(value)
+        if normalised == "date":
+            return self._coerce_date(value)
+        if normalised == "datetime":
+            return self._coerce_datetime(value)
+        if normalised == "time":
+            return self._coerce_time(value)
         return value
 
     @staticmethod
@@ -2253,15 +2486,160 @@ class DataWeaveRuntime:
             return int(number) if number.is_integer() else number
         raise TypeError(f"Cannot coerce {type(value).__name__} to Number")
 
-    @staticmethod
-    def _coerce_string(value: Any) -> Optional[str]:
+    def _coerce_string(self, value: Any, options: Any = None) -> Optional[str]:
         if value is None:
             return None
+        format_pattern = self._extract_format_pattern(options)
+        if format_pattern and isinstance(value, (datetime, date, time)):
+            return self._format_temporal_as_string(value, format_pattern)
         if isinstance(value, str):
             return value
         if isinstance(value, bool):
             return "true" if value else "false"
         return str(value)
+
+    def _coerce_date(self, value: Any) -> date:
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        if isinstance(value, str):
+            parsed = self._parse_temporal_literal(value.strip())
+            if isinstance(parsed, datetime):
+                return parsed.date()
+            if isinstance(parsed, date):
+                return parsed
+        raise TypeError(f"Cannot coerce {type(value).__name__} to Date")
+
+    def _coerce_datetime(self, value: Any) -> datetime:
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, date):
+            return datetime.combine(value, time.min)
+        if isinstance(value, str):
+            parsed = self._parse_temporal_literal(value.strip())
+            if isinstance(parsed, datetime):
+                return parsed
+            if isinstance(parsed, date):
+                return datetime.combine(parsed, time.min)
+        raise TypeError(f"Cannot coerce {type(value).__name__} to DateTime")
+
+    def _coerce_time(self, value: Any) -> time:
+        if isinstance(value, time):
+            return value
+        if isinstance(value, datetime):
+            return value.timetz() if value.tzinfo is not None else value.time()
+        if isinstance(value, str):
+            parsed = self._parse_temporal_literal(value.strip())
+            if isinstance(parsed, time):
+                return parsed
+            if isinstance(parsed, datetime):
+                return parsed.timetz() if parsed.tzinfo is not None else parsed.time()
+        raise TypeError(f"Cannot coerce {type(value).__name__} to Time")
+
+    @staticmethod
+    def _extract_format_pattern(options: Any) -> Optional[str]:
+        if not isinstance(options, Mapping):
+            return None
+        raw_pattern = options.get("format")
+        if raw_pattern is None:
+            return None
+        return str(raw_pattern)
+
+    def _format_temporal_as_string(self, value: Any, pattern: str) -> str:
+        temporal_value = self._to_datetime_for_format(value)
+        result: List[str] = []
+        index = 0
+        in_literal = False
+        while index < len(pattern):
+            char = pattern[index]
+            if char == "'":
+                if index + 1 < len(pattern) and pattern[index + 1] == "'":
+                    result.append("'")
+                    index += 2
+                    continue
+                in_literal = not in_literal
+                index += 1
+                continue
+            if in_literal:
+                result.append(char)
+                index += 1
+                continue
+            end = index + 1
+            while end < len(pattern) and pattern[end] == char:
+                end += 1
+            token_length = end - index
+            rendered = self._render_temporal_token(temporal_value, char, token_length)
+            result.append(rendered)
+            index = end
+        return "".join(result)
+
+    @staticmethod
+    def _to_datetime_for_format(value: Any) -> datetime:
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, date):
+            return datetime.combine(value, time.min)
+        if isinstance(value, time):
+            return datetime.combine(date(1900, 1, 1), value)
+        raise TypeError(f"Cannot format {type(value).__name__} as temporal String")
+
+    @staticmethod
+    def _render_temporal_token(value: datetime, token_char: str, token_length: int) -> str:
+        if token_char in {"u", "y"}:
+            year = value.year
+            if token_length == 2:
+                return f"{year % 100:02d}"
+            return str(year).zfill(max(4, token_length))
+        if token_char == "M":
+            if token_length >= 4:
+                return value.strftime("%B")
+            if token_length == 3:
+                return value.strftime("%b")
+            if token_length == 2:
+                return f"{value.month:02d}"
+            return str(value.month)
+        if token_char == "d":
+            if token_length >= 2:
+                return f"{value.day:02d}"
+            return str(value.day)
+        if token_char == "H":
+            if token_length >= 2:
+                return f"{value.hour:02d}"
+            return str(value.hour)
+        if token_char == "h":
+            hour = value.hour % 12
+            if hour == 0:
+                hour = 12
+            if token_length >= 2:
+                return f"{hour:02d}"
+            return str(hour)
+        if token_char == "K":
+            hour = value.hour % 12
+            if token_length >= 2:
+                return f"{hour:02d}"
+            return str(hour)
+        if token_char == "k":
+            hour = value.hour if value.hour != 0 else 24
+            if token_length >= 2:
+                return f"{hour:02d}"
+            return str(hour)
+        if token_char == "m":
+            if token_length >= 2:
+                return f"{value.minute:02d}"
+            return str(value.minute)
+        if token_char == "s":
+            if token_length >= 2:
+                return f"{value.second:02d}"
+            return str(value.second)
+        if token_char == "S":
+            micros = f"{value.microsecond:06d}"
+            if token_length <= 6:
+                return micros[:token_length]
+            return micros + ("0" * (token_length - 6))
+        if token_char == "a":
+            return value.strftime("%p")
+        return token_char * token_length
 
     @staticmethod
     def _coerce_boolean(value: Any) -> Optional[bool]:
@@ -2289,6 +2667,44 @@ class DataWeaveRuntime:
         if isinstance(value, str):
             return value.encode("utf-8")
         raise TypeError(f"Cannot coerce {type(value).__name__} to Binary")
+
+    @staticmethod
+    def _coerce_period(value: Any) -> Any:
+        if value is None:
+            return builtins.builtin_period({})
+        if isinstance(value, (timedelta, builtins.DWPeriod)):
+            return value
+        if isinstance(value, Mapping):
+            if "years" in value or "months" in value:
+                return builtins.builtin_period(value)
+            return builtins.builtin_duration(value)
+        if isinstance(value, str):
+            token = value.strip().strip("|")
+            period_regex = re.fullmatch(
+                r"P(?:(?P<years>[-+]?\d+)Y)?(?:(?P<months>[-+]?\d+)M)?(?:(?P<days>[-+]?\d+)D)?",
+                token,
+            )
+            if period_regex:
+                return builtins.builtin_period(
+                    {
+                        "years": int(period_regex.group("years") or 0),
+                        "months": int(period_regex.group("months") or 0),
+                        "days": int(period_regex.group("days") or 0),
+                    }
+                )
+            duration_regex = re.fullmatch(
+                r"PT(?:(?P<hours>[-+]?\d+(?:\.\d+)?)H)?(?:(?P<minutes>[-+]?\d+(?:\.\d+)?)M)?(?:(?P<seconds>[-+]?\d+(?:\.\d+)?)S)?",
+                token,
+            )
+            if duration_regex:
+                return builtins.builtin_duration(
+                    {
+                        "hours": float(duration_regex.group("hours") or 0),
+                        "minutes": float(duration_regex.group("minutes") or 0),
+                        "seconds": float(duration_regex.group("seconds") or 0),
+                    }
+                )
+        raise TypeError(f"Cannot coerce {type(value).__name__} to Period")
 
     def _coerce_array(
         self,
@@ -2345,7 +2761,7 @@ class DataWeaveRuntime:
             return "Date"
         if isinstance(value, time):
             return "Time"
-        if isinstance(value, timedelta):
+        if isinstance(value, (timedelta, builtins.DWPeriod)):
             return "Period"
         return type(value).__name__
 
@@ -2438,6 +2854,7 @@ class DataWeaveRuntime:
             "(LocalDateTime, Period)",
             "(LocalTime, Period)",
             "(Number, Number)",
+            "(Period, Period)",
             "(Period, DateTime)",
             "(Period, LocalDateTime)",
             "(Period, Time)",
@@ -2447,6 +2864,26 @@ class DataWeaveRuntime:
         ]
         lines = [
             "You called the function '+' with these arguments:",
+            f"  1: {self._dw_type_name(left)} ({self._preview_value(left)})",
+            f"  2: {self._dw_type_name(right)} ({self._preview_value(right)})",
+            "",
+            "But it expects one of these combinations:",
+        ]
+        lines.extend(f"  {combo}" for combo in allowed)
+        return "\n".join(lines)
+
+    def _format_minus_error(self, left: Any, right: Any) -> str:
+        allowed = [
+            "(Date, Period)",
+            "(DateTime, Period)",
+            "(LocalDateTime, Period)",
+            "(LocalTime, Period)",
+            "(Number, Number)",
+            "(Period, Period)",
+            "(Time, Period)",
+        ]
+        lines = [
+            "You called the function '-' with these arguments:",
             f"  1: {self._dw_type_name(left)} ({self._preview_value(left)})",
             f"  2: {self._dw_type_name(right)} ({self._preview_value(right)})",
             "",

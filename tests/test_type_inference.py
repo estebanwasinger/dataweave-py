@@ -13,6 +13,7 @@ from dwpy.typesystem import (
     ObjectType,
     UnionType,
     union_types,
+    array_type,
     object_type,
 )
 
@@ -153,6 +154,15 @@ def test_payload_projection_preserves_field_type():
     assert inferred == BOOLEAN
 
 
+def test_array_payload_projection_infers_array_of_field_type():
+    payload_type = array_type(
+        object_type({"message": (STRING, False, False)}, is_open_flag=False)
+    )
+    inferred = infer_script_type("payload.message", payload_type=payload_type)
+    assert isinstance(inferred, ArrayType)
+    assert inferred.element == STRING
+
+
 @pytest.mark.parametrize(
     "script,expected",
     [
@@ -238,6 +248,18 @@ def test_range_filter_results_in_array_of_numbers():
     val_field = inferred.field_dict()["val"][0]
     assert isinstance(val_field, ArrayType)
     assert val_field.element == NUMBER
+
+
+def test_range_selector_over_array_preserves_array_type():
+    inferred = infer_script_type(
+        """
+        %dw 2.0
+        ---
+        (1 to 10)[-1 to 0]
+        """
+    )
+    assert isinstance(inferred, ArrayType)
+    assert inferred.element == NUMBER
 
 
 def test_group_by_preserves_value_shape():

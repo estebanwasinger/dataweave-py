@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import textwrap
+from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 import pytest
@@ -76,6 +77,38 @@ var summary = greeting ++ " WORLD"
     assert result == {
         "message": "HELLO WORLD",
     }
+
+
+def test_object_literal_duplicate_keys_are_preserved_in_json_output():
+    script = """%dw 2.0
+output application/json
+---
+{
+  a: 2,
+  a: 3
+}
+"""
+    runtime = DataWeaveRuntime()
+    result = runtime.execute(script, payload={})
+
+    assert result == '{"a":2,"a":3}'
+
+
+def test_nested_object_literal_duplicate_keys_are_preserved_in_json_output():
+    script = """%dw 2.0
+output application/json
+---
+{
+  outer: {
+    a: 2,
+    a: 3
+  }
+}
+"""
+    runtime = DataWeaveRuntime()
+    result = runtime.execute(script, payload={})
+
+    assert result == '{"outer":{"a":2,"a":3}}'
 
 
 def test_do_block_inside_function_returns_local_value():
@@ -197,6 +230,61 @@ var captured = (vars.requestTime default now())
     assert fallback["generatedAt"].endswith("Z")
 
 
+def test_now_coerced_as_date_renders_date_only():
+    script = """%dw 2.0
+output application/json
+---
+now() as Date
+"""
+    runtime = DataWeaveRuntime()
+    before = datetime.now(timezone.utc).date().isoformat()
+    result = json.loads(runtime.execute(script, payload={}))
+    after = datetime.now(timezone.utc).date().isoformat()
+    assert result in {before, after}
+
+
+def test_temporal_string_coercion_honors_format_option():
+    script = """%dw 2.0
+output application/json
+---
+{
+  formattedDate: |2020-10-01T23:57:59| as String {format: "uuuu-MM-dd"},
+  formattedTime: |2020-10-01T23:57:59| as String {format: "KK:mm:ss a"},
+  formattedDateTime: |2020-10-01T23:57:59| as String {format: "KK:mm:ss a, MMMM dd, uuuu"}
+}
+"""
+    runtime = DataWeaveRuntime()
+    result = json.loads(runtime.execute(script, payload={}))
+
+    assert result == {
+        "formattedDate": "2020-10-01",
+        "formattedTime": "11:57:59 PM",
+        "formattedDateTime": "11:57:59 PM, October 01, 2020",
+    }
+
+
+def test_date_arithmetic_supports_period_pipe_literals():
+    script = """%dw 2.0
+output application/json
+var base = now() as Date
+---
+{
+  today: base,
+  tomorrow: base + |P1D|,
+  nextWeek: base + |P7D|
+}
+"""
+    runtime = DataWeaveRuntime()
+    result = json.loads(runtime.execute(script, payload={}))
+
+    today = date.fromisoformat(result["today"])
+    tomorrow = date.fromisoformat(result["tomorrow"])
+    next_week = date.fromisoformat(result["nextWeek"])
+
+    assert tomorrow == (today + timedelta(days=1))
+    assert next_week == (today + timedelta(days=7))
+
+
 def test_payload_accepts_json_string_when_format_specified():
     script = """%dw 2.0
 output application/python
@@ -314,6 +402,124 @@ output application/csv separator=";" header=true
     assert "Jane;30" in csv_data
 
 
+def test_output_plain_text_returns_string_verbatim():
+    script = """%dw 2.0
+output text/plain
+---
+"hello"
+"""
+    runtime = DataWeaveRuntime()
+
+    assert runtime.execute(script, payload={}) == "hello"
+
+
+def test_output_plain_text_rejects_non_string_values():
+    script = """%dw 2.0
+output text/plain
+---
+{ greeting: "hello" }
+"""
+    runtime = DataWeaveRuntime()
+
+    with pytest.raises(DataWeaveEvaluationError) as exc:
+        runtime.execute(script, payload={})
+
+    assert "Plain text writer expects a string value" in str(exc.value)
+
+
+def test_output_markdown_from_array_of_objects():
+    script = """%dw 2.0
+output text/markdown
+---
+[
+  { name: "Jane", age: 30 },
+  { name: "Bob", age: 25 }
+]
+"""
+    runtime = DataWeaveRuntime()
+    result = runtime.execute(script, payload={})
+
+    assert "| name   | age   |" in result
+    assert "| Jane   | 30    |" in result
+    assert "| Bob    | 25    |" in result
+
+
+def test_output_markdown_from_single_object():
+    script = """%dw 2.0
+output text/markdown
+---
+{ name: "Jane", age: 30 }
+"""
+    runtime = DataWeaveRuntime()
+    result = runtime.execute(script, payload={})
+
+    assert "| name   | age   |" in result
+    assert "| Jane   | 30    |" in result
+
+
+def test_output_markdown_rejects_header_false():
+    script = """%dw 2.0
+output text/markdown header=false
+---
+[
+  { name: "Jane", age: 30 }
+]
+"""
+    runtime = DataWeaveRuntime()
+
+    with pytest.raises(DataWeaveEvaluationError) as exc:
+        runtime.execute(script, payload={})
+
+    assert "Markdown writer requires header=true" in str(exc.value)
+
+
+def test_output_markdown_rejects_scalar_values():
+    script = """%dw 2.0
+output text/markdown
+---
+"hello"
+"""
+    runtime = DataWeaveRuntime()
+
+    with pytest.raises(DataWeaveEvaluationError) as exc:
+        runtime.execute(script, payload={})
+
+    assert "Markdown writer expects a list or dict value" in str(exc.value)
+
+
+def test_write_supports_plain_and_markdown_formats():
+    script = """%dw 2.0
+output application/python
+import * from dw::Core
+---
+{
+  plain: write("hello", "text/plain"),
+  markdown: write([{name: "Jane", age: 30}], "text/markdown")
+}
+"""
+    runtime = PythonResultRuntime()
+    result = runtime.execute(script, payload={})
+
+    assert result["plain"] == "hello"
+    assert "| name   | age   |" in result["markdown"]
+    assert "| Jane   | 30    |" in result["markdown"]
+
+
+def test_write_plain_rejects_non_string_values():
+    script = """%dw 2.0
+output application/python
+import * from dw::Core
+---
+write(1, "text/plain")
+"""
+    runtime = PythonResultRuntime()
+
+    with pytest.raises(DataWeaveEvaluationError) as exc:
+        runtime.execute(script, payload={})
+
+    assert "Plain text writer expects a string value" in str(exc.value)
+
+
 def test_payload_csv_parsing_with_header():
     script = """%dw 2.0
 output application/python
@@ -360,6 +566,57 @@ payload[0].city
     )
 
     assert result == "Lisbon"
+
+
+def test_payload_markdown_parsing_with_header():
+    script = """%dw 2.0
+output application/python
+---
+payload map ((item) -> item.city)
+"""
+    markdown_input = textwrap.dedent(
+        """\
+        | name | city   |
+        |:-----|:-------|
+        | Ana  | London |
+        | Bob  | Berlin |
+        """
+    ).strip()
+    runtime = PythonResultRuntime()
+
+    result = runtime.execute(
+        script,
+        payload=markdown_input,
+        payload_format="text/markdown",
+    )
+
+    assert result == ["London", "Berlin"]
+
+
+def test_payload_markdown_parsing_without_header_returns_rows():
+    script = """%dw 2.0
+output application/python
+---
+payload[0][1]
+"""
+    markdown_input = textwrap.dedent(
+        """\
+        | name | city   |
+        |:-----|:-------|
+        | Ana  | London |
+        | Bob  | Berlin |
+        """
+    ).strip()
+    runtime = PythonResultRuntime()
+
+    result = runtime.execute(
+        script,
+        payload=markdown_input,
+        payload_format="markdown",
+        payload_format_options={"header": False},
+    )
+
+    assert result == "London"
 
 
 def test_payload_xml_parsing_with_wildcard_selection():
@@ -511,6 +768,95 @@ output application/json
     assert result["total"] == pytest.approx(40.99, rel=1e-9)
 
 
+def test_reduce_uses_default_accumulator_for_recursive_array_concat():
+    script = """%dw 2.0
+output application/json
+fun traverse(obj) = [{"name" : obj.name}] ++ (obj.children reduce ((value, accumulator = [] ) -> accumulator ++ traverse(value)))
+---
+traverse(payload)
+"""
+    payload = {
+        "name": "Some Name",
+        "children": [
+            {
+                "name": "Inner",
+                "children": [],
+            }
+        ],
+    }
+
+    result = DataWeaveRuntime().execute(script, payload=payload)
+
+    assert json.loads(result) == [
+        {"name": "Some Name"},
+        {"name": "Inner"},
+    ]
+
+
+def test_reduce_without_default_accumulator_starts_from_first_item():
+    script = """%dw 2.0
+output application/json
+---
+[2, 3, 3] reduce ((item, acc) -> acc * item)
+"""
+
+    result = DataWeaveRuntime().execute(script, payload={})
+
+    assert json.loads(result) == 18
+
+
+def test_defaulted_function_parameter_with_joined_recursive_reduce():
+    script = """%dw 2.0
+output application/json
+fun hola(obj, level = 0) = [{"account" : (0 to level map "-") joinBy "" ++ " " ++ obj.name, }] ++ (obj.children reduce ((value, accumulator = [] ) -> accumulator ++ hola(value, level + 1)))
+---
+(hola(payload, 0) map [$.account,$$]) reduce ((item, accumulator = "") -> accumulator ++ item[0] ++ " - ID:$(item[1])" ++"\n")
+"""
+    payload = {
+        "name": "Some Name",
+        "children": [
+            {
+                "name": "Inner",
+                "children": [],
+            }
+        ],
+    }
+
+    result = DataWeaveRuntime().execute(script, payload=payload)
+
+    assert json.loads(result) == "- Some Name - ID:0\n-- Inner - ID:1\n"
+
+
+def test_overload_dispatch_uses_arity_before_defaulted_function_fallback():
+    script = """%dw 2.0
+output text/plain
+fun hola(obj) = "hello!"
+fun hola(obj, level = 0) = "hi"
+
+---
+hola("",0)
+"""
+
+    result = DataWeaveRuntime().execute(script, payload={})
+
+    assert result == "hi"
+
+
+def test_overload_dispatch_uses_type_annotations_with_defaulted_parameters():
+    script = """%dw 2.0
+output text/plain
+fun hola(obj: String) = "hello!"
+fun hola(obj: Number, level = 0) = "hi"
+
+---
+hola("") ++ hola(1)
+"""
+
+    result = DataWeaveRuntime().execute(script, payload={})
+
+    assert result == "hello!hi"
+
+
 def test_map_over_items_for_projection():
     script = """%dw 2.0
 output application/json
@@ -654,6 +1000,50 @@ var x = payload.values[0]
     assert result["id"] == "IDX-1"
     assert result["status"] == "CONFIRMED"
     assert result["values"] == [4, 6]
+
+
+def test_quoted_dot_selector_matches_bracket_selector():
+    script = """%dw 2.0
+output application/json
+---
+{
+  dot: payload."value 2",
+  bracket: payload["value 2"]
+}
+"""
+    runtime = PythonResultRuntime()
+    result = runtime.execute(script, payload={"value 2": "s"})
+
+    assert result["dot"] == "s"
+    assert result["dot"] == result["bracket"]
+
+
+def test_array_property_selector_keeps_single_match_as_array():
+    script = """%dw 2.0
+output application/json
+---
+payload.message
+"""
+    payload = [{"message": "Hello, World!"}]
+
+    python_runtime = PythonResultRuntime()
+    python_result = python_runtime.execute(script, payload=payload)
+    assert python_result == ["Hello, World!"]
+
+    json_runtime = DataWeaveRuntime()
+    rendered = json_runtime.execute(script, payload=payload)
+    assert json.loads(rendered) == ["Hello, World!"]
+
+
+def test_null_safe_quoted_dot_selector_with_default():
+    script = """%dw 2.0
+---
+payload.user?."value 2" default "UNKNOWN"
+"""
+    runtime = PythonResultRuntime()
+
+    assert runtime.execute(script, payload={"user": {"value 2": "s"}}) == "s"
+    assert runtime.execute(script, payload={}) == "UNKNOWN"
 
 
 def test_null_safe_selectors_fall_back_to_default():
@@ -837,6 +1227,37 @@ def test_numeric_range_with_legacy_lambda_syntax():
     assert result == [2, 4, 6, 8, 10]
 
 
+def test_range_selector_supports_reverse_from_end_indexes():
+    runtime = PythonResultRuntime()
+    result = runtime.execute(
+        "%dw 2.0\noutput application/json\n---\n(1 to 10)[-1 to 0]",
+        {}
+    )
+    assert result == [10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
+
+
+def test_range_selector_on_string_supports_reverse_and_negative_end():
+    runtime = PythonResultRuntime()
+    result = runtime.execute(
+        """%dw 2.0
+output application/json
+var myVar = "Hello World!"
+---
+{
+  indices2to6: myVar[2 to 6],
+  indicesFromEnd: myVar[6 to -1],
+  reversal: myVar[11 to -0]
+}
+""",
+        {}
+    )
+    assert result == {
+        "indices2to6": "llo W",
+        "indicesFromEnd": "World!",
+        "reversal": "!dlroW olleH",
+    }
+
+
 def test_import_star_from_strings_module():
     runtime = PythonResultRuntime()
     script = """%dw 2.0
@@ -964,6 +1385,50 @@ toNumber("3") + 5
     assert result == 8
 
 
+def test_negative_number_literals_inside_nested_arrays():
+    runtime = PythonResultRuntime()
+    script = """%dw 2.0
+output application/json
+---
+[
+  [
+    "Jan-25",
+    -51894
+  ],
+  [
+    "Feb-25",
+    -143932
+  ],
+  [
+    "Mar-25",
+    329745
+  ],
+  [
+    "Apr-25",
+    126467
+  ]
+]
+"""
+    result = runtime.execute(script, {})
+    assert result == [
+        ["Jan-25", -51894],
+        ["Feb-25", -143932],
+        ["Mar-25", 329745],
+        ["Apr-25", 126467],
+    ]
+
+
+def test_unary_minus_applies_to_selector_expression():
+    runtime = PythonResultRuntime()
+    script = """%dw 2.0
+output application/json
+---
+-payload.amount
+"""
+    result = runtime.execute(script, {"amount": 7})
+    assert result == -7
+
+
 def test_plus_operator_type_error_message():
     runtime = DataWeaveRuntime()
     script = """%dw 2.0
@@ -978,6 +1443,25 @@ output text/plain
     assert "You called the function '+'" in message
     assert "(Number, Number)" in message
     assert "Location:" in message
+
+
+def test_unresolved_infix_reference_reports_operator_location():
+    runtime = DataWeaveRuntime()
+    script = """%dw 2.0
+output application/json
+---
+{
+  message: payload.message,
+  uppercased: upper(payload.message)
+} then {}
+"""
+    with pytest.raises(DataWeaveEvaluationError) as exc:
+        runtime.execute(script, {"message": "hello"})
+
+    message = str(exc.value)
+    assert "Unable to resolve reference of `then`." in message
+    assert "7| } then {}" in message
+    assert "main (line: 7, column: 3)" in message
 
 
 def test_plus_operator_appends_arrays_as_values():

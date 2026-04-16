@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional, Sequence, Tuple
+from typing import Any, List, Optional, Sequence, Tuple
 
 
 class ParseError(ValueError):
@@ -138,6 +138,11 @@ class Placeholder(Expression):
 
 @dataclass
 class StringLiteral(Expression):
+    value: str
+
+
+@dataclass
+class TemporalLiteral(Expression):
     value: str
 
 
@@ -520,7 +525,7 @@ class Parser:
             token_value = token[1]
             if token_type == "IDENT" and token_value == "as":
                 self.advance()
-                target_type = self._parse_type_spec()
+                target_type = self._parse_type_spec(consume_metadata=False)
                 options_expr: Optional[Expression] = None
                 if self.current()[0] == "LBRACE":
                     options_expr = self.parse_expression()
@@ -537,14 +542,23 @@ class Parser:
                     self.advance()
                     name_token = self.expect("IDENT")
                     attribute_name = f"@{name_token[1]}"  # type: ignore[index]
+                elif attr_token[0] == "STRING":
+                    self.advance()
+                    attribute_name = _unescape_string(attr_token[1] or "")
                 else:
                     name_token = self.expect("IDENT")
                     attribute_name = name_token[1]  # type: ignore[index]
                 expr = PropertyAccess(value=expr, attribute=attribute_name)
             elif token_type == "SAFE_DOT":
                 self.advance()
-                attr_token = self.expect("IDENT")
-                expr = PropertyAccess(value=expr, attribute=attr_token[1], null_safe=True)  # type: ignore[index]
+                attr_token = self.current()
+                if attr_token[0] == "STRING":
+                    self.advance()
+                    attribute_name = _unescape_string(attr_token[1] or "")
+                else:
+                    ident_token = self.expect("IDENT")
+                    attribute_name = ident_token[1] or ""  # type: ignore[index]
+                expr = PropertyAccess(value=expr, attribute=attribute_name, null_safe=True)
             elif token_type == "LPAREN":
                 expr = self.parse_call(expr)
             elif token_type == "IDENT" and token_value not in RESERVED_INFIX_STOP:
@@ -556,7 +570,11 @@ class Parser:
                     argument = self.parse_postfix()
                 target_name = INFIX_SPECIAL.get(operator_name, operator_name)
                 expr = FunctionCall(
-                    function=Identifier(name=target_name),
+                    function=Identifier(
+                        name=target_name,
+                        line=token[2],
+                        column=token[3],
+                    ),
                     arguments=[expr, argument],
                 )
             elif token_type == "LBRACKET":
@@ -586,14 +604,23 @@ class Parser:
                     self.advance()
                     name_token = self.expect("IDENT")
                     attribute_name = f"@{name_token[1]}"  # type: ignore[index]
+                elif attr_token[0] == "STRING":
+                    self.advance()
+                    attribute_name = _unescape_string(attr_token[1] or "")
                 else:
                     name_token = self.expect("IDENT")
                     attribute_name = name_token[1]  # type: ignore[index]
                 expr = PropertyAccess(value=expr, attribute=attribute_name)
             elif token_type == "SAFE_DOT":
                 self.advance()
-                attr_token = self.expect("IDENT")
-                expr = PropertyAccess(value=expr, attribute=attr_token[1], null_safe=True)  # type: ignore[index]
+                attr_token = self.current()
+                if attr_token[0] == "STRING":
+                    self.advance()
+                    attribute_name = _unescape_string(attr_token[1] or "")
+                else:
+                    ident_token = self.expect("IDENT")
+                    attribute_name = ident_token[1] or ""  # type: ignore[index]
+                expr = PropertyAccess(value=expr, attribute=attribute_name, null_safe=True)
             elif token_type == "LPAREN":
                 expr = self.parse_call(expr)
             elif token_type == "LBRACKET":
@@ -605,7 +632,7 @@ class Parser:
                 break
         return expr
 
-    def _parse_type_spec(self) -> TypeSpec:
+    def _parse_type_spec(self, consume_metadata: bool = True) -> TypeSpec:
         def parse_primary() -> TypeSpec:
             token = self.current()
             ttype = token[0]
@@ -617,7 +644,7 @@ class Parser:
                 if self.current()[0] == "LT":
                     self.advance()
                     while True:
-                        generics.append(self._parse_type_spec())
+                        generics.append(self._parse_type_spec(consume_metadata=consume_metadata))
                         if self.current()[0] == "COMMA":
                             self.advance()
                             continue
@@ -625,7 +652,7 @@ class Parser:
                         break
                 ref = ReferenceTypeSpec(name=name, generics=generics)
                 # Skip metadata blocks after type references (e.g., String { format: \"...\" })
-                if self.current()[0] == "LBRACE":
+                if consume_metadata and self.current()[0] == "LBRACE":
                     depth = 0
                     while not self.at_end():
                         curr = self.current()[0]
@@ -780,6 +807,17 @@ class Parser:
         token = self.current()
         token_type = token[0]
         value = token[1]
+        if token_type == "MINUS":
+            self.advance()
+            operand = self.parse_postfix_no_infix()
+            return FunctionCall(
+                function=Identifier(
+                    name="_binary_minus",
+                    line=token[2],
+                    column=token[3],
+                ),
+                arguments=[NumberLiteral(value=0.0), operand],
+            )
         if token_type == "IDENT" and value == "do":
             return self.parse_do_expression()
         if token_type == "IDENT" and value == "match":
@@ -799,6 +837,8 @@ class Parser:
             if "$(" in unescaped:
                 return self._parse_interpolated_string(unescaped)
             return StringLiteral(value=unescaped)
+        if token_type == "PIPE":
+            return self._parse_temporal_literal()
         if token_type == "NUMBER":
             self.advance()
             return NumberLiteral(value=float(value))  # type: ignore[arg-type]
@@ -826,6 +866,33 @@ class Parser:
         raise ParseError(
             f"Unexpected token {token_type} at line {token[2]}, column {token[3]}"
         )
+
+    def _parse_temporal_literal(self) -> Expression:
+        opening = self.expect("PIPE")
+        closing_index = self.index
+        while closing_index < len(self.tokens):
+            token = self.tokens[closing_index]
+            if token[0] == "PIPE":
+                break
+            if token[0] == "EOF":
+                raise ParseError(
+                    "Unterminated temporal literal",
+                    opening[2],
+                    opening[3],
+                )
+            closing_index += 1
+
+        if closing_index >= len(self.tokens) or self.tokens[closing_index][0] != "PIPE":
+            raise ParseError(
+                "Unterminated temporal literal",
+                opening[2],
+                opening[3],
+            )
+
+        closing = self.tokens[closing_index]
+        inner = self.source[opening[5] : closing[4]]
+        self.index = closing_index + 1
+        return TemporalLiteral(value=inner.strip())
 
     def parse_do_expression(self) -> Expression:
         do_token = self.current()
@@ -886,6 +953,8 @@ class Parser:
                 if self.match("RBRACE"):
                     break
                 self.expect("COMMA")
+                if self.match("RBRACE"):
+                    break
         return ObjectLiteral(fields=fields)
 
     def parse_list(self) -> Expression:
@@ -1270,8 +1339,10 @@ def _parse_header(header_source: str) -> Header:
         if line.startswith("fun "):
             function_source = line[len("fun ") :].strip()
             lines_to_advance = 1
-            if "=" in function_source:
-                signature_part, body_part = function_source.split("=", 1)
+            body_delimiter = _find_top_level_char(function_source, "=")
+            if body_delimiter != -1:
+                signature_part = function_source[:body_delimiter]
+                body_part = function_source[body_delimiter + 1 :]
                 body_source = body_part.strip()
                 if _needs_multiline_expression(body_source):
                     body_source, lines_to_advance = _read_multiline_expression(idx, body_source)
@@ -1296,9 +1367,11 @@ def _parse_header(header_source: str) -> Header:
 
 
 def _parse_header_function(source: str, line_no: int) -> FunctionDeclaration:
-    if "=" not in source:
+    body_delimiter = _find_top_level_char(source, "=")
+    if body_delimiter == -1:
         raise ParseError(f"Invalid function declaration at header line {line_no}", line_no, 1)
-    signature_part, body_part = source.split("=", 1)
+    signature_part = source[:body_delimiter]
+    body_part = source[body_delimiter + 1 :]
     signature_part = signature_part.strip()
     body_part = body_part.strip()
     if not body_part:

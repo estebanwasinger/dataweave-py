@@ -284,6 +284,8 @@ class TypeInferencer:
             return self._infer_property(base_type, expr.attribute)
         if isinstance(expr, parser.IndexAccess):
             base_type = self._infer_expression(expr.value, ctx)
+            if self._is_range_selector(expr.index):
+                return self._infer_range_index(base_type)
             index_type = self._infer_expression(expr.index, ctx)
             return self._infer_index(base_type, index_type)
         if isinstance(expr, parser.FunctionCall):
@@ -340,6 +342,9 @@ class TypeInferencer:
         return array_type(element_type)
 
     def _infer_property(self, base_type: DWType, attribute: str) -> DWType:
+        if isinstance(base_type, ArrayType):
+            element_property_type = self._infer_property(base_type.element, attribute)
+            return array_type(element_property_type)
         if isinstance(base_type, ObjectType):
             field_info = base_type.get(attribute)
             if field_info is not None:
@@ -374,6 +379,28 @@ class TypeInferencer:
                 return union_types(*all_field_types)
             return ANY if base_type.open else NULL
         return ANY
+
+    def _infer_range_index(self, base_type: DWType) -> DWType:
+        if isinstance(base_type, ArrayType):
+            return base_type
+        if base_type == STRING:
+            return STRING
+        if isinstance(base_type, UnionType):
+            inferred = [self._infer_range_index(option) for option in base_type.options]
+            return union_types(*inferred)
+        if isinstance(base_type, IntersectionType):
+            inferred = [self._infer_range_index(option) for option in base_type.options]
+            return intersection_types(*inferred)
+        return ANY
+
+    @staticmethod
+    def _is_range_selector(index_expr: parser.Expression) -> bool:
+        return (
+            isinstance(index_expr, parser.FunctionCall)
+            and isinstance(index_expr.function, parser.Identifier)
+            and index_expr.function.name == "_infix_to"
+            and len(index_expr.arguments) == 2
+        )
 
     def _infer_function_call(self, expr: parser.FunctionCall, ctx: TypeInferenceContext) -> DWType:
         if isinstance(expr.function, parser.Identifier):

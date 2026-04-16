@@ -3,10 +3,14 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import date, datetime, time, timedelta
 from typing import Any, Callable, Dict, Optional
 import xml.etree.ElementTree as ET
+
+from tabulate import tabulate
 
 
 class FormatError(ValueError):
@@ -23,6 +27,25 @@ class XMLNodeList(list):
 
 class XMLNodeDict(dict):
     """Dictionary wrapper used to mark XML element nodes."""
+
+
+class DWObject(dict):
+    """Dictionary-like object that preserves duplicate key entries."""
+
+    def __init__(self, entries: Optional[list[tuple[str, Any]]] = None) -> None:
+        super().__init__()
+        self._entries: list[tuple[str, Any]] = []
+        if entries:
+            for key, value in entries:
+                self.add(key, value)
+
+    def add(self, key: str, value: Any) -> None:
+        normalized_key = str(key)
+        self._entries.append((normalized_key, value))
+        super().__setitem__(normalized_key, value)
+
+    def items(self):  # type: ignore[override]
+        return list(self._entries)
 
 
 
@@ -116,6 +139,24 @@ def _register_builtin_formats() -> None:
     )
     FormatRegistry.register(
         FormatDefinition(
+            id="plain",
+            mime_type="text/plain",
+            reader=None,
+            writer=_plain_writer,
+        ),
+        aliases=["plain"],
+    )
+    FormatRegistry.register(
+        FormatDefinition(
+            id="markdown",
+            mime_type="text/markdown",
+            reader=_markdown_reader,
+            writer=_markdown_writer,
+        ),
+        aliases=["markdown", "md"],
+    )
+    FormatRegistry.register(
+        FormatDefinition(
             id="xml",
             mime_type="application/xml",
             reader=_xml_reader,
@@ -159,6 +200,37 @@ def _json_writer(value: Any, options: Dict[str, Any]) -> str:
     return encoder.encode(value)
 
 
+def _format_timedelta_iso(value: timedelta) -> str:
+    total_seconds = value.total_seconds()
+    if total_seconds == 0:
+        return "PT0S"
+    sign = -1 if total_seconds < 0 else 1
+    remaining = abs(total_seconds)
+    hours = int(remaining // 3600)
+    remaining -= hours * 3600
+    minutes = int(remaining // 60)
+    remaining -= minutes * 60
+    seconds = remaining
+    if sign < 0:
+        if hours:
+            hours = -hours
+        if minutes:
+            minutes = -minutes
+        if seconds:
+            seconds = -seconds
+    parts: list[str] = []
+    if hours:
+        parts.append(f"{hours}H")
+    if minutes:
+        parts.append(f"{minutes}M")
+    if seconds or not parts:
+        if float(seconds).is_integer():
+            parts.append(f"{int(seconds)}S")
+        else:
+            parts.append(f"{seconds}S")
+    return "PT" + "".join(parts)
+
+
 class _JSONEncoder:
     def __init__(self, indent: Optional[int], ensure_ascii: bool, sort_keys: bool) -> None:
         self.indent = indent if indent is not None and indent >= 0 else None
@@ -176,7 +248,8 @@ class _JSONEncoder:
             return self._encode_array(value, level)
         if isinstance(value, (str, int, float, bool)) or value is None:
             return json.dumps(value, ensure_ascii=self.ensure_ascii)
-        return json.dumps(value, ensure_ascii=self.ensure_ascii)
+        normalised = self._normalize_value(value)
+        return json.dumps(normalised, ensure_ascii=self.ensure_ascii)
 
     def _encode_object(self, obj: Mapping[str, Any], level: int) -> str:
         if not obj:
@@ -273,6 +346,16 @@ class _JSONEncoder:
         return "[" + newline + (",\n".join(parts)) + newline + closing_pad + "]"
 
     def _normalize_value(self, value: Any) -> Any:
+        if hasattr(value, "to_iso8601") and callable(getattr(value, "to_iso8601")):
+            return value.to_iso8601()
+        if isinstance(value, datetime):
+            return value.isoformat().replace("+00:00", "Z")
+        if isinstance(value, date):
+            return value.isoformat()
+        if isinstance(value, time):
+            return value.isoformat().replace("+00:00", "Z")
+        if isinstance(value, timedelta):
+            return _format_timedelta_iso(value)
         if isinstance(value, XMLNodeDict):
             text_value = None
             normalized_children: Dict[str, Any] = {}
@@ -292,6 +375,11 @@ class _JSONEncoder:
             return [self._normalize_value(item) for item in value]
         if isinstance(value, list):
             return [self._normalize_value(item) for item in value]
+        if isinstance(value, DWObject):
+            normalized = DWObject()
+            for key, val in value.items():
+                normalized.add(key, self._normalize_value(val))
+            return normalized
         if isinstance(value, Mapping):
             return {key: self._normalize_value(val) for key, val in value.items()}
         return value
@@ -310,6 +398,77 @@ def _csv_reader(value: Any, options: Dict[str, Any]) -> Any:
         return [dict(row) for row in reader]
     reader = csv.reader(stream, delimiter=delimiter, quotechar=quote)
     return [row for row in reader]
+
+
+def _markdown_reader(value: Any, options: Dict[str, Any]) -> Any:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, Mapping):
+        return value
+    text = _ensure_text(value, options).strip()
+    if not text:
+        return []
+    row_lines = [line for line in text.splitlines() if line.strip()]
+    parsed_rows = [_parse_markdown_row(line) for line in row_lines if "|" in line]
+    if len(parsed_rows) < 2:
+        raise FormatError("Markdown reader expects a header row and a separator row")
+    headers = parsed_rows[0]
+    separator = parsed_rows[1]
+    if not headers:
+        raise FormatError("Markdown reader requires at least one column")
+    if len(separator) != len(headers) or not all(_is_markdown_separator_cell(cell) for cell in separator):
+        raise FormatError("Markdown reader expects a valid separator row after the header")
+    data_rows = parsed_rows[2:]
+    if _to_bool(options.get("header", True)):
+        return [_markdown_cells_to_dict(headers, row) for row in data_rows]
+    return [_markdown_cells_to_row(headers, row) for row in data_rows]
+
+
+def _parse_markdown_row(line: str) -> list[str]:
+    row = line.strip()
+    if row.startswith("|"):
+        row = row[1:]
+    if row.endswith("|"):
+        row = row[:-1]
+    cells: list[str] = []
+    current: list[str] = []
+    idx = 0
+    while idx < len(row):
+        char = row[idx]
+        next_char = row[idx + 1] if idx + 1 < len(row) else ""
+        if char == "\\" and next_char == "|":
+            current.append("|")
+            idx += 2
+            continue
+        if char == "|":
+            cells.append(_decode_markdown_cell("".join(current)))
+            current = []
+            idx += 1
+            continue
+        current.append(char)
+        idx += 1
+    cells.append(_decode_markdown_cell("".join(current)))
+    return cells
+
+
+def _decode_markdown_cell(cell: str) -> str:
+    return cell.strip().replace("<br>", "\n")
+
+
+def _is_markdown_separator_cell(cell: str) -> bool:
+    candidate = cell.strip().replace(" ", "")
+    return bool(re.fullmatch(r":?-{3,}:?", candidate))
+
+
+def _markdown_cells_to_dict(headers: list[str], row: list[str]) -> dict[str, str]:
+    normalized = _markdown_cells_to_row(headers, row)
+    return {headers[index]: normalized[index] for index in range(len(headers))}
+
+
+def _markdown_cells_to_row(headers: list[str], row: list[str]) -> list[str]:
+    if len(row) >= len(headers):
+        return row[: len(headers)]
+    return row + [""] * (len(headers) - len(row))
 
 
 def _csv_writer(value: Any, options: Dict[str, Any]) -> str:
@@ -355,6 +514,95 @@ def _csv_writer(value: Any, options: Dict[str, Any]) -> str:
             else:
                 writer.writerow([row])
     return output.getvalue()
+
+
+def _plain_writer(value: Any, options: Dict[str, Any]) -> str:
+    del options
+    if not isinstance(value, str):
+        raise FormatError("Plain text writer expects a string value")
+    return value
+
+
+def _markdown_writer(value: Any, options: Dict[str, Any]) -> str:
+    if not _to_bool(options.get("header", True)):
+        raise FormatError("Markdown writer requires header=true")
+    rows = value
+    if isinstance(value, dict):
+        rows = [value]
+    if not isinstance(rows, list):
+        raise FormatError("Markdown writer expects a list or dict value")
+    if not rows:
+        return ""
+    if isinstance(rows[0], Mapping):
+        return _markdown_table_from_mapping_rows(rows, options)
+    return _markdown_table_from_sequence_rows(rows)
+
+
+def _markdown_table_from_mapping_rows(rows: list[Any], options: Dict[str, Any]) -> str:
+    if not all(isinstance(row, Mapping) for row in rows):
+        raise FormatError(
+            "Markdown writer expects all rows to be dictionaries when the first row is a dictionary"
+        )
+    fieldnames = options.get("columns")
+    if fieldnames is None:
+        first_row = rows[0]
+        fieldnames = list(first_row.keys())
+    elif isinstance(fieldnames, str):
+        fieldnames = [segment.strip() for segment in fieldnames.split(",") if segment.strip()]
+    elif isinstance(fieldnames, (list, tuple)):
+        fieldnames = [str(segment).strip() for segment in fieldnames if str(segment).strip()]
+    else:
+        raise FormatError("Markdown columns option must be a string, list, or tuple")
+    if not fieldnames:
+        raise FormatError("Markdown writer requires at least one column when writing dictionaries")
+    table_rows = [
+        [_normalize_markdown_cell(row.get(column, "")) for column in fieldnames]
+        for row in rows
+    ]
+    headers = [_normalize_markdown_cell(column) for column in fieldnames]
+    return tabulate(
+        table_rows,
+        headers=headers,
+        tablefmt="pipe",
+        showindex=False,
+        disable_numparse=True,
+    )
+
+
+def _markdown_table_from_sequence_rows(rows: list[Any]) -> str:
+    materialized_rows: list[list[Any]] = []
+    for row in rows:
+        if isinstance(row, (list, tuple)):
+            materialized_rows.append(list(row))
+        else:
+            materialized_rows.append([row])
+    max_columns = max((len(row) for row in materialized_rows), default=0)
+    if max_columns == 0:
+        return ""
+    headers = [f"column{index}" for index in range(1, max_columns + 1)]
+    table_rows = [
+        [
+            _normalize_markdown_cell(row[index] if index < len(row) else "")
+            for index in range(max_columns)
+        ]
+        for row in materialized_rows
+    ]
+    return tabulate(
+        table_rows,
+        headers=headers,
+        tablefmt="pipe",
+        showindex=False,
+        disable_numparse=True,
+    )
+
+
+def _normalize_markdown_cell(value: Any) -> str:
+    if value is None:
+        return ""
+    text = str(value)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = text.replace("|", r"\|")
+    return text.replace("\n", "<br>")
 
 
 def _xml_reader(value: Any, options: Dict[str, Any]) -> Any:

@@ -20,6 +20,18 @@ pip install dataweave-py
 For the best DataWeave Playground a without payload size limits DataWeave Playground, visit: [https://dataweavelang.org](https://dataweavelang.org)
 
 
+Optional extras:
+
+```bash
+# pandas helpers (DataFrame/Series input normalization)
+pip install "dataweave-py[pandas]"
+
+# pydantic helpers
+pip install "dataweave-py[pydantic]"
+
+# everything
+pip install "dataweave-py[full]"
+```
 
 ## Overview
 
@@ -186,6 +198,22 @@ String interpolation allows you to embed expressions directly within strings usi
 - Function calls: `$(upper(payload.status))`
 - Any valid DataWeave expression
 
+### Output Formats
+
+The runtime supports these output directives:
+- `application/python` (native Python objects)
+- `application/json`
+- `application/csv`
+- `application/xml`
+- `text/plain`
+- `text/markdown`
+
+Format-specific notes:
+- `output text/plain` only works when the final script result is a string.
+- `output text/markdown` expects a tabular value (`list` or `dict`) and renders a Markdown table.
+- `output text/markdown header=false` is rejected because Markdown table rendering requires headers.
+- `payload_format="text/markdown"` parses Markdown pipe tables into structured rows (`Array<Object>` by default, or `Array<Array<String>>` with `payload_format_options={"header": False}`).
+
 ## Supported Features
 
 DataWeave-Py currently supports a wide range of DataWeave language features:
@@ -254,6 +282,66 @@ pytest -v
 
 # Run with coverage
 pytest --cov=dwpy
+```
+
+## Browser WASM (Pyodide)
+
+The project includes a browser-worker runtime for WASM execution with Pyodide and wheel-based loading.
+
+- Worker bootstrap: `web/pyodide-worker.mjs`
+- Python entrypoint: `dwpy.wasm_entry.run_dataweave(...)`
+- Full instructions: [`docs/WASM_PYODIDE.md`](docs/WASM_PYODIDE.md)
+
+## Language Server (LSP)
+
+The project now includes a stdio Language Server for DataWeave:
+
+- Command: `dwpy-lsp`
+- Module: `dwpy.lsp.server`
+- Engine shared with Monaco + WASM completion bridge: `dwpy.lsp.engine`
+
+### Install
+
+Install the LSP extra:
+
+```bash
+uv pip install "dataweave-py[lsp]"
+```
+
+### Sidecar context files
+
+For structure-aware `payload`/`vars` completion in `.dwl` files, place these JSON files next to the script:
+
+- `<file>.payload.json`
+- `<file>.vars.json`
+
+Example for `transform.dwl`:
+
+- `transform.dwl.payload.json`
+- `transform.dwl.vars.json`
+
+If sidecars are missing or invalid, the server falls back to script-only inference.
+
+### VS Code client (example)
+
+```json
+{
+  "languageserver": {
+    "dataweave-py": {
+      "command": "dwpy-lsp",
+      "filetypes": ["dataweave", "dwl"]
+    }
+  }
+}
+```
+
+### Neovim client (example)
+
+```lua
+require("lspconfig").dwpy_lsp.setup({
+  cmd = { "dwpy-lsp" },
+  filetypes = { "dataweave", "dwl" },
+})
 ```
 
 ## Project Structure
