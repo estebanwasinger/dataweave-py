@@ -564,10 +564,7 @@ class Parser:
             elif token_type == "IDENT" and token_value not in RESERVED_INFIX_STOP:
                 operator_name = token_value or ""
                 self.advance()
-                if operator_name == "to":
-                    argument = self.parse_postfix_no_infix()
-                else:
-                    argument = self.parse_postfix()
+                argument = self.parse_postfix_no_infix()
                 target_name = INFIX_SPECIAL.get(operator_name, operator_name)
                 expr = FunctionCall(
                     function=Identifier(
@@ -1210,6 +1207,62 @@ def _parse_header(header_source: str) -> Header:
         curly, square, paren = _compute_delimiter_balance(text)
         return curly > 0 or square > 0 or paren > 0
 
+    def _line_indent(raw_line: str) -> int:
+        return len(raw_line) - len(raw_line.lstrip(" \t"))
+
+    def _is_header_directive_line(raw_line: str) -> bool:
+        stripped = raw_line.strip()
+        return (
+            stripped.startswith("%dw")
+            or stripped.startswith("output")
+            or stripped.startswith("import ")
+            or stripped.startswith("type ")
+            or stripped.startswith("var ")
+            or stripped.startswith("fun ")
+        )
+
+    def _next_significant_line_index(start_idx: int) -> Optional[int]:
+        current_idx = start_idx
+        while current_idx < num_lines:
+            stripped = lines[current_idx].strip()
+            if stripped and not stripped.startswith("//"):
+                return current_idx
+            current_idx += 1
+        return None
+
+    def _expression_parse_status(source: str) -> str:
+        stripped = source.strip()
+        if not stripped:
+            return "empty"
+        if _needs_multiline_expression(stripped):
+            return "incomplete"
+        try:
+            parse_expression_from_source(stripped)
+        except ParseError as exc:
+            message = str(exc)
+            incomplete_suffixes = (
+                "->",
+                "=",
+                "(",
+                "[",
+                "{",
+                ",",
+                "++",
+                "default",
+                "and",
+                "or",
+                "match",
+            )
+            if (
+                "Expected else branch in if expression" in message
+                or "but found EOF" in message
+                or "Unexpected token EOF" in message
+                or stripped.endswith(incomplete_suffixes)
+            ):
+                return "incomplete"
+            return "invalid"
+        return "complete"
+
     def _read_multiline_expression(start_line_idx: int, initial_expression: str) -> Tuple[str, int]:
         expression = initial_expression
         total_lines_consumed = 1
@@ -1221,6 +1274,54 @@ def _parse_header(header_source: str) -> Header:
         if _needs_multiline_expression(expression):
             raise ParseError("Unterminated multi-line expression in header")
         return expression, total_lines_consumed
+
+    def _read_header_expression_block(
+        start_line_idx: int,
+        initial_expression: str,
+    ) -> Tuple[str, int]:
+        declaration_indent = _line_indent(lines[start_line_idx])
+        expression_parts: List[str] = [initial_expression] if initial_expression else []
+        current_idx = start_line_idx + 1
+
+        while True:
+            expression_source = "\n".join(expression_parts).strip()
+            status = _expression_parse_status(expression_source)
+            next_idx = _next_significant_line_index(current_idx)
+
+            if next_idx is None:
+                break
+
+            next_line = lines[next_idx]
+            next_indent = _line_indent(next_line)
+            next_chunk = "\n".join(lines[current_idx : next_idx + 1])
+            combined_source = (
+                f"{expression_source}\n{next_chunk}".strip()
+                if expression_source
+                else next_chunk.strip()
+            )
+            combined_status = _expression_parse_status(combined_source)
+            next_is_directive = _is_header_directive_line(next_line)
+
+            should_continue = False
+            if status == "empty":
+                should_continue = not next_is_directive
+            elif status == "incomplete":
+                should_continue = True
+            elif next_is_directive:
+                should_continue = False
+            elif next_indent > declaration_indent:
+                should_continue = True
+            elif combined_status in {"complete", "incomplete"}:
+                should_continue = True
+
+            if not should_continue:
+                break
+
+            expression_parts.append(next_chunk)
+            current_idx = next_idx + 1
+
+        expression_source = "\n".join(expression_parts).strip()
+        return expression_source, current_idx - start_line_idx
 
     def _read_multiline_definition(start_line_idx: int, start_col: int, start_char: str, end_char: str) -> Tuple[str, int]:
         definition_parts = [lines[start_line_idx][start_col:]]
@@ -1329,24 +1430,23 @@ def _parse_header(header_source: str) -> Header:
             if not name:
                 raise ParseError(f"Variable name cannot be empty at header line {line_number}", line_number, 1)
             expr_source = expr_part.strip()
-            lines_to_advance = 1
-            if _needs_multiline_expression(expr_source):
-                expr_source, lines_to_advance = _read_multiline_expression(idx, expr_source)
+            expr_source, lines_to_advance = _read_header_expression_block(idx, expr_source)
+            if not expr_source:
+                raise ParseError(f"Missing variable body at header line {line_number}", line_number, 1)
             expression = parse_expression_from_source(expr_source.strip())
             variables.append(VarDeclaration(name=name, expression=expression))
             idx += lines_to_advance
             continue
         if line.startswith("fun "):
             function_source = line[len("fun ") :].strip()
-            lines_to_advance = 1
             body_delimiter = _find_top_level_char(function_source, "=")
             if body_delimiter != -1:
                 signature_part = function_source[:body_delimiter]
                 body_part = function_source[body_delimiter + 1 :]
-                body_source = body_part.strip()
-                if _needs_multiline_expression(body_source):
-                    body_source, lines_to_advance = _read_multiline_expression(idx, body_source)
-                    function_source = f"{signature_part.strip()} = {body_source.strip()}"
+                body_source, lines_to_advance = _read_header_expression_block(idx, body_part.strip())
+                function_source = f"{signature_part.strip()} = {body_source.strip()}"
+            else:
+                lines_to_advance = 1
             function = _parse_header_function(function_source, line_number)
             functions.append(function)
             idx += lines_to_advance
