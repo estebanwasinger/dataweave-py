@@ -174,14 +174,36 @@ class ListLiteral(Expression):
 @dataclass
 class PropertyAccess(Expression):
     value: Expression
-    attribute: str
+    attribute: Optional[str]
     null_safe: bool = False
+    recursive: bool = False
+    multi_value: bool = False
+    key_value: bool = False
 
 
 @dataclass
 class IndexAccess(Expression):
     value: Expression
     index: Expression
+
+
+@dataclass
+class DynamicSelector(Expression):
+    value: Expression
+    selector: Expression
+    mode: str
+
+
+@dataclass
+class FilterSelector(Expression):
+    value: Expression
+    predicate: Expression
+
+
+@dataclass
+class SelectorModifier(Expression):
+    value: Expression
+    mode: str
 
 
 @dataclass
@@ -237,6 +259,7 @@ TOKEN_REGEX = re.compile(
   | (?P<NUMBER>\d+(?:\.\d+)?)
   | (?P<STRING>"([^"\\]|\\.)*"|'([^'\\]|\\.)*')
   | (?P<DIFF>--)
+  | (?P<DESC_DOT>\.\.)
   | (?P<SAFE_DOT>\?\.)
   | (?P<CONCAT>\+\+)
   | (?P<PIPE>\|)
@@ -246,6 +269,7 @@ TOKEN_REGEX = re.compile(
   | (?P<EQ>==)
   | (?P<NEQ>!=)
   | (?P<BANG>!)
+  | (?P<QUESTION>\?)
   | (?P<ARROW>->)
   | (?P<MINUS>-)
   | (?P<DIV>/)
@@ -259,6 +283,8 @@ TOKEN_REGEX = re.compile(
   | (?P<RPAREN>\))
   | (?P<COLON>:)
   | (?P<COMMA>,)
+  | (?P<HASH>\#)
+  | (?P<CARET>\^)
   | (?P<DOT>\.)
   | (?P<PLUS>\+)
   | (?P<STAR>\*)
@@ -368,6 +394,14 @@ class Parser:
 
     def at_end(self) -> bool:
         return self.current()[0] == "EOF"
+
+    def peek(self, offset: int) -> Token:
+        index = self.index + offset
+        if index < 0:
+            index = 0
+        if index >= len(self.tokens):
+            return self.tokens[-1]
+        return self.tokens[index]
 
     def expect(self, kind: str) -> Token:
         token = self.current()
@@ -534,32 +568,23 @@ class Parser:
                 continue
             if token_type == "DOT":
                 self.advance()
-                attr_token = self.current()
-                if attr_token[0] == "STAR":
-                    self.advance()
-                    name_token = self.expect("IDENT")
-                    attribute_name = f"*{name_token[1]}"  # type: ignore[index]
-                elif attr_token[0] == "AT":
-                    self.advance()
-                    name_token = self.expect("IDENT")
-                    attribute_name = f"@{name_token[1]}"  # type: ignore[index]
-                elif attr_token[0] == "STRING":
-                    self.advance()
-                    attribute_name = _unescape_string(attr_token[1] or "")
-                else:
-                    name_token = self.expect("IDENT")
-                    attribute_name = name_token[1]  # type: ignore[index]
-                expr = PropertyAccess(value=expr, attribute=attribute_name)
+                expr = self._parse_dot_selector(expr)
+            elif token_type == "DESC_DOT":
+                self.advance()
+                expr = self._parse_descendant_selector(expr)
             elif token_type == "SAFE_DOT":
                 self.advance()
-                attr_token = self.current()
-                if attr_token[0] == "STRING":
-                    self.advance()
-                    attribute_name = _unescape_string(attr_token[1] or "")
-                else:
-                    ident_token = self.expect("IDENT")
-                    attribute_name = ident_token[1] or ""  # type: ignore[index]
-                expr = PropertyAccess(value=expr, attribute=attribute_name, null_safe=True)
+                expr = PropertyAccess(
+                    value=expr,
+                    attribute=self._parse_property_attribute(allow_special=False),
+                    null_safe=True,
+                )
+            elif token_type == "QUESTION":
+                self.advance()
+                expr = SelectorModifier(value=expr, mode="present")
+            elif token_type == "BANG":
+                self.advance()
+                expr = SelectorModifier(value=expr, mode="assert")
             elif token_type == "LPAREN":
                 expr = self.parse_call(expr)
             elif token_type == "IDENT" and token_value not in RESERVED_INFIX_STOP:
@@ -576,10 +601,7 @@ class Parser:
                     arguments=[expr, argument],
                 )
             elif token_type == "LBRACKET":
-                self.advance()
-                index_expr = self.parse_expression()
-                self.expect("RBRACKET")
-                expr = IndexAccess(value=expr, index=index_expr)
+                expr = self._parse_bracket_selector(expr)
             elif token_type == "IDENT" and token_value == "match":
                 self.advance()
                 expr = self.parse_match_expression(expr)
@@ -593,42 +615,130 @@ class Parser:
             token_type = self.current()[0]
             if token_type == "DOT":
                 self.advance()
-                attr_token = self.current()
-                if attr_token[0] == "STAR":
-                    self.advance()
-                    name_token = self.expect("IDENT")
-                    attribute_name = f"*{name_token[1]}"  # type: ignore[index]
-                elif attr_token[0] == "AT":
-                    self.advance()
-                    name_token = self.expect("IDENT")
-                    attribute_name = f"@{name_token[1]}"  # type: ignore[index]
-                elif attr_token[0] == "STRING":
-                    self.advance()
-                    attribute_name = _unescape_string(attr_token[1] or "")
-                else:
-                    name_token = self.expect("IDENT")
-                    attribute_name = name_token[1]  # type: ignore[index]
-                expr = PropertyAccess(value=expr, attribute=attribute_name)
+                expr = self._parse_dot_selector(expr)
+            elif token_type == "DESC_DOT":
+                self.advance()
+                expr = self._parse_descendant_selector(expr)
             elif token_type == "SAFE_DOT":
                 self.advance()
-                attr_token = self.current()
-                if attr_token[0] == "STRING":
-                    self.advance()
-                    attribute_name = _unescape_string(attr_token[1] or "")
-                else:
-                    ident_token = self.expect("IDENT")
-                    attribute_name = ident_token[1] or ""  # type: ignore[index]
-                expr = PropertyAccess(value=expr, attribute=attribute_name, null_safe=True)
+                expr = PropertyAccess(
+                    value=expr,
+                    attribute=self._parse_property_attribute(allow_special=False),
+                    null_safe=True,
+                )
+            elif token_type == "QUESTION":
+                self.advance()
+                expr = SelectorModifier(value=expr, mode="present")
+            elif token_type == "BANG":
+                self.advance()
+                expr = SelectorModifier(value=expr, mode="assert")
             elif token_type == "LPAREN":
                 expr = self.parse_call(expr)
             elif token_type == "LBRACKET":
-                self.advance()
-                index_expr = self.parse_expression()
-                self.expect("RBRACKET")
-                expr = IndexAccess(value=expr, index=index_expr)
+                expr = self._parse_bracket_selector(expr)
             else:
                 break
         return expr
+
+    def _parse_dot_selector(self, expr: Expression) -> Expression:
+        token_type = self.current()[0]
+        if token_type == "STAR":
+            self.advance()
+            return PropertyAccess(
+                value=expr,
+                attribute=self._parse_property_attribute(allow_special=False),
+                multi_value=True,
+            )
+        if token_type == "AMP":
+            self.advance()
+            return PropertyAccess(
+                value=expr,
+                attribute=self._parse_property_attribute(allow_special=False),
+                key_value=True,
+            )
+        if token_type == "AT":
+            self.advance()
+            if self.current()[0] == "DOT":
+                self.advance()
+            return PropertyAccess(
+                value=expr,
+                attribute=f"@{self._parse_property_attribute(allow_special=False)}",
+            )
+        return PropertyAccess(
+            value=expr,
+            attribute=self._parse_property_attribute(),
+        )
+
+    def _parse_descendant_selector(self, expr: Expression) -> Expression:
+        token_type = self.current()[0]
+        if token_type in {"EOF", "RPAREN", "RBRACKET", "RBRACE", "COMMA"}:
+            return PropertyAccess(value=expr, attribute=None, recursive=True)
+        if token_type == "STAR":
+            self.advance()
+            if self.current()[0] in {"EOF", "RPAREN", "RBRACKET", "RBRACE", "COMMA"}:
+                return PropertyAccess(value=expr, attribute=None, recursive=True, multi_value=True)
+            return PropertyAccess(
+                value=expr,
+                attribute=self._parse_property_attribute(allow_special=False),
+                recursive=True,
+                multi_value=True,
+            )
+        if token_type == "AMP":
+            self.advance()
+            return PropertyAccess(
+                value=expr,
+                attribute=self._parse_property_attribute(allow_special=False),
+                recursive=True,
+                key_value=True,
+            )
+        return PropertyAccess(
+            value=expr,
+            attribute=self._parse_property_attribute(allow_special=False),
+            recursive=True,
+        )
+
+    def _parse_property_attribute(self, allow_special: bool = True) -> str:
+        attr_token = self.current()
+        if allow_special and attr_token[0] == "STAR":
+            self.advance()
+            name_token = self.expect("IDENT")
+            return f"*{name_token[1]}"  # type: ignore[index]
+        if allow_special and attr_token[0] == "AT":
+            self.advance()
+            name_token = self.expect("IDENT")
+            return f"@{name_token[1]}"  # type: ignore[index]
+        if attr_token[0] == "STRING":
+            self.advance()
+            return _unescape_string(attr_token[1] or "")
+        ident_token = self.expect("IDENT")
+        return ident_token[1] or ""  # type: ignore[index]
+
+    def _parse_bracket_selector(self, expr: Expression) -> Expression:
+        self.expect("LBRACKET")
+        token_type = self.current()[0]
+        if token_type == "QUESTION" and self.peek(1)[0] == "LPAREN":
+            self.advance()
+            self.expect("LPAREN")
+            predicate = self.parse_expression()
+            self.expect("RPAREN")
+            self.expect("RBRACKET")
+            return FilterSelector(value=expr, predicate=predicate)
+        if token_type in {"STAR", "AT", "AMP"} and self.peek(1)[0] == "LPAREN":
+            marker = token_type
+            self.advance()
+            self.expect("LPAREN")
+            selector = self.parse_expression()
+            self.expect("RPAREN")
+            self.expect("RBRACKET")
+            mode_map = {
+                "STAR": "multi",
+                "AT": "attribute",
+                "AMP": "key_value",
+            }
+            return DynamicSelector(value=expr, selector=selector, mode=mode_map[marker])
+        index_expr = self.parse_expression()
+        self.expect("RBRACKET")
+        return IndexAccess(value=expr, index=index_expr)
 
     def _parse_type_spec(self, consume_metadata: bool = True) -> TypeSpec:
         def parse_primary() -> TypeSpec:

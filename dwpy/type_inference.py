@@ -281,6 +281,17 @@ class TypeInferencer:
             return self._infer_list(expr, ctx)
         if isinstance(expr, parser.PropertyAccess):
             base_type = self._infer_expression(expr.value, ctx)
+            if expr.attribute is None:
+                return array_type(ANY)
+            if expr.recursive:
+                if expr.key_value:
+                    return array_type(object_type({expr.attribute: ANY}, is_open_flag=False))
+                return self._infer_descendant_property(base_type, expr.attribute)
+            if expr.key_value:
+                return object_type({expr.attribute: self._infer_property(base_type, expr.attribute)}, is_open_flag=False)
+            if expr.multi_value:
+                property_type = self._infer_property(base_type, expr.attribute)
+                return property_type if isinstance(property_type, ArrayType) else array_type(property_type)
             return self._infer_property(base_type, expr.attribute)
         if isinstance(expr, parser.IndexAccess):
             base_type = self._infer_expression(expr.value, ctx)
@@ -288,6 +299,22 @@ class TypeInferencer:
                 return self._infer_range_index(base_type)
             index_type = self._infer_expression(expr.index, ctx)
             return self._infer_index(base_type, index_type)
+        if isinstance(expr, parser.DynamicSelector):
+            base_type = self._infer_expression(expr.value, ctx)
+            if expr.mode == "multi":
+                return array_type(ANY if not isinstance(base_type, ArrayType) else base_type.element)
+            if expr.mode == "key_value":
+                return object_type({}, is_open_flag=True)
+            return ANY
+        if isinstance(expr, parser.FilterSelector):
+            base_type = self._infer_expression(expr.value, ctx)
+            return union_types(base_type, NULL)
+        if isinstance(expr, parser.SelectorModifier):
+            if expr.mode == "present":
+                return BOOLEAN
+            if expr.mode == "assert":
+                return self._infer_expression(expr.value, ctx)
+            return ANY
         if isinstance(expr, parser.FunctionCall):
             return self._infer_function_call(expr, ctx)
         if isinstance(expr, parser.DefaultOp):
@@ -363,6 +390,36 @@ class TypeInferencer:
             inferred = [self._infer_property(option, attribute) for option in base_type.options]
             return intersection_types(*inferred)
         return ANY
+
+    def _infer_descendant_property(self, base_type: DWType, attribute: str) -> DWType:
+        return array_type(self._infer_descendant_property_element(base_type, attribute))
+
+    def _infer_descendant_property_element(self, base_type: DWType, attribute: str) -> DWType:
+        matches: List[DWType] = []
+
+        if isinstance(base_type, ArrayType):
+            matches.append(self._infer_descendant_property_element(base_type.element, attribute))
+            return union_types(*matches)
+        if isinstance(base_type, ObjectType):
+            field_info = base_type.get(attribute)
+            if field_info is not None:
+                field_type, is_optional, is_repeatable = field_info
+                result_type = field_type
+                if is_optional:
+                    result_type = union_types(result_type, NULL)
+                if is_repeatable:
+                    result_type = array_type(result_type)
+                matches.append(result_type)
+            for _, field_type, _, _ in base_type.fields:
+                matches.append(self._infer_descendant_property_element(field_type, attribute))
+            return union_types(*matches) if matches else NOTHING
+        if isinstance(base_type, UnionType):
+            inferred = [self._infer_descendant_property_element(option, attribute) for option in base_type.options]
+            return union_types(*inferred)
+        if isinstance(base_type, IntersectionType):
+            inferred = [self._infer_descendant_property_element(option, attribute) for option in base_type.options]
+            return intersection_types(*inferred)
+        return NOTHING
 
     def _infer_index(self, base_type: DWType, index_type: DWType) -> DWType:
         if isinstance(base_type, ArrayType):

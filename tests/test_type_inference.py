@@ -267,6 +267,61 @@ def test_range_selector_over_array_preserves_array_type():
     assert inferred.element == NUMBER
 
 
+def test_descendant_selector_infers_array_of_matching_field_type():
+    payload_type = object_type(
+        {
+            "users": (
+                array_type(
+                    object_type(
+                        {
+                            "profile": (
+                                object_type({"name": (STRING, False, False)}, is_open_flag=False),
+                                False,
+                                False,
+                            )
+                        },
+                        is_open_flag=False,
+                    )
+                ),
+                False,
+                False,
+            )
+        },
+        is_open_flag=False,
+    )
+    inferred = infer_script_type("payload..name", payload_type=payload_type)
+    assert isinstance(inferred, ArrayType)
+    assert inferred.element == STRING
+
+
+def test_key_present_selector_infers_boolean():
+    inferred = infer_script_type("payload.name?")
+    assert inferred == BOOLEAN
+
+
+def test_filter_selector_unions_with_null():
+    inferred = infer_script_type("payload.users.*name[?($ == \"Mariano\")]")
+    assert isinstance(inferred, UnionType)
+    option_descriptions = {option.describe() for option in inferred.options}
+    assert "Null" in option_descriptions
+
+
+def test_key_value_selector_infers_object_shape():
+    payload_type = object_type(
+        {
+            "users": (
+                array_type(object_type({"name": (STRING, False, False)}, is_open_flag=False)),
+                False,
+                False,
+            )
+        },
+        is_open_flag=False,
+    )
+    inferred = infer_script_type("payload.users.&name", payload_type=payload_type)
+    assert isinstance(inferred, ObjectType)
+    assert inferred.field_dict()["name"][0] == array_type(STRING)
+
+
 def test_group_by_preserves_value_shape():
     inferred = infer_script_type(
         """

@@ -562,7 +562,21 @@ class DataWeaveRuntime:
         if isinstance(expr, parser.PropertyAccess):
             base = self._evaluate(expr.value, ctx)
             try:
-                return self._resolve_property(base, expr.attribute)
+                if expr.recursive:
+                    if expr.key_value:
+                        return self._resolve_descendant_key_value_pairs(base, expr.attribute or "")
+                    return self._resolve_descendant_property(
+                        base,
+                        expr.attribute,
+                        multi_value=expr.multi_value,
+                    )
+                if expr.key_value:
+                    return self._resolve_key_value_pairs(base, expr.attribute or "")
+                return self._resolve_property(
+                    base,
+                    expr.attribute or "",
+                    multi_value=expr.multi_value,
+                )
             except TypeError:
                 if expr.null_safe:
                     return None
@@ -580,6 +594,19 @@ class DataWeaveRuntime:
                 return self._resolve_range_index(base, start_index, end_index)
             index = self._evaluate(expr.index, ctx)
             return self._resolve_index(base, index)
+        if isinstance(expr, parser.DynamicSelector):
+            base = self._evaluate(expr.value, ctx)
+            selector = self._evaluate(expr.selector, ctx)
+            return self._resolve_dynamic_selector(base, selector, expr.mode)
+        if isinstance(expr, parser.FilterSelector):
+            base = self._evaluate(expr.value, ctx)
+            return self._apply_selector_filter(base, expr.predicate, ctx)
+        if isinstance(expr, parser.SelectorModifier):
+            if expr.mode == "present":
+                return self._selector_present(expr.value, ctx)
+            if expr.mode == "assert":
+                return self._assert_selector_present(expr.value, ctx)
+            raise TypeError(f"Unsupported selector modifier: {expr.mode}")
         if isinstance(expr, parser.FunctionCall):
             function = self._evaluate(expr.function, ctx)
             placeholder_positions = self._resolve_placeholder_argument_indexes(expr.function)
@@ -701,36 +728,32 @@ class DataWeaveRuntime:
             length=max(length, 1),
         )
 
-    def _resolve_property(self, base: Any, attribute: str) -> Any:
+    def _resolve_property(self, base: Any, attribute: str, *, multi_value: bool = False) -> Any:
         if base is None:
             return None
-        if attribute.startswith("*"):
-            wildcard = attribute[1:]
-            return self._resolve_wildcard_property(base, wildcard)
         if isinstance(base, list):
             collected: List[Any] = []
             for item in base:
-                value = self._resolve_property(item, attribute)
+                value = self._resolve_property(item, attribute, multi_value=multi_value)
                 if value is None:
                     continue
-                if isinstance(value, list):
+                if multi_value and isinstance(value, list):
                     collected.extend(value)
                 else:
                     collected.append(value)
             if not collected:
                 return None
             return collected
-        if isinstance(base, XMLNodeDict):
-            if attribute.startswith("@"):
-                return base.get(attribute, None)
-            value = base.get(attribute, None)
-            if isinstance(value, XMLNodeList):
-                return value[0] if value else None
-            return value
-        if isinstance(base, dict):
-            if attribute.startswith("@"):
-                return base.get(attribute, None)
-            value = base.get(attribute, None)
+        if isinstance(base, Mapping):
+            matches = self._matching_mapping_items(base, attribute)
+            if not matches:
+                return None
+            if multi_value:
+                results: List[Any] = []
+                for _, value in matches:
+                    self._append_selector_value(results, value, expand_xml_list=True, expand_list=True)
+                return results or None
+            value = matches[0][1]
             if isinstance(value, XMLNodeList):
                 return value[0] if value else None
             return value
@@ -740,31 +763,284 @@ class DataWeaveRuntime:
             return None
         raise TypeError(f"Cannot access attribute '{attribute}' on {type(base).__name__}")
 
-    def _resolve_wildcard_property(self, base: Any, attribute: str) -> Any:
-        nodes: List[Any]
-        if isinstance(base, list):
-            nodes = base
-        else:
-            nodes = [base]
-        results: List[Any] = []
-        for node in nodes:
-            if not isinstance(node, Mapping):
-                continue
-            if attribute:
-                value = node.get(attribute)
-                if value is None:
+    @staticmethod
+    def _xml_local_name(key: str) -> str:
+        if key.startswith("@"):
+            return key[1:]
+        if key.startswith("{") and "}" in key:
+            return key.split("}", 1)[1]
+        return key
+
+    def _matching_mapping_items(self, node: Mapping[str, Any], attribute: str) -> List[Tuple[str, Any]]:
+        if isinstance(node, XMLNodeDict):
+            matches: List[Tuple[str, Any]] = []
+            for key, value in node.items():
+                if attribute.startswith("@"):
+                    if key == attribute:
+                        matches.append((key, value))
                     continue
-                if isinstance(value, list):
-                    results.extend(value)
-                else:
-                    results.append(value)
+                if key == attribute or self._xml_local_name(key) == attribute:
+                    matches.append((key, value))
+            return matches
+        if attribute in node:
+            return [(attribute, node.get(attribute))]
+        return []
+
+    @staticmethod
+    def _append_selector_value(
+        results: List[Any],
+        value: Any,
+        *,
+        expand_xml_list: bool = False,
+        expand_list: bool = False,
+    ) -> None:
+        if expand_xml_list and isinstance(value, XMLNodeList):
+            results.extend(value)
+            return
+        if expand_list and isinstance(value, list):
+            results.extend(value)
+            return
+        results.append(value)
+
+    def _resolve_key_value_pairs(self, base: Any, attribute: str) -> Optional[DWObject]:
+        if base is None:
+            return None
+        if isinstance(base, (list, tuple)):
+            result = DWObject()
+            for item in base:
+                partial = self._resolve_key_value_pairs(item, attribute)
+                if partial is None:
+                    continue
+                for key, value in partial.items():
+                    result.add(key, value)
+            return result if result.items() else None
+        if not isinstance(base, Mapping):
+            return None
+        matches = self._matching_mapping_items(base, attribute)
+        if not matches:
+            return None
+        result = DWObject()
+        for key, value in matches:
+            if isinstance(value, XMLNodeList):
+                for item in value:
+                    result.add(key, item)
             else:
-                for value in node.values():
-                    if isinstance(value, list):
-                        results.extend(value)
+                result.add(key, value)
+        return result
+
+    def _resolve_descendant_property(
+        self,
+        base: Any,
+        attribute: Optional[str],
+        *,
+        multi_value: bool = False,
+    ) -> List[Any]:
+        results: List[Any] = []
+
+        def visit(node: Any) -> None:
+            if node is None:
+                return
+            if isinstance(node, list):
+                for item in node:
+                    if attribute is None:
+                        self._append_selector_value(results, item, expand_xml_list=True)
+                    visit(item)
+                return
+            if isinstance(node, tuple):
+                for item in node:
+                    if attribute is None:
+                        self._append_selector_value(results, item, expand_xml_list=True)
+                    visit(item)
+                return
+            if isinstance(node, Mapping):
+                if attribute is None:
+                    for value in node.values():
+                        self._append_selector_value(results, value, expand_xml_list=True)
+                        visit(value)
+                    return
+                matches = self._matching_mapping_items(node, attribute)
+                if matches:
+                    if multi_value:
+                        for _, value in matches:
+                            self._append_selector_value(results, value, expand_xml_list=True, expand_list=True)
                     else:
-                        results.append(value)
+                        value = matches[0][1]
+                        if isinstance(value, XMLNodeList):
+                            if value:
+                                results.append(value[0])
+                        else:
+                            results.append(value)
+                for value in node.values():
+                    visit(value)
+                return
+
+        visit(base)
         return results
+
+    def _resolve_descendant_key_value_pairs(self, base: Any, attribute: str) -> List[DWObject]:
+        results: List[DWObject] = []
+
+        def visit(node: Any) -> None:
+            if node is None:
+                return
+            if isinstance(node, (list, tuple)):
+                for item in node:
+                    visit(item)
+                return
+            if isinstance(node, Mapping):
+                current = self._resolve_key_value_pairs(node, attribute)
+                if current is not None:
+                    results.append(current)
+                for value in node.values():
+                    visit(value)
+
+        visit(base)
+        return results
+
+    def _resolve_dynamic_selector(self, base: Any, selector: Any, mode: str) -> Any:
+        name = str(selector)
+        if mode == "multi":
+            return self._resolve_property(base, name, multi_value=True)
+        if mode == "attribute":
+            return self._resolve_property(base, f"@{name}")
+        if mode == "key_value":
+            return self._resolve_key_value_pairs(base, name)
+        raise TypeError(f"Unsupported dynamic selector mode: {mode}")
+
+    def _apply_selector_filter(
+        self,
+        base: Any,
+        predicate: parser.Expression,
+        ctx: EvaluationContext,
+    ) -> Any:
+        if base is None:
+            return None
+        if isinstance(base, (list, tuple, XMLNodeList)):
+            results = [item for index, item in enumerate(base) if self._selector_predicate_matches(item, index, predicate, ctx)]
+            return results or None
+        if isinstance(base, XMLNodeDict):
+            result = XMLNodeDict()
+            matched = False
+            for key, value in base.items():
+                if self._selector_predicate_matches(value, key, predicate, ctx):
+                    result[key] = value
+                    matched = True
+            return result if matched else None
+        if isinstance(base, DWObject):
+            result = DWObject()
+            for key, value in base.items():
+                if self._selector_predicate_matches(value, key, predicate, ctx):
+                    result.add(key, value)
+            return result if result.items() else None
+        if isinstance(base, Mapping):
+            result: Dict[str, Any] = {}
+            for key, value in base.items():
+                if self._selector_predicate_matches(value, key, predicate, ctx):
+                    result[str(key)] = value
+            return result or None
+        return base if self._selector_predicate_matches(base, 0, predicate, ctx) else None
+
+    def _selector_predicate_matches(
+        self,
+        value: Any,
+        key_or_index: Any,
+        predicate: parser.Expression,
+        ctx: EvaluationContext,
+    ) -> bool:
+        scoped = EvaluationContext(
+            payload=ctx.payload,
+            variables=dict(ctx.variables),
+            header=ctx.header,
+            line_offset=ctx.line_offset,
+        )
+        scoped.variables["$"] = value
+        scoped.variables["$$"] = key_or_index
+        return self._is_truthy(self._evaluate(predicate, scoped))
+
+    def _selector_present(self, expr: parser.Expression, ctx: EvaluationContext) -> bool:
+        if isinstance(expr, parser.PropertyAccess):
+            base = self._evaluate(expr.value, ctx)
+            return self._property_access_present(base, expr)
+        if isinstance(expr, parser.IndexAccess):
+            base = self._evaluate(expr.value, ctx)
+            if (
+                isinstance(expr.index, parser.FunctionCall)
+                and isinstance(expr.index.function, parser.Identifier)
+                and expr.index.function.name == "_infix_to"
+                and len(expr.index.arguments) == 2
+            ):
+                start = self._evaluate(expr.index.arguments[0], ctx)
+                end = self._evaluate(expr.index.arguments[1], ctx)
+                result = self._resolve_range_index(base, start, end)
+                return result is not None and result != []
+            index = self._evaluate(expr.index, ctx)
+            return self._index_present(base, index)
+        if isinstance(expr, parser.DynamicSelector):
+            base = self._evaluate(expr.value, ctx)
+            selector = self._evaluate(expr.selector, ctx)
+            resolved = self._resolve_dynamic_selector(base, selector, expr.mode)
+            return resolved is not None and resolved != []
+        value = self._evaluate(expr, ctx)
+        return not self._is_missing(value)
+
+    def _assert_selector_present(self, expr: parser.Expression, ctx: EvaluationContext) -> Any:
+        if self._selector_present(expr, ctx):
+            return self._evaluate(expr, ctx)
+        raise DataWeaveEvaluationError(
+            f"There is no key named '{self._selector_display_name(expr)}'"
+        )
+
+    def _property_access_present(self, base: Any, expr: parser.PropertyAccess) -> bool:
+        if expr.recursive:
+            if expr.key_value:
+                return bool(self._resolve_descendant_key_value_pairs(base, expr.attribute or ""))
+            return bool(
+                self._resolve_descendant_property(
+                    base,
+                    expr.attribute,
+                    multi_value=expr.multi_value,
+                )
+            )
+        if expr.key_value:
+            return self._resolve_key_value_pairs(base, expr.attribute or "") is not None
+        if expr.multi_value:
+            return self._resolve_property(base, expr.attribute or "", multi_value=True) is not None
+        return self._property_present(base, expr.attribute or "")
+
+    def _property_present(self, base: Any, attribute: str) -> bool:
+        if base is None:
+            return False
+        if isinstance(base, (list, tuple)):
+            return any(self._property_present(item, attribute) for item in base)
+        if isinstance(base, Mapping):
+            return bool(self._matching_mapping_items(base, attribute))
+        return hasattr(base, attribute)
+
+    def _index_present(self, base: Any, index: Any) -> bool:
+        if base is None:
+            return False
+        if isinstance(base, (list, tuple, str)):
+            idx = self._coerce_index(index)
+            if idx is None:
+                return False
+            return self._normalise_sequence_index(idx, len(base)) is not None
+        if isinstance(base, Mapping):
+            return str(index) in base
+        try:
+            base[index]
+            return True
+        except (TypeError, KeyError, IndexError):
+            return False
+
+    @staticmethod
+    def _selector_display_name(expr: parser.Expression) -> str:
+        if isinstance(expr, parser.PropertyAccess) and expr.attribute is not None:
+            return expr.attribute[1:] if expr.attribute.startswith("@") else expr.attribute
+        if isinstance(expr, parser.DynamicSelector):
+            return "<dynamic selector>"
+        if isinstance(expr, parser.IndexAccess):
+            return "<index>"
+        return "<selector>"
 
     def _resolve_index(self, base: Any, index: Any) -> Any:
         if base is None:
@@ -2073,6 +2349,17 @@ class DataWeaveRuntime:
                 visit(node.value)
                 visit(node.index)
                 return
+            if isinstance(node, parser.DynamicSelector):
+                visit(node.value)
+                visit(node.selector)
+                return
+            if isinstance(node, parser.FilterSelector):
+                visit(node.value)
+                visit(node.predicate)
+                return
+            if isinstance(node, parser.SelectorModifier):
+                visit(node.value)
+                return
             if isinstance(node, parser.FunctionCall):
                 visit(node.function)
                 for argument in node.arguments:
@@ -2121,6 +2408,9 @@ class DataWeaveRuntime:
                 continue
             module = module_part.strip()
             exports = self._load_module_exports(module)
+            runtime_exports = self._runtime_module_exports(module)
+            for name, func in runtime_exports.items():
+                exports.setdefault(name, func)
             builtin_exports = builtins.resolve_module_exports(module)
             for name, func in builtin_exports.items():
                 exports.setdefault(name, func)
@@ -2141,6 +2431,18 @@ class DataWeaveRuntime:
                 if original in exports:
                     resolved[alias] = exports[original]
         return resolved
+
+    def _runtime_module_exports(self, module: str) -> Dict[str, Callable[..., Any]]:
+        if module != "dw::Runtime":
+            return {}
+        return {
+            "fail": self._func_fail,
+            "try": self._func_try,
+            "run": self._func_run_script,
+            "wait": self._func_wait,
+            "location": self._func_location,
+            "version": self._func_version,
+        }
 
     def _load_module_exports(self, module: str) -> Dict[str, Callable[..., Any]]:
         module_path = MODULE_BASE_PATH / (module.replace("::", "/") + ".dwl")

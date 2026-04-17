@@ -1109,6 +1109,244 @@ payload.message
     assert json.loads(rendered) == ["Hello, World!"]
 
 
+def test_descendant_selector_collects_array_object_fields():
+    script = """%dw 2.0
+output application/json
+---
+payload..name
+"""
+    payload = [
+        {"name": "Esteban"},
+        {"name": "Esteban"},
+        {"name": "Esteban"},
+        {"name": "Esteban"},
+        {"name": "Esteban"},
+    ]
+
+    runtime = PythonResultRuntime()
+    result = runtime.execute(script, payload=payload)
+
+    assert result == ["Esteban", "Esteban", "Esteban", "Esteban", "Esteban"]
+
+
+def test_descendant_selector_recurses_through_nested_objects_and_arrays():
+    script = """%dw 2.0
+output application/json
+---
+payload..name
+"""
+    payload = {
+        "name": "root",
+        "users": [
+            {"profile": {"name": "alpha"}},
+            {"profile": {"name": "beta"}},
+        ],
+        "meta": {
+            "owner": {"name": "gamma"}
+        },
+    }
+
+    runtime = PythonResultRuntime()
+    result = runtime.execute(script, payload=payload)
+
+    assert result == ["root", "alpha", "beta", "gamma"]
+
+
+def test_descendant_selector_without_attribute_returns_all_child_values():
+    script = """%dw 2.0
+output application/json
+---
+payload..
+"""
+    payload = {
+        "user": {
+            "name": "Weave",
+            "child": {
+                "name": "BAT"
+            },
+        }
+    }
+
+    runtime = PythonResultRuntime()
+    result = runtime.execute(script, payload=payload)
+
+    assert result == [
+        {"name": "Weave", "child": {"name": "BAT"}},
+        "Weave",
+        {"name": "BAT"},
+        "BAT",
+    ]
+
+
+def test_descendant_selector_supports_quoted_attributes():
+    script = """%dw 2.0
+output application/json
+---
+payload.."value 2"
+"""
+    payload = {
+        "items": [
+            {"value 2": "a"},
+            {"nested": {"value 2": "b"}},
+        ]
+    }
+
+    runtime = PythonResultRuntime()
+    result = runtime.execute(script, payload=payload)
+
+    assert result == ["a", "b"]
+
+
+def test_descendant_multivalue_selector_includes_repeated_xml_siblings():
+    runtime = PythonResultRuntime()
+    script = """%dw 2.0
+---
+payload..*name
+"""
+    payload = """<users><user><name>Weave</name><user><name>BAT</name><name>Munit</name><user><name>BDD</name></user></user></user></users>"""
+    result = runtime.execute(script, payload=payload, payload_format="application/xml")
+    assert result == ["Weave", "BAT", "Munit", "BDD"]
+
+
+def test_key_value_selector_returns_object_for_matching_key_pairs():
+    runtime = PythonResultRuntime()
+    script = """%dw 2.0
+output application/json
+---
+payload.people.&name
+"""
+    payload = {
+        "people": [
+            {"name": "Ana"},
+            {"name": "Bob"},
+            {"age": 30},
+        ]
+    }
+    result = runtime.execute(script, payload=payload)
+    assert list(result.items()) == [("name", "Ana"), ("name", "Bob")]
+
+
+def test_descendant_key_value_selector_returns_array_of_matching_objects():
+    runtime = PythonResultRuntime()
+    script = """%dw 2.0
+output application/json
+---
+payload..&name
+"""
+    payload = {
+        "people": {
+            "person": {
+                "name": "Nial",
+                "address": {
+                    "street": {"name": "Italia"},
+                    "area": {"name": "Martinez"},
+                },
+            }
+        }
+    }
+    result = runtime.execute(script, payload=payload)
+    assert [list(item.items()) for item in result] == [
+        [("name", "Nial")],
+        [("name", "Italia")],
+        [("name", "Martinez")],
+    ]
+
+
+def test_key_present_selector_supports_xml_attributes():
+    runtime = PythonResultRuntime()
+    script = """%dw 2.0
+output application/json
+---
+{
+  item: {
+    typePresent : payload.product.@."type"?
+  }
+}
+"""
+    payload = '<product type="book"/>'
+    result = runtime.execute(script, payload=payload, payload_format="application/xml")
+    assert result == {"item": {"typePresent": True}}
+
+
+def test_assert_present_selector_raises_when_missing():
+    runtime = DataWeaveRuntime()
+    script = """%dw 2.0
+output application/json
+---
+payload.lastName!
+"""
+    with pytest.raises(DataWeaveEvaluationError) as exc:
+        runtime.execute(script, {"name": "Annie"})
+
+    assert "There is no key named 'lastName'" in str(exc.value)
+
+
+def test_filter_selector_filters_selected_values_and_returns_null_on_empty():
+    runtime = PythonResultRuntime()
+    script = """%dw 2.0
+output application/json
+---
+{
+  selected: payload.users.*name[?($ == "Mariano")],
+  missing: payload.users.*name[?($ == "Nobody")]
+}
+"""
+    payload = {"users": [{"name": "Mariano"}, {"name": "Ana"}]}
+    result = runtime.execute(script, payload=payload)
+    assert result == {"selected": ["Mariano"], "missing": None}
+
+
+def test_filter_selector_can_filter_scalar_values():
+    runtime = PythonResultRuntime()
+    script = """%dw 2.0
+output application/json
+---
+{
+  first: payload.first[?($=="Mariano")],
+  second: payload.second[?($=="Mariano")]
+}
+"""
+    result = runtime.execute(script, payload={"first": "Mariano", "second": "Ana"})
+    assert result == {"first": "Mariano", "second": None}
+
+
+def test_dynamic_multivalue_selector_returns_values():
+    runtime = PythonResultRuntime()
+    script = """%dw 2.0
+output application/json
+var key = "name"
+---
+payload.users[*(key)]
+"""
+    payload = {"users": [{"name": "Mariano"}, {"name": "Ana"}]}
+    result = runtime.execute(script, payload=payload)
+    assert result == ["Mariano", "Ana"]
+
+
+def test_dynamic_key_value_selector_returns_object():
+    runtime = PythonResultRuntime()
+    script = """%dw 2.0
+output application/json
+var key = "name"
+---
+payload.users[&(key)]
+"""
+    payload = {"users": [{"name": "Mariano"}, {"name": "Ana"}]}
+    result = runtime.execute(script, payload=payload)
+    assert list(result.items()) == [("name", "Mariano"), ("name", "Ana")]
+
+
+def test_local_name_selector_matches_namespaced_xml_keys():
+    runtime = PythonResultRuntime()
+    script = """%dw 2.0
+---
+payload.root.table
+"""
+    payload = '<root><h:table xmlns:h="http://www.w3.org/TR/html4/"><h:tr>Apples</h:tr></h:table></root>'
+    result = runtime.execute(script, payload=payload, payload_format="application/xml")
+    assert result == {"{http://www.w3.org/TR/html4/}tr": "Apples"}
+
+
 def test_null_safe_quoted_dot_selector_with_default():
     script = """%dw 2.0
 ---
