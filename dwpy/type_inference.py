@@ -344,6 +344,24 @@ class TypeInferencer:
         fields: Dict[str, Tuple[DWType, bool, bool]] = {}
         open_object = False
         for key_expr, value_expr in expr.fields:
+            if key_expr is None:
+                merged_type = self._infer_expression(value_expr, ctx)
+                if isinstance(merged_type, ObjectType):
+                    for key_name, field_info in merged_type.field_dict().items():
+                        if key_name in fields:
+                            existing_type, existing_opt, existing_rep = fields[key_name]
+                            merged_field_type, merged_opt, merged_rep = field_info
+                            fields[key_name] = (
+                                union_types(existing_type, merged_field_type),
+                                existing_opt or merged_opt,
+                                existing_rep or merged_rep,
+                            )
+                        else:
+                            fields[key_name] = field_info
+                    open_object = open_object or merged_type.open
+                else:
+                    open_object = True
+                continue
             key_constant = self._extract_constant_string(key_expr, ctx)
             value_type = self._infer_expression(value_expr, ctx)
             if key_constant is None:

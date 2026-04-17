@@ -1310,6 +1310,60 @@ output application/json
     assert result == {"first": "Mariano", "second": None}
 
 
+def test_object_literal_can_merge_parenthesized_if_expression():
+    runtime = PythonResultRuntime()
+    script = """%dw 2.0
+output application/json
+---
+{
+  (if (payload.include == true) {name: payload.name} else {})
+}
+"""
+    assert runtime.execute(script, payload={"include": True, "name": "Esteban"}) == {"name": "Esteban"}
+    assert runtime.execute(script, payload={"include": False, "name": "Esteban"}) == {}
+
+
+def test_map_object_literal_can_merge_conditional_object_expression_before_filter():
+    runtime = PythonResultRuntime()
+    script = """%dw 2.0
+output application/json
+---
+(payload.items map (item, index) -> {
+    // Only include the record if successful is false
+    (if (item.successful == false) {
+        index: index,
+        errorCode: log(item).payload.errors[0].statusCode,
+        errorMessage: item.payload.errors[0].message
+    } else {})
+}) filter (!isEmpty($))
+"""
+    payload = {
+        "items": [
+            {
+                "successful": False,
+                "payload": {
+                    "errors": [
+                        {
+                            "statusCode": 404,
+                            "message": "Error",
+                        }
+                    ]
+                },
+            }
+        ]
+    }
+
+    result = runtime.execute(script, payload=payload)
+
+    assert result == [
+        {
+            "index": 0,
+            "errorCode": 404,
+            "errorMessage": "Error",
+        }
+    ]
+
+
 def test_dynamic_multivalue_selector_returns_values():
     runtime = PythonResultRuntime()
     script = """%dw 2.0

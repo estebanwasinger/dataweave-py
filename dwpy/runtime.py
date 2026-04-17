@@ -516,6 +516,15 @@ class DataWeaveRuntime:
         if isinstance(expr, parser.ObjectLiteral):
             result_obj = DWObject()
             for key_expr, value_expr in expr.fields:
+                if key_expr is None:
+                    merged_value = self._evaluate(value_expr, ctx)
+                    if merged_value is None:
+                        continue
+                    if not isinstance(merged_value, Mapping):
+                        raise TypeError("Object expression entries must evaluate to an object")
+                    for merged_key, merged_item in merged_value.items():
+                        result_obj.add(str(merged_key), merged_item)
+                    continue
                 key_value = self._evaluate(key_expr, ctx)
                 if isinstance(key_value, str):
                     key_str = key_value
@@ -2331,7 +2340,8 @@ class DataWeaveRuntime:
                 return
             if isinstance(node, parser.ObjectLiteral):
                 for key_expr, value_expr in node.fields:
-                    visit(key_expr)
+                    if key_expr is not None:
+                        visit(key_expr)
                     visit(value_expr)
                 return
             if isinstance(node, parser.ListLiteral):

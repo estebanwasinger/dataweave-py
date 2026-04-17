@@ -119,7 +119,7 @@ class LambdaExpression(Expression):
 
 @dataclass
 class ObjectLiteral(Expression):
-    fields: List[Tuple[Expression, Expression]]
+    fields: List[Tuple[Optional[Expression], Expression]]
 
 
 @dataclass
@@ -1048,27 +1048,36 @@ class Parser:
 
     def parse_object(self) -> Expression:
         self.expect("LBRACE")
-        fields: List[Tuple[Expression, Expression]] = []
+        fields: List[Tuple[Optional[Expression], Expression]] = []
         if not self.match("RBRACE"):
             while True:
                 key_token = self.current()
-                if key_token[0] == "STRING":
+                if key_token[0] == "LPAREN":
+                    self.advance()
+                    inner_expr = self.parse_expression()
+                    self.expect("RPAREN")
+                    if self.match("COLON"):
+                        key_expr = inner_expr
+                        value = self.parse_expression()
+                        fields.append((key_expr, value))
+                    else:
+                        fields.append((None, inner_expr))
+                elif key_token[0] == "STRING":
                     self.advance()
                     unescaped = _unescape_string(key_token[1] or "")
                     if "$(" in unescaped:
                         key_expr = self._parse_interpolated_string(unescaped)
                     else:
                         key_expr = StringLiteral(value=unescaped)
-                elif key_token[0] == "LPAREN":
-                    self.advance()
-                    key_expr = self.parse_expression()
-                    self.expect("RPAREN")
+                    self.expect("COLON")
+                    value = self.parse_expression()
+                    fields.append((key_expr, value))
                 else:
                     ident = self.expect("IDENT")
                     key_expr = StringLiteral(value=ident[1] or "")
-                self.expect("COLON")
-                value = self.parse_expression()
-                fields.append((key_expr, value))
+                    self.expect("COLON")
+                    value = self.parse_expression()
+                    fields.append((key_expr, value))
                 if self.match("RBRACE"):
                     break
                 self.expect("COMMA")
