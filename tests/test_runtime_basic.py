@@ -79,6 +79,80 @@ var summary = greeting ++ " WORLD"
     }
 
 
+def test_header_var_and_function_bodies_can_start_on_following_lines():
+    script = """%dw 2.0
+output application/json
+var values =
+  if (isEmpty(payload.values default [])) []
+  else payload.values default []
+
+fun average(items) =
+  if (isEmpty(items)) null
+  else round((sum(items) / sizeOf(items)) * 100) / 100
+---
+{
+  values: values,
+  average: average(values)
+}
+"""
+
+    runtime = DataWeaveRuntime()
+    result = runtime.execute(script, payload={"values": [4, 6]}, render_output=False)
+
+    assert result == {
+        "values": [4, 6],
+        "average": 5,
+    }
+
+
+def test_header_var_preserves_left_associative_infix_chains():
+    script = """%dw 2.0
+output application/json
+var values =
+  (payload.values default [])
+    map ((value) -> value * 2)
+    filter ((value) -> value >= 4)
+---
+values
+"""
+
+    runtime = DataWeaveRuntime()
+    result = runtime.execute(script, payload={"values": [1, 2, 3]}, render_output=False)
+
+    assert result == [4, 6]
+
+
+def test_group_by_accepts_implicit_placeholder_lambda():
+    script = """%dw 2.0
+output application/json
+---
+payload.items groupBy $.kind
+"""
+
+    runtime = DataWeaveRuntime()
+    result = runtime.execute(
+        script,
+        payload={
+            "items": [
+                {"kind": "A", "value": 1},
+                {"kind": "B", "value": 2},
+                {"kind": "A", "value": 3},
+            ]
+        },
+        render_output=False,
+    )
+
+    assert result == {
+        "A": [
+            {"kind": "A", "value": 1},
+            {"kind": "A", "value": 3},
+        ],
+        "B": [
+            {"kind": "B", "value": 2},
+        ],
+    }
+
+
 def test_object_literal_duplicate_keys_are_preserved_in_json_output():
     script = """%dw 2.0
 output application/json
