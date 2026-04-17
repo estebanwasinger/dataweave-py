@@ -250,6 +250,11 @@ def test_range_filter_results_in_array_of_numbers():
     assert val_field.element == NUMBER
 
 
+def test_unary_not_infers_boolean():
+    inferred = infer_script_type("!payload.flag")
+    assert inferred == BOOLEAN
+
+
 def test_range_selector_over_array_preserves_array_type():
     inferred = infer_script_type(
         """

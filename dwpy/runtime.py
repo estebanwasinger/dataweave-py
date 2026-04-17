@@ -269,6 +269,7 @@ class DataWeaveRuntime:
                 "_binary_lte": self._func_binary_lte,
                 "_binary_and": self._func_binary_and,
                 "_binary_or": self._func_binary_or,
+                "_unary_not": self._func_unary_not,
                 "native": self._func_native,
             }
         )
@@ -2036,6 +2037,9 @@ class DataWeaveRuntime:
 
     def _func_binary_or(self, left: Any, right: Any) -> bool:
         return self._is_truthy(left) or self._is_truthy(right)
+
+    def _func_unary_not(self, value: Any) -> bool:
+        return not self._is_truthy(value)
 
     def _call_sequence_lambda(self, function: Callable[..., Any], item: Any, index: int) -> Any:
         return builtins.invoke_lambda(function, item, index)

@@ -1436,6 +1436,39 @@ output application/json
     assert result == [3, 4]
 
 
+def test_filter_supports_unary_not_with_placeholder_selector():
+    runtime = PythonResultRuntime()
+    script = """%dw 2.0
+output application/json
+---
+((payload.items map ((item, index) -> { "idx" : index} ++ item )) filter !$.success)
+"""
+    payload = {
+        "items": [
+            {
+                "success": False,
+                "rec": {
+                    "idx": "ddd",
+                    "errors": [],
+                },
+            }
+        ]
+    }
+
+    result = runtime.execute(script, payload)
+
+    assert result == [
+        {
+            "idx": 0,
+            "success": False,
+            "rec": {
+                "idx": "ddd",
+                "errors": [],
+            },
+        }
+    ]
+
+
 def test_string_literal_coerced_to_number():
     runtime = PythonResultRuntime()
     script = """%dw 2.0
@@ -1501,6 +1534,17 @@ output application/json
 """
     result = runtime.execute(script, {"amount": 7})
     assert result == -7
+
+
+def test_unary_not_applies_to_selector_expression():
+    runtime = PythonResultRuntime()
+    script = """%dw 2.0
+output application/json
+---
+!payload.success
+"""
+    result = runtime.execute(script, {"success": False})
+    assert result is True
 
 
 def test_plus_operator_type_error_message():

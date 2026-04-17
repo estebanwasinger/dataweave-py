@@ -434,6 +434,8 @@ class TypeInferencer:
                 # Filter keeps same element type
                 elem_type = self._element_type(seq_type)
                 return array_type(elem_type)
+            if name == "_unary_not" and len(expr.arguments) == 1:
+                return BOOLEAN
             if name in {"_infix_groupBy", "groupBy"} and len(expr.arguments) == 2:
                 seq_type = self._infer_expression(expr.arguments[0], ctx)
                 key_mapper = expr.arguments[1]

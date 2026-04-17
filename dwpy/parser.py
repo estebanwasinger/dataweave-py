@@ -245,6 +245,7 @@ TOKEN_REGEX = re.compile(
   | (?P<LTE><=)
   | (?P<EQ>==)
   | (?P<NEQ>!=)
+  | (?P<BANG>!)
   | (?P<ARROW>->)
   | (?P<MINUS>-)
   | (?P<DIV>/)
@@ -804,6 +805,17 @@ class Parser:
         token = self.current()
         token_type = token[0]
         value = token[1]
+        if token_type == "BANG":
+            self.advance()
+            operand = self.parse_postfix_no_infix()
+            return FunctionCall(
+                function=Identifier(
+                    name="_unary_not",
+                    line=token[2],
+                    column=token[3],
+                ),
+                arguments=[operand],
+            )
         if token_type == "MINUS":
             self.advance()
             operand = self.parse_postfix_no_infix()
