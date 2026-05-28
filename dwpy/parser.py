@@ -459,10 +459,42 @@ class Parser:
         return self.parse_default()
 
     def parse_default(self) -> Expression:
-        expr = self.parse_comparison()
+        expr = self.parse_logical_or()
         while self.match("DEFAULT"):
-            right = self.parse_comparison()
+            right = self.parse_logical_or()
             expr = DefaultOp(left=expr, right=right)
+        return expr
+
+    def parse_logical_or(self) -> Expression:
+        expr = self.parse_logical_and()
+        while self.current()[0] == "IDENT" and self.current()[1] == "or":
+            token = self.current()
+            self.advance()
+            right = self.parse_logical_and()
+            expr = FunctionCall(
+                function=Identifier(
+                    name="_binary_or",
+                    line=token[2],
+                    column=token[3],
+                ),
+                arguments=[expr, right],
+            )
+        return expr
+
+    def parse_logical_and(self) -> Expression:
+        expr = self.parse_comparison()
+        while self.current()[0] == "IDENT" and self.current()[1] == "and":
+            token = self.current()
+            self.advance()
+            right = self.parse_comparison()
+            expr = FunctionCall(
+                function=Identifier(
+                    name="_binary_and",
+                    line=token[2],
+                    column=token[3],
+                ),
+                arguments=[expr, right],
+            )
         return expr
 
     def parse_comparison(self) -> Expression:
@@ -1996,6 +2028,8 @@ RESERVED_INFIX_STOP = {
     "else",
     "when",
     "default",
+    "and",
+    "or",
     "match",
     "case",
     "var",

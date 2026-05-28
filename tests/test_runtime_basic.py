@@ -122,6 +122,94 @@ values
     assert result == [4, 6]
 
 
+def test_logical_operators_have_lower_precedence_than_comparisons():
+    script = """%dw 2.0
+output application/json
+---
+{
+  boxed: if (payload.bbox == null or sizeOf(payload.bbox) < 4) null else payload.bbox[1],
+  eligible: payload.count > 2 and payload.enabled == true
+}
+"""
+
+    runtime = DataWeaveRuntime()
+    result = runtime.execute(
+        script,
+        payload={"bbox": [32.7, 32.8, 791.8, 609.2], "count": 3, "enabled": True},
+        render_output=False,
+    )
+
+    assert result == {"boxed": 32.8, "eligible": True}
+
+
+def test_pluck_map_transform_can_pass_array_selector_to_function_with_logical_guard():
+    script = """%dw 2.0
+output application/json
+
+fun toBox(bbox) =
+  if (bbox == null or sizeOf(bbox) < 4)
+    null
+  else
+    {
+      top: round(bbox[1] as Number),
+      left: round(bbox[0] as Number),
+      bottom: round(bbox[3] as Number),
+      right: round(bbox[2] as Number)
+    }
+
+---
+flatten(
+  payload pluck ((blocks, pageKey) ->
+    blocks map ((block, index) -> {
+      pageIdx: (block.page_idx default pageKey) as Number,
+      blockIdx: ((block.blockIdx default index) as Number) + 1,
+      text: block.text default "",
+      box: toBox(block.bbox)
+    })
+  )
+)
+"""
+    payload = {
+        "0": [
+            {
+                "bbox": [
+                    32.74958388910061,
+                    32.85486091427686,
+                    791.8984155868903,
+                    609.2496515339177,
+                ],
+                "page_idx": 0,
+                "blockIdx": "0",
+                "text": "Photograph of the Exchange at Crestview apartment complex with the Cushman & Wakefield logo in the top right corner.",
+            },
+            {
+                "bbox": [44.64, 40.514, 342.632, 90.51400000000001],
+                "page_idx": 0,
+                "blockIdx": "1",
+                "text": "# EXCHANGE AT",
+            },
+        ],
+    }
+
+    runtime = DataWeaveRuntime()
+    result = runtime.execute(script, payload=payload, render_output=False)
+
+    assert result == [
+        {
+            "pageIdx": 0,
+            "blockIdx": 1,
+            "text": "Photograph of the Exchange at Crestview apartment complex with the Cushman & Wakefield logo in the top right corner.",
+            "box": {"top": 33, "left": 33, "bottom": 609, "right": 792},
+        },
+        {
+            "pageIdx": 0,
+            "blockIdx": 2,
+            "text": "# EXCHANGE AT",
+            "box": {"top": 41, "left": 45, "bottom": 91, "right": 343},
+        },
+    ]
+
+
 def test_group_by_accepts_implicit_placeholder_lambda():
     script = """%dw 2.0
 output application/json
