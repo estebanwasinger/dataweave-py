@@ -37,6 +37,7 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
+    "PyYAML>=6.0.3",
     "tabulate>=0.10.0",
 ]
 

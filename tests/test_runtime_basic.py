@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 import pytest
+import yaml
 
 import dwpy.parser as parser
 from dwpy.runtime import DataWeaveRuntime, DataWeaveEvaluationError
@@ -562,6 +563,170 @@ output application/csv separator=";" header=true
 
     assert "name;age" in csv_data
     assert "Jane;30" in csv_data
+
+
+def test_payload_accepts_yaml_string_when_format_specified():
+    script = """%dw 2.0
+output application/python
+---
+{
+  customer: upper(payload.order.customer.name),
+  firstSku: payload.order.items[0].sku,
+  totalItems: sizeOf(payload.order.items)
+}
+"""
+    payload = textwrap.dedent(
+        """\
+        order:
+          customer:
+            name: mule
+          items:
+            - sku: A-1
+              quantity: 2
+            - sku: B-2
+              quantity: 1
+        """
+    )
+    runtime = PythonResultRuntime()
+
+    result = runtime.execute(
+        script,
+        payload=payload,
+        payload_format="application/yaml",
+    )
+
+    assert result == {"customer": "MULE", "firstSku": "A-1", "totalItems": 2}
+
+
+def test_payload_yaml_aliases_are_supported():
+    script = """%dw 2.0
+output application/python
+---
+payload.name
+"""
+    runtime = PythonResultRuntime()
+
+    assert runtime.execute(script, payload="name: Ana", payload_format="yaml") == "Ana"
+    assert runtime.execute(script, payload="name: Bob", payload_format="text/yaml") == "Bob"
+
+
+def test_output_directive_serialises_to_yaml():
+    script = """%dw 2.0
+output application/yaml
+---
+{
+  name: "Jane",
+  active: true,
+  tags: ["a", "b"]
+}
+"""
+    runtime = DataWeaveRuntime()
+
+    raw = runtime.execute(script, payload={})
+
+    assert yaml.safe_load(raw) == {"name": "Jane", "active": True, "tags": ["a", "b"]}
+    assert "name: Jane" in raw
+
+
+def test_output_yaml_short_format_directive():
+    script = """%dw 2.0
+output yaml
+---
+{ name: "Jane" }
+"""
+    runtime = DataWeaveRuntime()
+
+    raw = runtime.execute(script, payload={})
+
+    assert yaml.safe_load(raw) == {"name": "Jane"}
+
+
+def test_read_and_write_support_yaml_format():
+    script = """%dw 2.0
+output application/python
+import read, write from dw::Core
+---
+{
+  parsed: read("name: Ana\\nroles:\\n  - admin\\n", "application/yaml").roles[0],
+  written: write({name: "Ana", enabled: true}, "application/yaml")
+}
+"""
+    runtime = PythonResultRuntime()
+
+    result = runtime.execute(script, payload={})
+
+    assert result["parsed"] == "admin"
+    assert yaml.safe_load(result["written"]) == {"name": "Ana", "enabled": True}
+
+
+def test_output_yaml_skip_null_on_objects():
+    script = """%dw 2.0
+output application/yaml skipNullOn="objects"
+---
+{
+  keep: [1, null, 2],
+  remove: null,
+  nested: { remove: null, keep: "yes" }
+}
+"""
+    runtime = DataWeaveRuntime()
+
+    raw = runtime.execute(script, payload={})
+
+    assert yaml.safe_load(raw) == {"keep": [1, None, 2], "nested": {"keep": "yes"}}
+
+
+def test_output_yaml_skip_null_on_arrays():
+    script = """%dw 2.0
+output application/yaml skipNullOn="arrays"
+---
+{
+  keep: [1, null, 2],
+  retained: null,
+  nested: { retained: null, values: [null, "yes"] }
+}
+"""
+    runtime = DataWeaveRuntime()
+
+    raw = runtime.execute(script, payload={})
+
+    assert yaml.safe_load(raw) == {
+        "keep": [1, 2],
+        "retained": None,
+        "nested": {"retained": None, "values": ["yes"]},
+    }
+
+
+def test_output_yaml_skip_null_on_everywhere_and_declaration():
+    script = """%dw 2.0
+output application/yaml skipNullOn="everywhere" writeDeclaration=true
+---
+{
+  keep: [1, null, 2],
+  remove: null,
+  nested: { remove: null, values: [null, "yes"] }
+}
+"""
+    runtime = DataWeaveRuntime()
+
+    raw = runtime.execute(script, payload={})
+
+    assert raw.startswith("---\n")
+    assert yaml.safe_load(raw) == {"keep": [1, 2], "nested": {"values": ["yes"]}}
+
+
+def test_payload_yaml_invalid_input_raises_evaluation_error():
+    script = """%dw 2.0
+output application/python
+---
+payload
+"""
+    runtime = PythonResultRuntime()
+
+    with pytest.raises(DataWeaveEvaluationError) as exc:
+        runtime.execute(script, payload="name: [unterminated", payload_format="application/yaml")
+
+    assert "Failed to parse input as yaml" in str(exc.value)
 
 
 def test_output_plain_text_returns_string_verbatim():
