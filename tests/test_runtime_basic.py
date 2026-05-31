@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 import textwrap
 from datetime import date, datetime, timedelta, timezone
@@ -830,6 +831,48 @@ import * from dw::Core
     assert result["plain"] == "hello"
     assert "| name   | age   |" in result["markdown"]
     assert "| Jane   | 30    |" in result["markdown"]
+
+
+def test_core_module_functions_are_available_without_imports():
+    script = """%dw 2.0
+output application/python
+---
+{
+  parsed: read("{\\"a\\":1}", "application/json").a,
+  written: write({a: 1}, "application/json"),
+  uuidLength: sizeOf(uuid()),
+  root: sqrt(25),
+  powered: pow(2, 3),
+  modded: mod(7, 4),
+  zipped: zip([1, 2], ["a", "b", "c"]),
+  unzipped: unzip([[0, "a"], [1, "b"], [2, "c"]]),
+  chained: 1 then ((value) -> value + 1),
+  fallback: null onNull (() -> "empty")
+}
+"""
+    runtime = PythonResultRuntime()
+    result = runtime.execute(script, payload={})
+
+    assert result == {
+        "parsed": 1,
+        "written": '{"a":1}',
+        "uuidLength": 36,
+        "root": 5,
+        "powered": 8.0,
+        "modded": 3.0,
+        "zipped": [[1, "a"], [2, "b"]],
+        "unzipped": [[0, 1, 2], ["a", "b", "c"]],
+        "chained": 2,
+        "fallback": "empty",
+    }
+
+
+def test_every_named_core_function_is_available_by_default():
+    runtime = DataWeaveRuntime()
+    core_source = (Path(__file__).parents[1] / "dwpy/modules/dw/Core.dwl").read_text()
+    core_function_names = set(re.findall(r"^fun\s+([A-Za-z0-9_]+)", core_source, re.M))
+
+    assert sorted(core_function_names - runtime._builtins.keys()) == []
 
 
 def test_write_plain_rejects_non_string_values():
@@ -1817,6 +1860,60 @@ output application/json
     assert result["prefixGroup"] == result["infixGroup"]
 
 
+def test_map_object_is_available_as_default_core_infix_after_group_by():
+    script = """%dw 2.0
+output application/json
+---
+(payload map {
+  "business_unit" : $.NWMCU_BusinessUnit,
+  "business_name" : $.NWMCU_BusinessUnit_BU_Desc,
+  "unit_number" : trim($.NWUNIT_UnitNo),
+  "sq_ft" : $.NWPMU1_Units_CALC,
+} groupBy ((value, key) -> value.business_name))
+mapObject ((value, key, index) -> {
+    "$(key)" : value
+})
+"""
+    csv_input = textwrap.dedent(
+        """\
+        NWMCU_BusinessUnit,NWMCU_BusinessUnit_BU_Desc,NWUNIT_UnitNo,NWPMU1_Units_CALC
+        8751591,HGIT Liverpool Limited-US GAAP,1,102302
+        8751591,HGIT Liverpool Limited-US GAAP,3,7494
+        8751591,HGIT Liverpool Limited-US GAAP,7
+        """
+    ).strip()
+
+    runtime = PythonResultRuntime()
+    result = runtime.execute(
+        script,
+        payload=csv_input,
+        payload_format="application/csv",
+    )
+
+    assert result == {
+        "HGIT Liverpool Limited-US GAAP": [
+            {
+                "business_unit": "8751591",
+                "business_name": "HGIT Liverpool Limited-US GAAP",
+                "unit_number": "1",
+                "sq_ft": "102302",
+            },
+            {
+                "business_unit": "8751591",
+                "business_name": "HGIT Liverpool Limited-US GAAP",
+                "unit_number": "3",
+                "sq_ft": "7494",
+            },
+            {
+                "business_unit": "8751591",
+                "business_name": "HGIT Liverpool Limited-US GAAP",
+                "unit_number": "7",
+                "sq_ft": None,
+            },
+        ]
+    }
+
+
 def test_random_functions_available():
     runtime = PythonResultRuntime()
     result = runtime.execute(
@@ -2116,14 +2213,14 @@ output application/json
 {
   message: payload.message,
   uppercased: upper(payload.message)
-} then {}
+} unknownInfix {}
 """
     with pytest.raises(DataWeaveEvaluationError) as exc:
         runtime.execute(script, {"message": "hello"})
 
     message = str(exc.value)
-    assert "Unable to resolve reference of `then`." in message
-    assert "7| } then {}" in message
+    assert "Unable to resolve reference of `unknownInfix`." in message
+    assert "7| } unknownInfix {}" in message
     assert "main (line: 7, column: 3)" in message
 
 
