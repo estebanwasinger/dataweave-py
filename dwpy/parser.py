@@ -1184,8 +1184,8 @@ def _unescape_string(value: str) -> str:
 
 def parse_script(source: str) -> Script:
     stripped = source.strip()
-    delimiter_line = _find_top_level_script_delimiter_line(stripped)
-    if delimiter_line is None:
+    delimiter_span = _find_top_level_script_delimiter_span(stripped)
+    if delimiter_span is None:
         if not stripped:
             raise ParseError("Script body cannot be empty")
         header = Header(
@@ -1198,16 +1198,22 @@ def parse_script(source: str) -> Script:
         )
         body_expr = parse_expression_from_source(stripped)
         return Script(header=header, body=body_expr)
-    lines = stripped.splitlines()
-    header_source = "\n".join(lines[:delimiter_line])
-    body_source = "\n".join(lines[delimiter_line + 1 :])
+    delimiter_start, delimiter_end = delimiter_span
+    header_source = stripped[:delimiter_start]
+    body_source = stripped[delimiter_end:]
     header = _parse_header(header_source.strip())
     body_expr = parse_expression_from_source(body_source.strip())
     return Script(header=header, body=body_expr)
 
 
 def _find_top_level_script_delimiter_line(source: str) -> Optional[int]:
-    lines = source.splitlines()
+    delimiter_span = _find_top_level_script_delimiter_span(source)
+    if delimiter_span is None:
+        return None
+    return source[: delimiter_span[0]].count("\n")
+
+
+def _find_top_level_script_delimiter_span(source: str) -> Optional[Tuple[int, int]]:
     curly = 0
     square = 0
     paren = 0
@@ -1215,71 +1221,78 @@ def _find_top_level_script_delimiter_line(source: str) -> Optional[int]:
     escaped = False
     in_block_comment = False
 
-    def update_balances(line: str) -> None:
-        nonlocal curly, square, paren, quote, escaped, in_block_comment
-        i = 0
-        while i < len(line):
-            ch = line[i]
-            nxt = line[i + 1] if i + 1 < len(line) else ""
+    def has_delimiter_boundary(index: int) -> bool:
+        before = source[index - 1] if index > 0 else ""
+        after_index = index + 3
+        after = source[after_index] if after_index < len(source) else ""
+        before_ok = index == 0 or before.isspace()
+        after_ok = after_index == len(source) or after.isspace()
+        return before_ok and after_ok
 
-            if in_block_comment:
-                if ch == "*" and nxt == "/":
-                    in_block_comment = False
-                    i += 2
-                    continue
-                i += 1
-                continue
+    i = 0
+    while i < len(source):
+        ch = source[i]
+        nxt = source[i + 1] if i + 1 < len(source) else ""
 
-            if quote is not None:
-                if escaped:
-                    escaped = False
-                    i += 1
-                    continue
-                if ch == "\\":
-                    escaped = True
-                    i += 1
-                    continue
-                if ch == quote:
-                    quote = None
-                i += 1
-                continue
-
-            if ch == "/" and nxt == "*":
-                in_block_comment = True
+        if in_block_comment:
+            if ch == "*" and nxt == "/":
+                in_block_comment = False
                 i += 2
                 continue
-            if ch == "/" and nxt == "/":
-                break
+            i += 1
+            continue
 
-            if ch in ("'", '"'):
-                quote = ch
+        if quote is not None:
+            if escaped:
+                escaped = False
                 i += 1
                 continue
-            if ch == "{":
-                curly += 1
-            elif ch == "}":
-                curly -= 1
-            elif ch == "[":
-                square += 1
-            elif ch == "]":
-                square -= 1
-            elif ch == "(":
-                paren += 1
-            elif ch == ")":
-                paren -= 1
+            if ch == "\\":
+                escaped = True
+                i += 1
+                continue
+            if ch == quote:
+                quote = None
             i += 1
+            continue
 
-    for index, line in enumerate(lines):
+        if ch == "/" and nxt == "*":
+            in_block_comment = True
+            i += 2
+            continue
+        if ch == "/" and nxt == "/":
+            newline_index = source.find("\n", i)
+            if newline_index == -1:
+                break
+            i = newline_index + 1
+            continue
+
         if (
-            line.strip() == "---"
+            source.startswith("---", i)
             and curly == 0
             and square == 0
             and paren == 0
-            and quote is None
-            and not in_block_comment
+            and has_delimiter_boundary(i)
         ):
-            return index
-        update_balances(line)
+            return (i, i + 3)
+
+        if ch in ("'", '"', "`"):
+            quote = ch
+            i += 1
+            continue
+        if ch == "{":
+            curly += 1
+        elif ch == "}":
+            curly -= 1
+        elif ch == "[":
+            square += 1
+        elif ch == "]":
+            square -= 1
+        elif ch == "(":
+            paren += 1
+        elif ch == ")":
+            paren -= 1
+        i += 1
     return None
 
 
@@ -1616,11 +1629,8 @@ def _parse_header(header_source: str) -> Header:
             continue
         raise ParseError(f"Unsupported header directive '{line}' at header line {line_number}", line_number, 1)
 
-    if version is None:
-        raise ParseError("Missing %dw directive")
-
     return Header(
-        version=version,
+        version=version or "2.0",
         output=output,
         imports=imports,
         variables=variables,

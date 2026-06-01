@@ -1399,6 +1399,15 @@ output application/yaml skipNullOn="everywhere" writeDeclaration=true
     assert runtime._rust_runtime.last_execution_engine() == "rust-core"
 
 
+def test_rust_bridge_executes_one_line_output_script_in_core() -> None:
+    runtime = DataWeaveRuntime(backend="rust")
+
+    result = runtime.execute("output application/yaml --- payload", {"name": "dw"})
+
+    assert "name: dw" in result
+    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+
+
 def test_rust_bridge_dispatches_typed_overloads_in_core() -> None:
     runtime = DataWeaveRuntime()
     script = """%dw 2.0

@@ -2020,6 +2020,12 @@ def test_body_only_script_without_header():
     assert result == "hello"
 
 
+def test_one_line_output_script_without_dw_header_uses_directive():
+    runtime = DataWeaveRuntime(backend="python")
+    result = runtime.execute("output application/yaml --- payload", {"name": "hello"})
+    assert yaml.safe_load(result) == {"name": "hello"}
+
+
 def test_header_defined_function_invocation():
     runtime = PythonResultRuntime()
     script = """%dw 2.0

@@ -3115,10 +3115,15 @@ class DataWeaveRuntime:
 
     @staticmethod
     def _compute_body_line_offset(source: str) -> int:
-        for index, line_text in enumerate(source.splitlines(), start=1):
-            if line_text.strip() == "---":
-                return index
-        return 0
+        delimiter_span = parser._find_top_level_script_delimiter_span(source)
+        if delimiter_span is None:
+            return 0
+        body_start = delimiter_span[1]
+        while body_start < len(source) and source[body_start].isspace():
+            body_start += 1
+        if body_start >= len(source):
+            return 0
+        return source[:body_start].count("\n")
 
     def _evaluate_string_literal(self, template: str, ctx: EvaluationContext) -> str:
         result: List[str] = []

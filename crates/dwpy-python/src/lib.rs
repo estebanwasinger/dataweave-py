@@ -523,7 +523,10 @@ fn line_column(source: &str, byte_index: usize) -> (usize, usize) {
 }
 
 fn is_core_candidate(script_source: &str) -> bool {
-    let output_line = script_source
+    let header_source = dwpy_core::parse_script_boundary_span(script_source)
+        .map(|(delimiter_start, _)| &script_source[..delimiter_start])
+        .unwrap_or(script_source);
+    let output_line = header_source
         .lines()
         .map(str::trim)
         .find_map(|line| line.strip_prefix("output ").map(str::trim));

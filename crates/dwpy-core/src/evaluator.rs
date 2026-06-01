@@ -2,7 +2,7 @@ use serde_json::{Map, Value};
 
 use crate::functions::evaluate_header_declarations;
 use crate::literals::{evaluate_object_key, parse_literal, parse_string_literal};
-use crate::script::parse_script_boundary;
+use crate::script::parse_script_boundary_span;
 use crate::selectors::{
     collapse_xml_like_value, duplicate_object_pairs, duplicate_object_value,
     evaluate_local_path_with_collapse, evaluate_payload_path_with_collapse,
@@ -48,26 +48,15 @@ pub(crate) fn evaluate_do_block_scoped(
     }
 
     let inner = &rest[1..close];
-    let Some(delimiter_line) = parse_script_boundary(inner) else {
+    let Some((delimiter_start, delimiter_end)) = parse_script_boundary_span(inner) else {
         return evaluate_expression_scoped(inner.trim(), payload, locals);
     };
-    let lines = inner.lines().collect::<Vec<_>>();
-    let header = lines
-        .iter()
-        .take(delimiter_line)
-        .copied()
-        .collect::<Vec<_>>()
-        .join("\n");
-    let body = lines
-        .iter()
-        .skip(delimiter_line + 1)
-        .copied()
-        .collect::<Vec<_>>()
-        .join("\n");
+    let header = inner[..delimiter_start].trim();
+    let body = inner[delimiter_end..].trim();
 
     let mut scoped_locals = locals.clone();
-    evaluate_header_declarations(&header, payload, &mut scoped_locals)?;
-    evaluate_expression_scoped(body.trim(), payload, &scoped_locals)
+    evaluate_header_declarations(header, payload, &mut scoped_locals)?;
+    evaluate_expression_scoped(body, payload, &scoped_locals)
 }
 
 pub(crate) fn evaluate_using_expression_scoped(

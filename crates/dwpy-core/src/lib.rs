@@ -64,6 +64,7 @@ use operators::{
 };
 use output::{render_json_compact_expression, render_output_value};
 pub use script::parse_script_boundary;
+pub use script::parse_script_boundary_span;
 use script::split_script;
 use selectors::{
     evaluate_local_path, evaluate_payload_path, parse_path_segments, parse_postfix_path_access,
@@ -1561,6 +1562,12 @@ mod tests {
     fn finds_top_level_script_delimiter() {
         let script = "%dw 2.0\n// --- ignored\nvar x = \"---\"\n---\npayload";
         assert_eq!(parse_script_boundary(script), Some(3));
+    }
+
+    #[test]
+    fn finds_inline_top_level_script_delimiter() {
+        let script = "output application/yaml --- payload";
+        assert_eq!(parse_script_boundary_span(script), Some((24, 27)));
     }
 
     #[test]
