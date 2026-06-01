@@ -96,8 +96,9 @@ output application/json
     result = runtime.execute(script, payload={}, render_output=False)
     assert result["ok"] == {"success": True, "result": "ok"}
     assert result["err"]["success"] is False
-    assert result["err"]["error"]["kind"] == "DataWeaveEvaluationError"
-    assert "boom" in result["err"]["error"]["message"]
+    assert result["err"]["error"]["kind"] == "UserException"
+    assert result["err"]["error"]["message"] == "boom"
+    assert result["err"]["error"]["location"] == "Unknown location"
 
 
 def test_crypto_hash_with_supports_requested_algorithms() -> None:

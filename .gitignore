@@ -47,3 +47,6 @@ htmlcov/
 
 # uv
 uv.lock
+
+# Rust
+target/

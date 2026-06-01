@@ -112,7 +112,7 @@ import * from dw::core::Periods
     raw = runtime.execute(script, payload=payload)
     parsed = json.loads(raw)
     assert parsed["periodValue"] == "P4Y"
-    assert parsed["nextHour"] == "2020-10-05T21:22:34.385000Z"
+    assert parsed["nextHour"] == "2020-10-05T21:22:34.385Z"
 
 
 def test_between_with_pipe_date_literals_matches_docs():

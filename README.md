@@ -1,6 +1,6 @@
 # DataWeave-Py
 
-A native Python implementation of the DataWeave data transformation language, providing powerful data transformation capabilities directly in Python without requiring the JVM.
+A DataWeave data transformation runtime with a Rust-native engine package and a Python bridge, providing powerful data transformation capabilities without requiring the JVM.
 
 Install from PyPI:
 
@@ -35,7 +35,7 @@ pip install "dataweave-py[full]"
 
 ## Overview
 
-DataWeave-Py (`dwpy`) is a Python interpreter for the DataWeave language, originally developed by MuleSoft for data transformation in the Mule runtime. This project brings DataWeave's expressive transformation syntax and rich feature set to the Python ecosystem, enabling:
+DataWeave-Py (`dwpy`) is a Python-facing interpreter for the DataWeave language, originally developed by MuleSoft for data transformation in the Mule runtime. The runtime is migrating to a Rust core while preserving the existing Python API, enabling:
 
 - **Data transformation**: Convert between JSON, XML, CSV and other formats
 - **Functional programming**: Leverage map, filter, reduce, and other functional operators
@@ -46,7 +46,70 @@ DataWeave-Py (`dwpy`) is a Python interpreter for the DataWeave language, origin
 ## Requirements
 
 - Python 3.10 or higher
+- Rust stable toolchain with `cargo`
 - Dependencies managed via [uv](https://github.com/astral-sh/uv) (recommended) or pip
+
+## Rust Engine And Python Bridge
+
+The default runtime path is the Rust engine exposed through the Python package as
+`dwpy._dwpy_rust`. The legacy Python interpreter is still available as an
+explicit fallback backend.
+
+Build and install the Rust-backed Python bridge into the local virtual
+environment:
+
+```bash
+uv venv --python 3.12
+source .venv/bin/activate
+UV_CACHE_DIR=.uv-cache uv run maturin develop --release
+```
+
+Run the Rust backend from Python:
+
+```python
+from dwpy import DataWeaveRuntime
+
+runtime = DataWeaveRuntime(backend="rust")
+result = runtime.execute(
+    "%dw 2.0\noutput application/json\n---\n{message: upper(payload.message)}",
+    {"message": "hello from rust"},
+)
+print(result)
+```
+
+Backend selection:
+
+- `DataWeaveRuntime()` or `backend="auto"` uses the Rust bridge first and falls
+  back to the legacy Python backend only for explicitly unsupported migration
+  gaps.
+- `DataWeaveRuntime(backend="rust")` runs strict Rust mode and fails instead of
+  falling back.
+- `DataWeaveRuntime(backend="python")` uses the legacy Python interpreter.
+- `DWPY_BACKEND=rust` forces strict Rust mode for process-wide test runs.
+
+Build a distributable wheel with the Rust extension:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run maturin build --release
+```
+
+Run the Rust workspace tests:
+
+```bash
+cargo test --workspace
+```
+
+Run the Python suite against the Rust backend:
+
+```bash
+DWPY_BACKEND=rust UV_CACHE_DIR=.uv-cache uv run --extra dev pytest
+```
+
+Run the default Python package path, which exercises the Python bridge:
+
+```bash
+UV_CACHE_DIR=.uv-cache uv run --extra dev pytest
+```
 
 ## Quick Start
 
@@ -347,11 +410,16 @@ require("lspconfig").dwpy_lsp.setup({
 ## Project Structure
 
 ```
-runtime-2.11.0-20250825-src/
+dataweave-py/
+├── crates/                    # Rust workspace
+│   ├── dwpy-core/             # Core Rust value model and engine foundation
+│   ├── dwpy-python/           # PyO3 extension exposed as dwpy._dwpy_rust
+│   └── dwpy-wasm/             # WASM wrapper foundation
 ├── dwpy/                      # Main Python package
 │   ├── __init__.py           # Package exports
 │   ├── parser.py             # DataWeave parser
-│   ├── runtime.py            # Execution engine
+│   ├── runtime.py            # Runtime backend facade
+│   ├── _python_runtime.py    # Legacy Python interpreter backend
 │   └── builtins.py           # Built-in functions
 ├── tests/                     # Test suite
 │   ├── test_runtime_basic.py # Core functionality tests
@@ -372,24 +440,24 @@ runtime-2.11.0-20250825-src/
 uv venv --python 3.12
 source .venv/bin/activate
 
-# Install development dependencies
-uv pip sync
+# Install Python development dependencies
+UV_CACHE_DIR=.uv-cache uv sync --extra dev
 
-# Install in editable mode
-pip install -e .
+# Build and install the Rust-backed Python bridge in editable mode
+UV_CACHE_DIR=.uv-cache uv run maturin develop --release
 ```
 
 ### Running the Test Suite
 
 ```bash
 # Run all tests
-python -m pytest tests/
+UV_CACHE_DIR=.uv-cache uv run --extra dev pytest
 
-# Run specific test category
-python -m pytest tests/test_builtins.py
+# Force strict Rust backend
+DWPY_BACKEND=rust UV_CACHE_DIR=.uv-cache uv run --extra dev pytest
 
-# Run with coverage report
-python -m pytest --cov=dwpy --cov-report=html tests/
+# Run Rust workspace tests
+cargo test --workspace
 ```
 
 ### Code Style
@@ -406,13 +474,13 @@ DataWeave-Py aims to provide feature parity with the official JVM-based DataWeav
 
 | Feature | JVM Runtime | DataWeave-Py |
 |---------|-------------|--------------|
-| Language | Scala | Python |
-| Performance | High (compiled) | Good (interpreted) |
-| Startup Time | Slower (JVM warmup) | Fast (native Python) |
-| Memory Usage | Higher (JVM overhead) | Lower (Python runtime) |
-| Integration | Java/Mule apps | Python apps |
-| Module System | Full support | In progress |
-| Type System | Static typing | Dynamic typing |
+| Language | Scala | Rust core with Python bridge |
+| Performance | High (compiled/JIT) | Native Rust engine through PyO3 |
+| Startup Time | Slower (JVM warmup) | Fast native extension loading |
+| Memory Usage | Higher (JVM overhead) | Lower native runtime footprint |
+| Integration | Java/Mule apps | Python apps, Rust crate, future WASM wrapper |
+| Module System | Full support | Rust-native support for the current suite |
+| Type System | Static typing | Rust-backed inference plus Python API helpers |
 
 ## Roadmap
 

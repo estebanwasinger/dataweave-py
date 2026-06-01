@@ -1,0 +1,13 @@
+[workspace]
+members = [
+    "crates/dwpy-core",
+    "crates/dwpy-python",
+    "crates/dwpy-wasm",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/estebanwasinger/dataweave-py"
+

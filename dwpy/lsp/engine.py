@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .. import builtins, parser
-from ..type_inference import TypeInferencer, _python_value_to_type
+from ..type_inference import TypeInferencer, _dw_type_from_rust_descriptor, _python_value_to_type
 from ..typesystem import (
     ANY,
     NUMBER,
@@ -162,6 +162,8 @@ class EngineSignatureHelp:
 class _AnalysisContext:
     payload_type: DWType
     vars_type: DWType
+    payload_value: Any
+    vars_value: Any
     symbol_types: Dict[str, DWType]
     local_signatures: Dict[str, Tuple[FunctionSignature, ...]]
     imported_signatures: Dict[str, Tuple[FunctionSignature, ...]]
@@ -349,6 +351,8 @@ class DataWeaveLanguageEngine:
         return _AnalysisContext(
             payload_type=payload_type,
             vars_type=vars_type,
+            payload_value=payload_value,
+            vars_value=vars_value,
             symbol_types=symbol_types,
             local_signatures=local_signatures,
             imported_signatures=imported_signatures,
@@ -585,6 +589,10 @@ class DataWeaveLanguageEngine:
         return sorted(suggestions.values(), key=lambda item: item.sort_text or item.label)
 
     def _resolve_expression_type(self, expression: str, ctx: _AnalysisContext) -> DWType:
+        rust_type = self._resolve_expression_type_rust(expression, ctx)
+        if rust_type is not None:
+            return rust_type
+
         parts = [part for part in expression.replace("?.", ".").split(".") if part]
         if not parts:
             return ANY
@@ -601,6 +609,25 @@ class DataWeaveLanguageEngine:
             for index_token in indexes:
                 current = _resolve_index_type(current, index_token)
         return current
+
+    def _resolve_expression_type_rust(
+        self,
+        expression: str,
+        ctx: _AnalysisContext,
+    ) -> Optional[DWType]:
+        payload_value = None if ctx.payload_value is _MISSING else ctx.payload_value
+        vars_value = None if ctx.vars_value is _MISSING else ctx.vars_value
+        try:
+            from .._dwpy_rust import RustDataWeaveRuntime
+
+            descriptor = RustDataWeaveRuntime().infer_type_descriptor(
+                expression,
+                payload=payload_value,
+                vars=vars_value,
+            )
+        except Exception:
+            return None
+        return _dw_type_from_rust_descriptor(descriptor)
 
     def _lookup_function_signatures(
         self,
