@@ -240,6 +240,62 @@ payload.user.<cursor>name
     assert "String" in hover.contents
 
 
+def test_lsp_field_resolution_can_use_rust_type_descriptors(monkeypatch) -> None:
+    import dwpy.lsp.engine as lsp_engine
+
+    def fail_python_property_resolution(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("Python property resolver should not be needed")
+
+    monkeypatch.setattr(lsp_engine, "_resolve_property_type", fail_python_property_resolution)
+
+    engine = DataWeaveLanguageEngine()
+    script, line, column = _cursor(
+        """%dw 2.0
+---
+payload.user.<cursor>
+"""
+    )
+    items = engine.complete(
+        script=script,
+        line=line,
+        column=column,
+        payload={"user": {"name": "mule", "age": 12}},
+        vars={},
+    )
+
+    labels = _labels(items)
+    assert "name" in labels
+    assert "age" in labels
+
+
+def test_lsp_index_resolution_can_use_rust_type_descriptors(monkeypatch) -> None:
+    import dwpy.lsp.engine as lsp_engine
+
+    def fail_python_index_resolution(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("Python index resolver should not be needed")
+
+    monkeypatch.setattr(lsp_engine, "_resolve_index_type", fail_python_index_resolution)
+
+    engine = DataWeaveLanguageEngine()
+    script, line, column = _cursor(
+        """%dw 2.0
+---
+payload.items[0].<cursor>
+"""
+    )
+    items = engine.complete(
+        script=script,
+        line=line,
+        column=column,
+        payload={"items": [{"name": "mule", "price": 12}]},
+        vars={},
+    )
+
+    labels = _labels(items)
+    assert "name" in labels
+    assert "price" in labels
+
+
 def test_hover_reports_function_signature() -> None:
     engine = DataWeaveLanguageEngine()
     script, line, column = _cursor(

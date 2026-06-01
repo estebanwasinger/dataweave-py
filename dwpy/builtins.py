@@ -1025,6 +1025,47 @@ def builtin_pluck(obj: Any, mapper: Callable[..., Any]) -> List[Any]:
     return [invoke_lambda(mapper, value, key, index) for index, (key, value) in enumerate(obj.items())]
 
 
+def builtin_map_object(obj: Any, mapper: Callable[..., Any]) -> Any:
+    if obj is None:
+        return None
+    if not isinstance(obj, Mapping):
+        raise TypeError("mapObject expects an object")
+    result: Dict[Any, Any] = {}
+    for index, (key, value) in enumerate(obj.items()):
+        mapped = invoke_lambda(mapper, value, key, index)
+        if mapped is None:
+            continue
+        if not isinstance(mapped, Mapping):
+            raise TypeError("mapObject mapper must return an object")
+        result.update(mapped)
+    return result
+
+
+def builtin_zip(left: Any, right: Any) -> List[List[Any]]:
+    if left is None or right is None:
+        return []
+    return [
+        [left_item, right_item]
+        for left_item, right_item in zip(_coerce_iterable(left), _coerce_iterable(right))
+    ]
+
+
+def builtin_unzip(items: Any) -> List[List[Any]]:
+    if items is None:
+        return []
+    rows = [list(_coerce_iterable(item)) for item in _coerce_iterable(items)]
+    if not rows:
+        return []
+    width = min(len(row) for row in rows)
+    return [[row[index] for row in rows] for index in range(width)]
+
+
+def builtin_xsi_type(name: Any, namespace: Any) -> Dict[str, Any]:
+    namespace_obj = namespace if isinstance(namespace, Mapping) else {}
+    prefix = namespace_obj.get("prefix", "xsi")
+    return {"xsi:type": f"{prefix}:{name}"}
+
+
 def builtin_last_index_of(value: Any, target: Any) -> int:
     if value is None:
         return -1
@@ -1086,6 +1127,17 @@ def builtin_log_warn(prefix: Optional[str], value: Any = _LOG_SENTINEL) -> Any:
 
 def builtin_log_error(prefix: Optional[str], value: Any = _LOG_SENTINEL) -> Any:
     return _log_with_level(logging.ERROR, prefix, value)
+
+
+def builtin_log_with(level: Any, prefix: Optional[str], value: Any) -> Any:
+    level_map = {
+        "debug": logging.DEBUG,
+        "info": logging.INFO,
+        "warn": logging.WARNING,
+        "warning": logging.WARNING,
+        "error": logging.ERROR,
+    }
+    return _log_with_level(level_map.get(str(level).lower(), logging.INFO), prefix, value)
 
 
 def builtin_pow(base: Any, exponent: Any) -> Any:
@@ -1720,6 +1772,7 @@ CORE_FUNCTIONS: Dict[str, Callable[..., Any]] = {
     "words": builtin_words,
     "wrapIfMissing": builtin_wrap_if_missing,
     "wrapWith": builtin_wrap_with,
+    "mapObject": builtin_map_object,
     "pluck": builtin_pluck,
     "upper": lambda value: None if value is None else str(value).upper(),
     "valuesOf": builtin_values_of,
@@ -1728,8 +1781,13 @@ CORE_FUNCTIONS: Dict[str, Callable[..., Any]] = {
     "logInfo": builtin_log_info,
     "logWarn": builtin_log_warn,
     "logError": builtin_log_error,
+    "logWith": builtin_log_with,
     "random": builtin_random,
     "randomInt": builtin_random_int,
+    "isLegacySizeOfNumber": lambda: False,
+    "xsiType": builtin_xsi_type,
+    "zip": builtin_zip,
+    "unzip": builtin_unzip,
 }
 INFIX_ALIASES: Dict[str, str] = {
     "map": "map",

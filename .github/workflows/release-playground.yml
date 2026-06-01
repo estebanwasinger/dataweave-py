@@ -1,0 +1,157 @@
+name: Release Playground
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: release-playground-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  UV_CACHE_DIR: .uv-cache
+  PLAYGROUND_REPOSITORY: estebanwasinger/v0-dataweave-editor
+  PLAYGROUND_BRANCH: main
+  WASM_PACK_VERSION: 0.13.1
+
+jobs:
+  release-playground:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout DataWeave repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}-${{ env.WASM_PACK_VERSION }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: Install wasm-pack
+        run: |
+          if ! command -v wasm-pack >/dev/null 2>&1; then
+            cargo install wasm-pack --version "$WASM_PACK_VERSION" --locked
+          fi
+
+      - name: Sync Python dependencies
+        run: uv sync --extra dev
+
+      - name: Run Python tests
+        run: uv run --extra dev python -m pytest
+
+      - name: Run Rust tests
+        run: cargo test --workspace
+
+      - name: Build playground WASM package
+        run: |
+          wasm-pack build crates/dwpy-wasm \
+            --target web \
+            --release \
+            --out-name dwpy_wasm \
+            --out-dir pkg
+
+      - name: Validate playground repository token
+        env:
+          PLAYGROUND_REPO_PAT: ${{ secrets.PLAYGROUND_REPO_PAT }}
+        run: |
+          if [ -z "$PLAYGROUND_REPO_PAT" ]; then
+            echo "PLAYGROUND_REPO_PAT is required to push generated assets to ${PLAYGROUND_REPOSITORY}."
+            exit 1
+          fi
+
+      - name: Checkout playground repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PLAYGROUND_REPOSITORY }}
+          ref: ${{ env.PLAYGROUND_BRANCH }}
+          token: ${{ secrets.PLAYGROUND_REPO_PAT }}
+          path: playground
+
+      - name: Copy WASM assets and write build metadata
+        env:
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.sha }}
+          SOURCE_BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          wasm_dir="playground/public/wasm/rust"
+          mkdir -p "$wasm_dir"
+          rsync -a --delete crates/dwpy-wasm/pkg/ "$wasm_dir/"
+
+          python - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          metadata = {
+              "source_repository": os.environ["SOURCE_REPOSITORY"],
+              "source_commit": os.environ["SOURCE_SHA"],
+              "source_branch": os.environ["SOURCE_BRANCH"],
+              "built_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+          }
+
+          output_path = Path("playground/public/wasm/dataweave-build.json")
+          output_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
+          PY
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build playground
+        working-directory: playground
+        run: |
+          corepack enable
+          corepack prepare pnpm@9 --activate
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Commit and push playground update
+        working-directory: playground
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet -- public/wasm; then
+            echo "No playground WASM changes to publish."
+            exit 0
+          fi
+
+          short_sha="${SOURCE_SHA::7}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add public/wasm
+          git commit -m "chore(playground): update DataWeave engine to ${short_sha}"
+          git push origin "HEAD:${PLAYGROUND_BRANCH}"

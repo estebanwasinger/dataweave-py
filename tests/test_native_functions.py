@@ -59,7 +59,9 @@ output application/json
   mimeText: toString({type: "application", subtype: "json", parameters: {}}),
   handled: isHandledBy({type: "application", subtype: "*", parameters: {}}, {type: "application", subtype: "json", parameters: {}}),
   parsed: read("{\\"a\\": 1}", "application/json").a,
+  yamlParsed: read("name: Ana\\nroles:\\n  - admin\\n", "application/yaml").roles[0],
   written: write({a: 1}, "application/json"),
+  yamlWritten: write({name: "Ana", enabled: true}, "application/yaml"),
   mapped: mapObject({a: 1, b: 2}, (value, key, index) -> {(upper(key)): value + index})
 }
 """
@@ -73,7 +75,10 @@ output application/json
     assert result["mimeText"] == "application/json"
     assert result["handled"] is True
     assert result["parsed"] == 1
+    assert result["yamlParsed"] == "admin"
     assert result["written"] == '{"a":1}'
+    assert "name: Ana" in result["yamlWritten"]
+    assert "enabled: true" in result["yamlWritten"]
     assert result["mapped"] == {"A": 1, "B": 3}
 
 
@@ -91,8 +96,9 @@ output application/json
     result = runtime.execute(script, payload={}, render_output=False)
     assert result["ok"] == {"success": True, "result": "ok"}
     assert result["err"]["success"] is False
-    assert result["err"]["error"]["kind"] == "DataWeaveEvaluationError"
-    assert "boom" in result["err"]["error"]["message"]
+    assert result["err"]["error"]["kind"] == "UserException"
+    assert result["err"]["error"]["message"] == "boom"
+    assert result["err"]["error"]["location"] == "Unknown location"
 
 
 def test_crypto_hash_with_supports_requested_algorithms() -> None:

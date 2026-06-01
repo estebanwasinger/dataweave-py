@@ -11,6 +11,7 @@ from typing import Any, Callable, Dict, Optional
 import xml.etree.ElementTree as ET
 
 from tabulate import tabulate
+import yaml
 
 
 class FormatError(ValueError):
@@ -164,6 +165,15 @@ def _register_builtin_formats() -> None:
         ),
         aliases=["xml", "text/xml"],
     )
+    FormatRegistry.register(
+        FormatDefinition(
+            id="yaml",
+            mime_type="application/yaml",
+            reader=_yaml_reader,
+            writer=_yaml_writer,
+        ),
+        aliases=["yaml", "yml", "text/yaml", "application/x-yaml", "text/x-yaml"],
+    )
 
 
 def _ensure_text(value: Any, options: Dict[str, Any]) -> str:
@@ -198,6 +208,83 @@ def _json_writer(value: Any, options: Dict[str, Any]) -> str:
     sort_keys = _to_bool(options.get("sort_keys", False))
     encoder = _JSONEncoder(indent=indent, ensure_ascii=ensure_ascii, sort_keys=sort_keys)
     return encoder.encode(value)
+
+
+def _yaml_reader(value: Any, options: Dict[str, Any]) -> Any:
+    if isinstance(value, (dict, list)):
+        return value
+    text = _ensure_text(value, options)
+    return yaml.safe_load(text)
+
+
+def _yaml_writer(value: Any, options: Dict[str, Any]) -> str:
+    skip_null_on = options.get("skipNullOn")
+    normalized = _normalize_yaml_value(value)
+    if skip_null_on is not None:
+        normalized = _skip_yaml_nulls(normalized, str(skip_null_on))
+    return yaml.safe_dump(
+        normalized,
+        allow_unicode=True,
+        default_flow_style=False,
+        explicit_start=_to_bool(options.get("writeDeclaration", False)),
+        sort_keys=False,
+    )
+
+
+def _normalize_yaml_value(value: Any) -> Any:
+    if hasattr(value, "to_iso8601") and callable(getattr(value, "to_iso8601")):
+        return value.to_iso8601()
+    if isinstance(value, datetime):
+        return value.isoformat().replace("+00:00", "Z")
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, time):
+        return value.isoformat().replace("+00:00", "Z")
+    if isinstance(value, timedelta):
+        return _format_timedelta_iso(value)
+    if isinstance(value, XMLNodeDict):
+        text_value = None
+        normalized_children: Dict[str, Any] = {}
+        for key, child in value.items():
+            if key == "#text":
+                text_value = _normalize_yaml_value(child)
+                continue
+            if key.startswith("@"):
+                continue
+            normalized_children[key] = _normalize_yaml_value(child)
+        if normalized_children:
+            return normalized_children
+        if text_value is not None:
+            return text_value
+        return ""
+    if isinstance(value, XMLNodeList):
+        return [_normalize_yaml_value(item) for item in value]
+    if isinstance(value, list):
+        return [_normalize_yaml_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_normalize_yaml_value(item) for item in value]
+    if isinstance(value, Mapping):
+        return {str(key): _normalize_yaml_value(val) for key, val in value.items()}
+    return value
+
+
+def _skip_yaml_nulls(value: Any, mode: str) -> Any:
+    normalized_mode = mode.lower()
+    if normalized_mode not in {"arrays", "objects", "everywhere"}:
+        raise FormatError("YAML skipNullOn must be 'arrays', 'objects', or 'everywhere'")
+    if isinstance(value, list):
+        items = [_skip_yaml_nulls(item, normalized_mode) for item in value]
+        if normalized_mode in {"arrays", "everywhere"}:
+            return [item for item in items if item is not None]
+        return items
+    if isinstance(value, Mapping):
+        result = {}
+        for key, item in value.items():
+            if item is None and normalized_mode in {"objects", "everywhere"}:
+                continue
+            result[key] = _skip_yaml_nulls(item, normalized_mode)
+        return result
+    return value
 
 
 def _format_timedelta_iso(value: timedelta) -> str:

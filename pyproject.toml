@@ -1,11 +1,11 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["maturin>=1.13,<2"]
+build-backend = "maturin"
 
 [project]
 name = "dataweave-py"
 version = "0.4.0"
-description = "DataWeave interpreter running natively on Python"
+description = "DataWeave interpreter with a Rust-native engine and Python bridge"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
@@ -37,6 +37,7 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
+    "PyYAML>=6.0.3",
     "tabulate>=0.10.0",
 ]
 
@@ -73,12 +74,14 @@ dev = [
     "ipykernel>=7.1.0",
 ]
 
-[tool.setuptools]
-packages = ["dwpy", "dwpy.lsp"]
-include-package-data = true
-
-[tool.setuptools.package-data]
-dwpy = ["modules/**/*.dwl", "modules/**/*.bdwl"]
+[tool.maturin]
+manifest-path = "crates/dwpy-python/Cargo.toml"
+module-name = "dwpy._dwpy_rust"
+python-source = "."
+include = [
+    { path = "dwpy/modules/**/*.dwl", format = ["sdist", "wheel"] },
+    { path = "dwpy/modules/**/*.bdwl", format = ["sdist", "wheel"] },
+]
 
 [dependency-groups]
 dev = [

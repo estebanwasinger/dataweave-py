@@ -91,11 +91,90 @@ def infer_script_type(
     payload_type: DWType | Any = ANY,
     vars_type: DWType | Any = ANY,
 ) -> DWType:
+    rust_inferred = _infer_script_type_rust(
+        script_source,
+        payload_type=payload_type,
+        vars_type=vars_type,
+    )
+    if rust_inferred is not None:
+        return rust_inferred
+
     payload_type = _python_value_to_type(payload_type)
     vars_type = _python_value_to_type(vars_type)
     script = parser.parse_script(script_source)
     inferencer = TypeInferencer(payload_type=payload_type, vars_type=vars_type)
     return inferencer.infer_script(script)
+
+
+def _infer_script_type_rust(
+    script_source: str,
+    *,
+    payload_type: DWType | Any,
+    vars_type: DWType | Any,
+) -> Optional[DWType]:
+    payload_arg: Any
+    vars_arg: Any
+    if isinstance(payload_type, DWType) and payload_type is not ANY:
+        return None
+    if isinstance(vars_type, DWType) and vars_type is not ANY:
+        return None
+    payload_arg = None if payload_type is ANY else payload_type
+    vars_arg = None if vars_type is ANY else vars_type
+    try:
+        from ._dwpy_rust import RustDataWeaveRuntime
+
+        descriptor = RustDataWeaveRuntime().infer_type_descriptor(
+            script_source,
+            payload=payload_arg,
+            vars=vars_arg,
+        )
+    except Exception:
+        return None
+    return _dw_type_from_rust_descriptor(descriptor)
+
+
+def _dw_type_from_rust_descriptor(descriptor: Any) -> Optional[DWType]:
+    if not isinstance(descriptor, dict):
+        return None
+    kind = descriptor.get("kind")
+    if kind == "Any":
+        return ANY
+    if kind == "String":
+        return STRING
+    if kind == "Number":
+        return NUMBER
+    if kind == "Boolean":
+        return BOOLEAN
+    if kind == "Null":
+        return NULL
+    if kind == "Array":
+        element = _dw_type_from_rust_descriptor(descriptor.get("element"))
+        return array_type(element or ANY)
+    if kind == "Object":
+        fields: Dict[str, Tuple[DWType, bool, bool]] = {}
+        raw_fields = descriptor.get("fields")
+        if isinstance(raw_fields, dict):
+            for name, raw_field in raw_fields.items():
+                if not isinstance(raw_field, dict):
+                    continue
+                field_type = _dw_type_from_rust_descriptor(raw_field.get("type")) or ANY
+                fields[str(name)] = (
+                    field_type,
+                    bool(raw_field.get("optional", False)),
+                    bool(raw_field.get("repeatable", False)),
+                )
+        return object_type(fields, is_open_flag=bool(descriptor.get("open", True)))
+    if kind == "Union":
+        options = descriptor.get("options")
+        if not isinstance(options, list):
+            return ANY
+        converted = [
+            option_type
+            for option in options
+            if (option_type := _dw_type_from_rust_descriptor(option)) is not None
+        ]
+        return union_types(*converted) if converted else ANY
+    return None
 
 
 def _python_value_to_type(value: Any) -> DWType:
