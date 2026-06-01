@@ -26,6 +26,7 @@ jobs:
       id-token: write
     env:
       UV_CACHE_DIR: .uv-cache
+      DWPY_DATAWEAVE_DOCS: docs-dataweave/modules/ROOT/pages
     steps:
       - name: Determine publish target
         id: target
@@ -38,6 +39,12 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Checkout official DataWeave docs examples
+        uses: actions/checkout@v4
+        with:
+          repository: mulesoft/docs-dataweave
+          path: docs-dataweave
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -52,7 +59,7 @@ jobs:
         run: uv sync --extra dev
 
       - name: Run tests
-        run: uv run --extra dev pytest
+        run: uv run --extra dev python -m pytest
 
       - name: Build distribution
         run: uv build
