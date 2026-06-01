@@ -72,8 +72,9 @@ use selectors::{
 };
 use strings::replace_with;
 use syntax::{
-    find_matching_delimiter, is_identifier, parse_if_expression, parse_index_access,
-    split_top_level_char, split_top_level_keyword, split_top_level_keyword_operator,
+    find_matching_delimiter, is_binary_operator_position, is_identifier, is_top_level_index,
+    parse_if_expression, parse_index_access, split_top_level_arrow, split_top_level_char,
+    split_top_level_keyword, split_top_level_keyword_operator,
     split_top_level_keyword_or_call_operator, split_top_level_operator, strip_wrapping_parens,
 };
 use type_inference::infer_expression_type;
@@ -393,6 +394,20 @@ pub(crate) fn evaluate_expression_scoped(
     if let Some((left, right)) = split_top_level_keyword(source, "update") {
         let input = evaluate_expression_scoped(left, payload, locals)?;
         return evaluate_update_expression(&input, right, payload, locals);
+    }
+
+    if let Some((left, operator, right)) =
+        split_top_level_sequence_operator_before_arrow(source, &["++", "--"])
+    {
+        if has_top_level_collection_operator(left) || has_top_level_collection_operator(right) {
+            let left_value = if operator == "--" {
+                evaluate_index_base(left, payload, locals)?
+            } else {
+                evaluate_expression_scoped(left, payload, locals)?
+            };
+            let right_value = evaluate_expression_scoped(right, payload, locals)?;
+            return evaluate_additive(&left_value, operator, &right_value);
+        }
     }
 
     if let Some((left, operator, right)) =
@@ -807,6 +822,37 @@ fn evaluate_collection_operator(
         }
         _ => unreachable!(),
     }
+}
+
+fn has_top_level_collection_operator(source: &str) -> bool {
+    split_top_level_keyword_or_call_operator(source, COLLECTION_OPERATORS).is_some()
+}
+
+fn split_top_level_sequence_operator_before_arrow<'a>(
+    source: &'a str,
+    operators: &[&'static str],
+) -> Option<(&'a str, &'static str, &'a str)> {
+    let arrow_index = split_top_level_arrow(source).map(|(before_arrow, _)| before_arrow.len());
+    let mut match_value = None;
+    for (index, _) in source.char_indices() {
+        if arrow_index.is_some_and(|arrow_index| index > arrow_index) {
+            break;
+        }
+        if !is_top_level_index(source, index) {
+            continue;
+        }
+        for operator in operators {
+            if source[index..].starts_with(operator) && is_binary_operator_position(source, index) {
+                match_value = Some((
+                    source[..index].trim(),
+                    *operator,
+                    source[index + operator.len()..].trim(),
+                ));
+                break;
+            }
+        }
+    }
+    match_value.filter(|(left, _, right)| !left.is_empty() && !right.is_empty())
 }
 
 fn compose_url(source: &str) -> String {
@@ -2088,6 +2134,23 @@ output application/python
         assert_eq!(
             execute_json("%dw 2.0\n---\n[2] + 2", Value::Null, false).unwrap(),
             json!([2, 2])
+        );
+    }
+
+    #[test]
+    fn evaluates_collection_pipeline_before_concat() {
+        assert_eq!(
+            execute_json(
+                "%dw 2.0\noutput application/json\n---\n1 to 10 map $ * 2 ++ []",
+                Value::Null,
+                false,
+            )
+            .unwrap(),
+            json!([2, 4, 6, 8, 10, 12, 14, 16, 18, 20])
+        );
+        assert_eq!(
+            execute_json("%dw 2.0\n---\n1 to 3 map $ + 1", Value::Null, false).unwrap(),
+            json!([2, 3, 4])
         );
     }
 
@@ -4425,6 +4488,28 @@ output application/python
                 "objectDiffKeyCoercion": {"name": "DW"},
                 "stringDiff": "acac"
             })
+        );
+    }
+
+    #[test]
+    fn evaluates_size_of_large_range_without_materializing() {
+        assert_eq!(
+            execute_json(
+                "%dw 2.0\noutput application/json\n---\nsizeOf(1 to 100000000)",
+                Value::Null,
+                true,
+            )
+            .unwrap(),
+            json!("100000000")
+        );
+        assert_eq!(
+            execute_json(
+                "%dw 2.0\noutput application/python\n---\nsizeOf(100000000 to 1)",
+                Value::Null,
+                false,
+            )
+            .unwrap(),
+            json!(100000000)
         );
     }
 

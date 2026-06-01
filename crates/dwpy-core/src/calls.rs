@@ -20,7 +20,7 @@ use crate::functions::{
     evaluate_lambda_value_call, evaluate_user_function_call, resolve_invoked_function_name,
     resolve_type_source,
 };
-use crate::operators::evaluate_range;
+use crate::operators::{evaluate_range, number_value};
 use crate::periods::{
     at_beginning_of, between_dates, days_between_dates, is_leap_year_value, period_from_object,
     period_function, temporal_constructor,
@@ -28,7 +28,8 @@ use crate::periods::{
 use crate::selectors::collapse_xml_like_value;
 use crate::strings::{pad_string, replace_all};
 use crate::syntax::{
-    split_top_level, split_top_level_arrow, split_top_level_char, strip_wrapping_parens,
+    split_top_level, split_top_level_arrow, split_top_level_char, split_top_level_keyword,
+    strip_wrapping_parens,
 };
 use crate::{evaluate_expression_scoped, number_result, DwError};
 
@@ -67,6 +68,9 @@ pub(crate) fn evaluate_function_call(
         "sizeOf" if arity == 1 => {
             if argument_sources[0].contains(" as Number") {
                 return Ok(Value::Number(1.into()));
+            }
+            if let Some(size) = evaluate_size_of_range(argument_sources[0], payload, locals)? {
+                return Ok(Value::Number(size.into()));
             }
             let argument = evaluate_expression_scoped(argument_sources[0], payload, locals)?;
             Ok(Value::Number(serde_json::Number::from(size_of(&argument)?)))
@@ -1181,6 +1185,27 @@ fn find_data_format_descriptor_by_mime(mime: &Value) -> Result<Value, DwError> {
             ]))
         })
         .unwrap_or(Value::Null))
+}
+
+fn evaluate_size_of_range(
+    argument_source: &str,
+    payload: &Value,
+    locals: &Map<String, Value>,
+) -> Result<Option<i64>, DwError> {
+    let source = strip_wrapping_parens(argument_source.trim());
+    let Some((left, right)) = split_top_level_keyword(source, "to") else {
+        return Ok(None);
+    };
+
+    let left_value = evaluate_expression_scoped(left, payload, locals)?;
+    let right_value = evaluate_expression_scoped(right, payload, locals)?;
+    let start = number_value(&left_value)? as i64;
+    let end = number_value(&right_value)? as i64;
+    let size = (end as i128 - start as i128).abs() + 1;
+    let size = i64::try_from(size).map_err(|_| {
+        DwError::UnsupportedFeature(format!("range size from {start} to {end} exceeds i64"))
+    })?;
+    Ok(Some(size))
 }
 
 fn is_type_predicate_argument_source(argument_source: &str, locals: &Map<String, Value>) -> bool {
