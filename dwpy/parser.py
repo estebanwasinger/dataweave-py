@@ -482,11 +482,11 @@ class Parser:
         return expr
 
     def parse_logical_and(self) -> Expression:
-        expr = self.parse_comparison()
+        expr = self.parse_infix_function()
         while self.current()[0] == "IDENT" and self.current()[1] == "and":
             token = self.current()
             self.advance()
-            right = self.parse_comparison()
+            right = self.parse_infix_function()
             expr = FunctionCall(
                 function=Identifier(
                     name="_binary_and",
@@ -497,8 +497,34 @@ class Parser:
             )
         return expr
 
+    def parse_infix_function(self) -> Expression:
+        expr = self.parse_comparison()
+        while True:
+            token = self.current()
+            token_type = token[0]
+            token_value = token[1]
+            if (
+                token_type != "IDENT"
+                or token_value in RESERVED_INFIX_STOP
+                or token_value in {"as", "to"}
+            ):
+                break
+            operator_name = token_value or ""
+            self.advance()
+            argument = self.parse_comparison()
+            target_name = INFIX_SPECIAL.get(operator_name, operator_name)
+            expr = FunctionCall(
+                function=Identifier(
+                    name=target_name,
+                    line=token[2],
+                    column=token[3],
+                ),
+                arguments=[expr, argument],
+            )
+        return expr
+
     def parse_comparison(self) -> Expression:
-        expr = self.parse_additive()
+        expr = self.parse_range()
         operator_map = {
             "EQ": "_binary_eq",
             "NEQ": "_binary_neq",
@@ -512,13 +538,29 @@ class Parser:
             if token_type in operator_map:
                 operator_name = operator_map[token_type]
                 self.advance()
-                right = self.parse_additive()
+                right = self.parse_range()
                 expr = FunctionCall(
                     function=Identifier(name=operator_name),
                     arguments=[expr, right],
                 )
             else:
                 break
+        return expr
+
+    def parse_range(self) -> Expression:
+        expr = self.parse_additive()
+        while self.current()[0] == "IDENT" and self.current()[1] == "to":
+            token = self.current()
+            self.advance()
+            right = self.parse_additive()
+            expr = FunctionCall(
+                function=Identifier(
+                    name="_infix_to",
+                    line=token[2],
+                    column=token[3],
+                ),
+                arguments=[expr, right],
+            )
         return expr
 
     def parse_additive(self) -> Expression:
@@ -619,19 +661,6 @@ class Parser:
                 expr = SelectorModifier(value=expr, mode="assert")
             elif token_type == "LPAREN":
                 expr = self.parse_call(expr)
-            elif token_type == "IDENT" and token_value not in RESERVED_INFIX_STOP:
-                operator_name = token_value or ""
-                self.advance()
-                argument = self.parse_postfix_no_infix()
-                target_name = INFIX_SPECIAL.get(operator_name, operator_name)
-                expr = FunctionCall(
-                    function=Identifier(
-                        name=target_name,
-                        line=token[2],
-                        column=token[3],
-                    ),
-                    arguments=[expr, argument],
-                )
             elif token_type == "LBRACKET":
                 expr = self._parse_bracket_selector(expr)
             elif token_type == "IDENT" and token_value == "match":

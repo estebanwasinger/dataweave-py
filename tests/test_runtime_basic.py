@@ -1943,6 +1943,24 @@ def test_numeric_range_with_legacy_lambda_syntax():
     assert result == [2, 4, 6, 8, 10]
 
 
+def test_range_map_placeholder_expression_precedence_inside_size_of():
+    runtime = PythonResultRuntime()
+    result = runtime.execute(
+        "%dw 2.0\noutput application/json\n---\nsizeOf(1 to 10 map $ * 2)",
+        {}
+    )
+    assert result == 10
+
+
+def test_range_filter_placeholder_comparison_precedence():
+    runtime = PythonResultRuntime()
+    result = runtime.execute(
+        "%dw 2.0\noutput application/json\n---\n1 to 10 filter $ < 5",
+        {}
+    )
+    assert result == [1, 2, 3, 4]
+
+
 def test_range_selector_supports_reverse_from_end_indexes():
     runtime = PythonResultRuntime()
     result = runtime.execute(
