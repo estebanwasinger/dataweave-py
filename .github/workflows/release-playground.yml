@@ -15,6 +15,7 @@ permissions:
 
 env:
   UV_CACHE_DIR: .uv-cache
+  DWPY_DATAWEAVE_DOCS: docs-dataweave/modules/ROOT/pages
   PLAYGROUND_REPOSITORY: estebanwasinger/v0-dataweave-editor
   PLAYGROUND_BRANCH: main
   WASM_PACK_VERSION: 0.13.1
@@ -28,6 +29,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Checkout official DataWeave docs examples
+        uses: actions/checkout@v4
+        with:
+          repository: mulesoft/docs-dataweave
+          path: docs-dataweave
 
       - name: Set up Python
         uses: actions/setup-python@v5
