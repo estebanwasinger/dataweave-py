@@ -61,20 +61,22 @@ jobs:
       - name: Run tests
         run: uv run --extra dev python -m pytest
 
+      - name: Clean distribution directory
+        run: rm -rf dist
+
       - name: Build distribution
-        run: uv build
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          manylinux: "2014"
+          args: --release --locked --sdist --out dist -i python3.12 --compatibility pypi
 
       - name: Publish to TestPyPI
         if: steps.target.outputs.value == 'testpypi'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
-          user: __token__
-          password: ${{ secrets.TEST_PYPI_API_TOKEN }}
 
       - name: Publish to PyPI
         if: steps.target.outputs.value == 'pypi'
         uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          user: __token__
-          password: ${{ secrets.PYPI_API_TOKEN }}
