@@ -50,10 +50,17 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: "pip"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v3
+
+      - name: Cache uv artifacts
+        uses: actions/cache@v4
+        with:
+          path: .uv-cache
+          key: uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            uv-${{ runner.os }}-
 
       - name: Sync dependencies
         run: uv sync --extra dev
@@ -64,12 +71,15 @@ jobs:
       - name: Clean distribution directory
         run: rm -rf dist
 
-      - name: Build distribution
+      - name: Build source distribution
+        run: uv build --sdist --out-dir dist --no-create-gitignore
+
+      - name: Build manylinux wheel
         uses: PyO3/maturin-action@v1
         with:
           command: build
           manylinux: "2014"
-          args: --release --locked --sdist --out dist -i python3.12 --compatibility pypi
+          args: --release --locked --out dist -i python3.12 --compatibility pypi
 
       - name: Publish to TestPyPI
         if: steps.target.outputs.value == 'testpypi'
