@@ -5,6 +5,11 @@ on:
     branches:
       - main
   workflow_dispatch:
+  workflow_run:
+    workflows:
+      - Publish to PyPI
+    types:
+      - completed
 
 concurrency:
   group: release-playground-${{ github.ref }}
@@ -23,12 +28,14 @@ env:
 jobs:
   release-playground:
     runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
 
     steps:
       - name: Checkout DataWeave repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Checkout official DataWeave docs examples
         uses: actions/checkout@v4
@@ -92,6 +99,19 @@ jobs:
             --out-name dwpy_wasm \
             --out-dir pkg
 
+      - name: Read DataWeave package version
+        id: dataweave-version
+        run: |
+          version=$(python - <<'PY'
+          import pathlib
+          import tomllib
+
+          data = tomllib.loads(pathlib.Path("pyproject.toml").read_text())
+          print(data["project"]["version"])
+          PY
+          )
+          echo "value=${version}" >> "$GITHUB_OUTPUT"
+
       - name: Validate playground repository token
         env:
           PLAYGROUND_REPO_PAT: ${{ secrets.PLAYGROUND_REPO_PAT }}
@@ -112,8 +132,9 @@ jobs:
       - name: Copy WASM assets and write build metadata
         env:
           SOURCE_REPOSITORY: ${{ github.repository }}
-          SOURCE_SHA: ${{ github.sha }}
-          SOURCE_BRANCH: ${{ github.ref_name }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch || github.ref_name }}
+          DATAWEAVE_VERSION: ${{ steps.dataweave-version.outputs.value }}
         run: |
           set -euo pipefail
 
@@ -128,11 +149,17 @@ jobs:
           from pathlib import Path
 
           metadata = {
+              "dataweave_version": os.environ["DATAWEAVE_VERSION"],
               "source_repository": os.environ["SOURCE_REPOSITORY"],
               "source_commit": os.environ["SOURCE_SHA"],
               "source_branch": os.environ["SOURCE_BRANCH"],
               "built_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
           }
+
+          package_path = Path("playground/public/wasm/rust/package.json")
+          package_data = json.loads(package_path.read_text())
+          package_data["version"] = os.environ["DATAWEAVE_VERSION"]
+          package_path.write_text(json.dumps(package_data, indent=2) + "\n")
 
           output_path = Path("playground/public/wasm/dataweave-build.json")
           output_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
@@ -154,7 +181,8 @@ jobs:
       - name: Commit and push playground update
         working-directory: playground
         env:
-          SOURCE_SHA: ${{ github.sha }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          DATAWEAVE_VERSION: ${{ steps.dataweave-version.outputs.value }}
         run: |
           set -euo pipefail
 
@@ -167,5 +195,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add public/wasm
-          git commit -m "chore(playground): update DataWeave engine to ${short_sha}"
+          git commit -m "chore(playground): update DataWeave engine to ${DATAWEAVE_VERSION} (${short_sha})"
           git push origin "HEAD:${PLAYGROUND_BRANCH}"

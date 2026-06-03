@@ -13,11 +13,6 @@ on:
         options:
           - pypi
           - testpypi
-      skip_existing:
-        description: "Skip files already present on the selected repository"
-        type: boolean
-        default: false
-
 concurrency:
   group: publish-${{ github.ref }}
   cancel-in-progress: false
@@ -79,34 +74,33 @@ jobs:
           if-no-files-found: error
 
   build-wheels:
-    name: Build wheels (${{ matrix.platform.artifact }}, py${{ matrix.python-version }})
+    name: Build wheel (${{ matrix.platform.artifact }})
     runs-on: ${{ matrix.platform.os }}
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
-        python-version:
-          - "3.10"
-          - "3.11"
-          - "3.12"
-          - "3.13"
         platform:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             manylinux: "2014"
+            interpreter: python3.10
             artifact: linux-x86_64
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             manylinux: "2014"
+            interpreter: python3.10
             artifact: linux-aarch64
           - os: macos-latest
             target: universal2-apple-darwin
             manylinux: auto
+            interpreter: python
             artifact: macos-universal2
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             manylinux: auto
+            interpreter: python
             artifact: windows-x86_64
     steps:
       - name: Checkout repository
@@ -115,21 +109,11 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.10"
 
       - name: Setup QEMU
         if: runner.os == 'Linux' && matrix.platform.target != 'x86_64-unknown-linux-gnu'
         uses: docker/setup-qemu-action@v3
-
-      - name: Select Python interpreter
-        id: interpreter
-        shell: bash
-        run: |
-          if [ "${{ runner.os }}" = "Linux" ]; then
-            echo "value=python${{ matrix.python-version }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "value=python" >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Build wheel
         uses: PyO3/maturin-action@v1
@@ -137,12 +121,12 @@ jobs:
           command: build
           target: ${{ matrix.platform.target }}
           manylinux: ${{ matrix.platform.manylinux }}
-          args: --release --locked --out dist -i ${{ steps.interpreter.outputs.value }} --compatibility pypi
+          args: --release --locked --out dist -i ${{ matrix.platform.interpreter }} --compatibility pypi
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ matrix.platform.artifact }}-py${{ matrix.python-version }}
+          name: wheels-${{ matrix.platform.artifact }}
           path: dist/*.whl
           if-no-files-found: error
 
@@ -161,10 +145,8 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "value=${{ github.event.inputs.publish_target }}" >> "$GITHUB_OUTPUT"
-            echo "skip_existing=${{ github.event.inputs.skip_existing }}" >> "$GITHUB_OUTPUT"
           else
             echo "value=pypi" >> "$GITHUB_OUTPUT"
-            echo "skip_existing=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Download distributions
@@ -178,10 +160,10 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
-          skip-existing: ${{ steps.target.outputs.skip_existing }}
+          skip-existing: true
 
       - name: Publish to PyPI
         if: steps.target.outputs.value == 'pypi'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          skip-existing: ${{ steps.target.outputs.skip_existing }}
+          skip-existing: true
