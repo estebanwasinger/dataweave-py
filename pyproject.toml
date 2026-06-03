@@ -79,6 +79,7 @@ manifest-path = "crates/dwpy-python/Cargo.toml"
 module-name = "dwpy._dwpy_rust"
 python-source = "."
 include = [
+    { path = "LICENSE", format = ["sdist", "wheel"] },
     { path = "dwpy/modules/**/*.dwl", format = ["sdist", "wheel"] },
     { path = "dwpy/modules/**/*.bdwl", format = ["sdist", "wheel"] },
 ]

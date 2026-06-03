@@ -13,6 +13,10 @@ on:
         options:
           - pypi
           - testpypi
+      skip_existing:
+        description: "Skip files already present on the selected repository"
+        type: boolean
+        default: false
 
 concurrency:
   group: publish-${{ github.ref }}
@@ -34,8 +38,10 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "value=${{ github.event.inputs.publish_target }}" >> "$GITHUB_OUTPUT"
+            echo "skip_existing=${{ github.event.inputs.skip_existing }}" >> "$GITHUB_OUTPUT"
           else
             echo "value=pypi" >> "$GITHUB_OUTPUT"
+            echo "skip_existing=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Checkout repository
@@ -87,7 +93,10 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
+          skip-existing: ${{ steps.target.outputs.skip_existing }}
 
       - name: Publish to PyPI
         if: steps.target.outputs.value == 'pypi'
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: ${{ steps.target.outputs.skip_existing }}
