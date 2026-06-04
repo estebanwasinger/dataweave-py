@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import textwrap
 from pathlib import Path
 
 import pandas as pd
@@ -1377,6 +1378,34 @@ def test_rust_bridge_parses_text_payload_formats_in_core() -> None:
         payload_format="markdown",
         payload_format_options={"header": False},
     ) == "London"
+    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+
+
+def test_rust_bridge_filters_csv_by_coerced_date_comparison_in_core() -> None:
+    runtime = DataWeaveRuntime(backend="rust")
+    script = """%dw 2.0
+output application/json
+---
+file_ids : payload filter $.status == "FAILED" and $.created_at[0 to 9] as Date > "2026-07-02" as Date
+map $.file_id
+"""
+    csv_input = textwrap.dedent(
+        """\
+        id,file_id,extractor_id,status,data,user_data,created_at,updated_at
+        d5d0fd00-c452-4576-b0a6-39974895dd7e,a0ee074e-85ce-4512-87f7-f6ea4b18dad4,1da0287a-5caf-43cd-9fa5-b7f089c7e554,FAILED,,,2026-08-02 21:49:24.686016 +00:00,2026-06-02 22:41:34.930100 +00:00
+        55a3795d-1215-4c2c-b368-25f9398ba75d,483cd599-35aa-4b4e-86c1-160b2a929458,1da0287a-5caf-43cd-9fa5-b7f089c7e554,FAILED,,,2026-06-02 21:49:24.666820 +00:00,2026-06-02 22:45:19.434200 +00:00
+        f6c277d4-d2da-4c28-8308-15b4a91a24f7,ba6e1da1-0bf0-4bfc-b0b9-3934fd051542,1da0287a-5caf-43cd-9fa5-b7f089c7e554,FAILED,,,2026-06-02 21:49:24.651948 +00:00,2026-06-02 22:35:07.505949 +00:00
+        d557829b-34aa-45b3-b3a6-a4135df7b96b,058d6740-5fed-4a88-8fb4-c7d0bf3b5972,1da0287a-5caf-43cd-9fa5-b7f089c7e554,FAILED,,,2026-06-02 21:49:24.637330 +00:00,2026-06-02 22:44:16.623670 +00:00
+        a663018e-9fd0-4efe-9bae-2a441f6940d8,ae59ed63-57af-4be9-a14a-86881c7d32f8,1da0287a-5caf-43cd-9fa5-b7f089c7e554,FAILED,,,2026-06-02 21:49:24.622612 +00:00,2026-06-02 22:41:35.107366 +00:00
+        39d590de-f6b2-40e6-8514-2048e9e23c56,75058a61-4806-413c-aba3-5e24a77ff5b3,1da0287a-5caf-43cd-9fa5-b7f089c7e554,FAILED,,,2026-06-02 21:49:24.607650 +00:00,2026-06-02 22:40:47.087097 +00:00
+        """
+    ).strip()
+
+    result = runtime.execute(script, csv_input, payload_format="application/csv")
+
+    assert json.loads(result) == {
+        "file_ids": ["a0ee074e-85ce-4512-87f7-f6ea4b18dad4"]
+    }
     assert runtime._rust_runtime.last_execution_engine() == "rust-core"
 
 

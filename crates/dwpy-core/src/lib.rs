@@ -476,10 +476,6 @@ pub(crate) fn evaluate_expression_scoped(
 
     if let Some((left, type_source)) = split_top_level_keyword(source, "as") {
         let value = evaluate_expression_scoped(left, payload, locals)?;
-        if let Some((coercion_type, next_type)) = split_top_level_keyword(type_source, "as") {
-            let coerced = evaluate_coercion(&value, &resolve_type_source(coercion_type, locals))?;
-            return evaluate_coercion(&coerced, &resolve_type_source(next_type, locals));
-        }
         if let Some((coercion_type, operator, right)) =
             split_top_level_operator(type_source, &["++"])
         {
@@ -493,6 +489,10 @@ pub(crate) fn evaluate_expression_scoped(
             let coerced = evaluate_coercion(&value, &resolve_type_source(coercion_type, locals))?;
             let right_value = evaluate_expression_scoped(right, payload, locals)?;
             return evaluate_comparison(&coerced, operator, &right_value);
+        }
+        if let Some((coercion_type, next_type)) = split_top_level_keyword(type_source, "as") {
+            let coerced = evaluate_coercion(&value, &resolve_type_source(coercion_type, locals))?;
+            return evaluate_coercion(&coerced, &resolve_type_source(next_type, locals));
         }
         if let Some((coercion_type, operator, right)) =
             split_top_level_keyword_or_call_operator(type_source, &["match", "matches"])
@@ -2250,6 +2250,21 @@ var key = "availableSeats"
         assert_eq!(
             execute_json(script, Value::Null, false).unwrap(),
             json!({"excluded": false, "renamed": true})
+        );
+    }
+
+    #[test]
+    fn evaluates_comparison_after_coercion_with_coerced_rhs() {
+        let script = r#"%dw 2.0
+output application/python
+---
+{
+  after: "2026-08-02" as Date > "2026-07-02" as Date,
+  before: "2026-06-02" as Date > "2026-07-02" as Date
+}"#;
+        assert_eq!(
+            execute_json(script, Value::Null, false).unwrap(),
+            json!({"after": true, "before": false})
         );
     }
 
