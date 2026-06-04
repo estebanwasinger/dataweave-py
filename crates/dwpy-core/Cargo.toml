@@ -17,3 +17,4 @@ serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision
 sha1 = "0.10"
 sha2 = "0.10"
 thiserror = "2"
+yaml_serde = "0.10.4"

@@ -42,7 +42,7 @@ pub(crate) fn render_output_value(
             return render_xml_output(&evaluated, directive).map(Value::String);
         }
         if is_yaml_mime(output_mime(directive).unwrap_or_default()) {
-            return Ok(Value::String(render_yaml_output(&evaluated, directive)));
+            return render_yaml_output(&evaluated, directive).map(Value::String);
         }
         if output_mime(directive).is_some_and(is_markdown_mime) {
             return render_markdown_output(&evaluated, directive).map(Value::String);

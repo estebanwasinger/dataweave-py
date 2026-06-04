@@ -3289,6 +3289,27 @@ write(myVar.greeting, "application/json", {skipNullOn:"objects", writeAttributes
     }
 
     #[test]
+    fn renders_yaml_arrays_of_objects_as_block_mappings() {
+        let payload = json!([
+            {"id": "01HCZE828BD4NQ19VR8WNP1V5W", "name": "Keyway"},
+            {"id": "01HDMAPSTER3K90EXZQ9D60ATX", "name": "keywayDemo"},
+            {"id": "01HFYEY158VH4F14E3VRAB1FBY", "name": "Onboarding"}
+        ]);
+
+        let rendered = execute_json(
+            "%dw 2.0\noutput application/yaml\n---\npayload",
+            payload,
+            true,
+        )
+        .unwrap();
+        let yaml = rendered.as_str().unwrap();
+
+        assert!(!yaml.contains(r#"- {"id""#));
+        assert!(yaml.contains("- id: 01HCZE828BD4NQ19VR8WNP1V5W"));
+        assert!(yaml.contains("  name: Keyway"));
+    }
+
+    #[test]
     fn evaluates_core_math_mime_and_null_helpers() {
         let script = r#"%dw 2.0
 output application/python

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+import yaml
 
 from dwpy.runtime import DataWeaveRuntime
 from dwpy.type_inference import infer_script_type
@@ -1396,6 +1397,28 @@ output application/yaml skipNullOn="everywhere" writeDeclaration=true
     assert result.startswith("---\n")
     assert "remove" not in result
     assert "null" not in result
+    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+
+
+def test_rust_bridge_renders_payload_array_objects_as_block_yaml() -> None:
+    runtime = DataWeaveRuntime(backend="rust")
+    payload = [
+        {"id": "01HCZE828BD4NQ19VR8WNP1V5W", "name": "Keyway"},
+        {"id": "01HDMAPSTER3K90EXZQ9D60ATX", "name": "keywayDemo"},
+        {"id": "01HFYEY158VH4F14E3VRAB1FBY", "name": "Onboarding"},
+    ]
+    script = """%dw 2.0
+output application/yaml
+---
+payload
+"""
+
+    result = runtime.execute(script, payload)
+
+    assert yaml.safe_load(result) == payload
+    assert '- {"id"' not in result
+    assert "- id: 01HCZE828BD4NQ19VR8WNP1V5W" in result
+    assert "  name: Keyway" in result
     assert runtime._rust_runtime.last_execution_engine() == "rust-core"
 
 

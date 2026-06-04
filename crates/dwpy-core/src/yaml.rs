@@ -1,7 +1,8 @@
 use serde_json::Map;
 use serde_json::Value;
+use yaml_serde::{Mapping as YamlMapping, Value as YamlValue};
 
-use crate::{as_dataweave_string, number_result, output_bool_option, output_option, DwError};
+use crate::{number_result, output_bool_option, output_option, DwError};
 
 pub(crate) fn read_simple_yaml(text: &str) -> Result<Value, DwError> {
     let lines = text
@@ -153,28 +154,20 @@ fn parse_simple_yaml_scalar(source: &str) -> Value {
     }
 }
 
-pub(crate) fn write_simple_yaml(value: &Value) -> String {
-    match value {
-        Value::Object(map) => {
-            map.iter()
-                .map(|(key, value)| format!("{key}: {}", simple_yaml_scalar(value)))
-                .collect::<Vec<_>>()
-                .join("\n")
-                + "\n"
-        }
-        Value::Array(items) => {
-            items
-                .iter()
-                .map(|value| format!("- {}", simple_yaml_scalar(value)))
-                .collect::<Vec<_>>()
-                .join("\n")
-                + "\n"
-        }
-        other => format!("{}\n", simple_yaml_scalar(other)),
-    }
+pub(crate) fn write_simple_yaml(value: &Value) -> Result<String, DwError> {
+    let yaml_value = to_yaml_value(value);
+    yaml_serde::to_string(&yaml_value)
+        .map(|mut rendered| {
+            rendered = quote_yaml_1_1_ambiguous_scalars(&rendered);
+            if !rendered.ends_with('\n') {
+                rendered.push('\n');
+            }
+            rendered
+        })
+        .map_err(|err| DwError::Parse(format!("Failed to render output as yaml: {err}")))
 }
 
-pub(crate) fn render_yaml_output(value: &Value, directive: &str) -> String {
+pub(crate) fn render_yaml_output(value: &Value, directive: &str) -> Result<String, DwError> {
     let filtered = output_option(directive, "skipNullOn")
         .map(|mode| filter_yaml_nulls(value, mode))
         .unwrap_or_else(|| value.clone());
@@ -182,8 +175,111 @@ pub(crate) fn render_yaml_output(value: &Value, directive: &str) -> String {
     if output_bool_option(directive, "writeDeclaration", false) {
         output.push_str("---\n");
     }
-    output.push_str(&write_simple_yaml(&filtered));
+    output.push_str(&write_simple_yaml(&filtered)?);
+    Ok(output)
+}
+
+fn to_yaml_value(value: &Value) -> YamlValue {
+    match value {
+        Value::Null => YamlValue::Null,
+        Value::Bool(value) => YamlValue::Bool(*value),
+        Value::Number(value) => {
+            if let Some(value) = value.as_i64() {
+                return YamlValue::Number(value.into());
+            }
+            if let Some(value) = value.as_u64() {
+                return YamlValue::Number(value.into());
+            }
+            if let Some(value) = value.as_f64() {
+                return YamlValue::Number(value.into());
+            }
+            YamlValue::String(value.to_string())
+        }
+        Value::String(value) => YamlValue::String(value.clone()),
+        Value::Array(items) => YamlValue::Sequence(items.iter().map(to_yaml_value).collect()),
+        Value::Object(map) => {
+            let mut yaml_map = YamlMapping::new();
+            for (key, value) in map {
+                yaml_map.insert(YamlValue::String(key.clone()), to_yaml_value(value));
+            }
+            YamlValue::Mapping(yaml_map)
+        }
+    }
+}
+
+fn quote_yaml_1_1_ambiguous_scalars(rendered: &str) -> String {
+    let mut output = rendered
+        .lines()
+        .map(quote_yaml_1_1_ambiguous_scalar_line)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if rendered.ends_with('\n') {
+        output.push('\n');
+    }
     output
+}
+
+fn quote_yaml_1_1_ambiguous_scalar_line(line: &str) -> String {
+    let indent_len = line.len() - line.trim_start_matches(' ').len();
+    let (indent, rest) = line.split_at(indent_len);
+    if let Some(value) = rest.strip_prefix("- ") {
+        return format!("{indent}- {}", quote_yaml_1_1_ambiguous_scalar(value));
+    }
+    if let Some((key, value)) = split_yaml_mapping_line(rest) {
+        return format!("{indent}{key}: {}", quote_yaml_1_1_ambiguous_scalar(value));
+    }
+    if needs_yaml_1_1_string_quote(rest) {
+        return format!("{indent}{}", quote_yaml_1_1_ambiguous_scalar(rest));
+    }
+    line.to_string()
+}
+
+fn split_yaml_mapping_line(line: &str) -> Option<(&str, &str)> {
+    let mut single_quoted = false;
+    let mut double_quoted = false;
+    for (index, ch) in line.char_indices() {
+        match ch {
+            '\'' if !double_quoted => single_quoted = !single_quoted,
+            '"' if !single_quoted => double_quoted = !double_quoted,
+            ':' if !single_quoted && !double_quoted => {
+                let value_start = index + ch.len_utf8();
+                if line[value_start..].starts_with(' ') {
+                    return Some((&line[..index], line[value_start + 1..].trim_start()));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn quote_yaml_1_1_ambiguous_scalar(value: &str) -> String {
+    if needs_yaml_1_1_string_quote(value) {
+        format!("'{}'", value.replace('\'', "''"))
+    } else {
+        value.to_string()
+    }
+}
+
+fn needs_yaml_1_1_string_quote(value: &str) -> bool {
+    matches!(
+        value,
+        "y" | "Y"
+            | "yes"
+            | "Yes"
+            | "YES"
+            | "n"
+            | "N"
+            | "no"
+            | "No"
+            | "NO"
+            | "on"
+            | "On"
+            | "ON"
+            | "off"
+            | "Off"
+            | "OFF"
+    )
 }
 
 fn filter_yaml_nulls(value: &Value, mode: &str) -> Value {
@@ -214,15 +310,5 @@ fn filter_yaml_nulls(value: &Value, mode: &str) -> Value {
                 .collect(),
         ),
         other => other.clone(),
-    }
-}
-
-fn simple_yaml_scalar(value: &Value) -> String {
-    match value {
-        Value::Null => "null".to_string(),
-        Value::Bool(value) => value.to_string(),
-        Value::Number(value) => value.to_string(),
-        Value::String(value) => value.clone(),
-        other => serde_json::to_string(other).unwrap_or_else(|_| as_dataweave_string(other)),
     }
 }

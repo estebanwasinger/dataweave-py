@@ -516,7 +516,7 @@ pub(crate) fn write_format_with_options(
             )),
         },
         "application/yaml" | "application/x-yaml" | "text/yaml" | "text/x-yaml" | "yaml"
-        | "yml" => Ok(Value::String(write_simple_yaml(value))),
+        | "yml" => write_simple_yaml(value).map(Value::String),
         mime if crate::mime::is_markdown_mime(mime) => {
             render_markdown_output(value, "text/markdown").map(Value::String)
         }
