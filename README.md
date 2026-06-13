@@ -14,6 +14,13 @@ or
 pip install dataweave-py
 ```
 
+Install the terminal command with uv:
+
+```bash
+uv tool install dataweave-py
+dw run '%dw 2.0\noutput application/json\n---\n{message: upper(payload.name)}' --payload '{"name":"dw"}'
+```
+
 ## DataWeave Playground
 
 ![DataWeave Playground](./playground-image.png)
@@ -63,6 +70,51 @@ uv venv --python 3.12
 source .venv/bin/activate
 UV_CACHE_DIR=.uv-cache uv run maturin develop --release
 ```
+
+Run the Python-packaged CLI from the current checkout:
+
+```bash
+uv tool install .
+dw run '%dw 2.0\noutput application/python\n---\n{message: upper(payload.name)}' --payload '{"name":"dw"}'
+```
+
+Or run it without installing globally:
+
+```bash
+uvx --from . dw run '%dw 2.0\noutput application/json\n---\npayload' --payload '{"name":"dw"}'
+```
+
+Run the standalone native Rust binary:
+
+```bash
+cargo run -p dwpy-cli -- run '%dw 2.0\noutput application/json\n---\npayload' --payload '{"name":"dw"}'
+```
+
+## Homebrew
+
+The Rust-native CLI is scaffolded for a separate Homebrew tap at
+`estebanwasinger/homebrew-tap`.
+
+The intended user flow is:
+
+```bash
+brew tap estebanwasinger/homebrew-tap
+brew install dw-cli
+dw run "1 to 1"
+```
+
+This repository includes:
+
+- `scripts/build_dw_cli_source_archive.sh` to build the deterministic source
+  archive used by the formula
+- `.github/workflows/release-dw-cli-source.yml` to upload that archive to a
+  GitHub release
+- `homebrew-tap/` as a scaffold for the separate tap repository
+
+The release split is intentional:
+
+- `dataweave-py` releases provide the source archive consumed by the formula
+- `homebrew-tap` releases provide the bottled Homebrew binaries
 
 Run the Rust backend from Python:
 

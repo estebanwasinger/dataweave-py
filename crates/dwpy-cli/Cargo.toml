@@ -1,0 +1,15 @@
+[package]
+name = "dwpy-cli"
+version = "0.1.0"
+description = "Native CLI for the DataWeave Rust runtime"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "dw"
+path = "src/main.rs"
+
+[dependencies]
+dwpy-core = { path = "../dwpy-core" }
+serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision"] }

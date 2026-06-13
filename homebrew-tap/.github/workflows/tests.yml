@@ -1,0 +1,41 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  test-formula:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-13
+          - macos-14
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout tap
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@master
+
+      - name: Audit formula
+        run: brew audit --strict --formula Formula/dw-cli.rb
+
+      - name: Build and test formula
+        run: |
+          brew test-bot \
+            --only-formulae \
+            --tap="${GITHUB_REPOSITORY}" \
+            --testing-formulae=dw-cli \
+            --build-from-source \
+            --skip-dependents \
+            --skip-online-checks \
+            --verbose

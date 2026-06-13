@@ -1,0 +1,52 @@
+name: Release dw CLI Source Asset
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release tag to upload assets to"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  upload-dw-cli-source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event.inputs.tag_name }}
+
+      - name: Resolve version metadata
+        id: meta
+        run: |
+          TAG_NAME="${{ github.event_name == 'release' && github.event.release.tag_name || github.event.inputs.tag_name }}"
+          VERSION="${TAG_NAME#v}"
+          echo "tag=${TAG_NAME}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build deterministic dw CLI source archive
+        run: |
+          chmod +x scripts/build_dw_cli_source_archive.sh
+          scripts/build_dw_cli_source_archive.sh "${{ steps.meta.outputs.version }}" "${{ steps.meta.outputs.tag }}"
+
+      - name: Upload source archive to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ steps.meta.outputs.tag }}" \
+            "dist/dw-cli-${{ steps.meta.outputs.version }}-source.tar.gz" \
+            "dist/dw-cli-${{ steps.meta.outputs.version }}-source.tar.gz.sha256" \
+            --clobber
+
+      - name: Publish release summary
+        run: |
+          echo "Uploaded dw-cli-${{ steps.meta.outputs.version }}-source.tar.gz" >> "$GITHUB_STEP_SUMMARY"
+          echo "SHA256: $(cat dist/dw-cli-${{ steps.meta.outputs.version }}-source.tar.gz.sha256)" >> "$GITHUB_STEP_SUMMARY"

@@ -68,6 +68,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "dwpy-cli"
+version = "0.1.0"
+dependencies = [
+ "dwpy-core",
+ "serde_json",
+]
+
+[[package]]
 name = "dwpy-core"
 version = "0.1.0"
 dependencies = [

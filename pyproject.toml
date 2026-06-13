@@ -42,6 +42,7 @@ dependencies = [
 ]
 
 [project.scripts]
+dw = "dwpy.cli:main"
 dwpy-lsp = "dwpy.lsp.server:main"
 
 [project.urls]
