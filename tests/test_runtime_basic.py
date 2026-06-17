@@ -1022,6 +1022,35 @@ type Currency = String { format: "\\$#,###.00" }
     assert prices == ["22.30", "20.31"]
 
 
+def test_xml_output_preserves_formatted_trailing_zeroes_for_number_coercion():
+    runtime = DataWeaveRuntime()
+    script = """%dw 2.0
+output application/xml
+---
+{
+    prices: payload.prices mapObject (value, key) -> {
+        (key): (value + 5) as Number {format: "##.00"}
+    }
+}
+"""
+    payload = """<?xml version='1.0' encoding='UTF-8'?>
+<prices>
+    <basic>9.99</basic>
+    <premium>53</premium>
+    <vip>398.99</vip>
+</prices>"""
+
+    result = runtime.execute(
+        script,
+        payload=payload,
+        payload_format="application/xml",
+    )
+
+    assert result == (
+        "<prices><basic>14.99</basic><premium>58.00</premium><vip>403.99</vip></prices>"
+    )
+
+
 XML_TREE_PAYLOAD = """<root>
     <name>John</name>
     <children>

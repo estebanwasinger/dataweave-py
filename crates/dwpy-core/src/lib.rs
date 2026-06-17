@@ -1527,6 +1527,9 @@ fn resolve_update_index(index: i64, len: usize) -> Option<usize> {
 }
 
 pub(crate) fn as_dataweave_string(value: &Value) -> String {
+    if let Some(formatted) = metadata_formatted_string(value) {
+        return formatted;
+    }
     if let Some(value) = unwrap_metadata_value(value) {
         return as_dataweave_string(&value);
     }
@@ -1537,6 +1540,18 @@ pub(crate) fn as_dataweave_string(value: &Value) -> String {
         Value::String(value) => value.clone(),
         Value::Number(value) => value.to_string(),
         other => other.to_string(),
+    }
+}
+
+fn metadata_formatted_string(value: &Value) -> Option<String> {
+    let metadata = value_metadata(value)?;
+    let format = metadata.get("format")?;
+    let unwrapped = unwrap_metadata_value(value)?;
+    let locale = metadata.get("locale");
+    let rendered = builtins::to_string_with_options(&unwrapped, Some(format), locale, None).ok()?;
+    match rendered {
+        Value::String(text) => Some(text),
+        _ => None,
     }
 }
 

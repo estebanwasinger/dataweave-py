@@ -1,5 +1,5 @@
 use regex::Regex;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::builtins::{binary_value, to_string_with_options};
 use crate::literals::parse_string_literal;
@@ -551,13 +551,21 @@ pub(crate) fn evaluate_coercion(value: &Value, type_source: &str) -> Result<Valu
         }
         "Number" => {
             if let Some(options) = extract_coercion_options(type_source)? {
-                if let Some(unit) = options.unit {
+                if let Some(unit) = options.unit.as_deref() {
                     if let Some(number) = period_or_temporal_to_number(value, &unit) {
                         return Ok(number);
                     }
                 }
+                let number = coerce_number(value)?;
+                let metadata = coercion_metadata(options);
+                if metadata.is_empty() {
+                    Ok(number)
+                } else {
+                    Ok(value_with_metadata(number, metadata))
+                }
+            } else {
+                coerce_number(value)
             }
-            coerce_number(value)
         }
         "Boolean" => coerce_boolean(value),
         "Binary" => coerce_binary(value),
@@ -662,6 +670,17 @@ struct CoercionOptions {
     locale: Option<String>,
     unit: Option<String>,
     metadata: serde_json::Map<String, Value>,
+}
+
+fn coercion_metadata(options: CoercionOptions) -> Map<String, Value> {
+    let mut metadata = options.metadata;
+    if let Some(format) = options.format {
+        metadata.insert("format".to_string(), Value::String(format));
+    }
+    if let Some(locale) = options.locale {
+        metadata.insert("locale".to_string(), Value::String(locale));
+    }
+    metadata
 }
 
 fn extract_coercion_options(type_source: &str) -> Result<Option<CoercionOptions>, DwError> {

@@ -21,7 +21,7 @@ from urllib.request import urlopen
 from typing import Any, Callable, Dict, List, Optional, Mapping, Set, Tuple
 
 from . import builtins, parser
-from .formats import DWObject, FormatRegistry, FormatError, XMLNodeList, XMLNodeDict
+from .formats import DWObject, FormatRegistry, FormatError, FormattedNumber, XMLNodeList, XMLNodeDict
 
 try:  # pragma: no cover - optional dependency guard
     import pandas as pd  # type: ignore
@@ -2784,7 +2784,7 @@ class DataWeaveRuntime:
         if normalised == "any":
             return value
         if normalised == "number":
-            return self._coerce_number(value)
+            return self._coerce_number(value, options)
         if normalised == "string":
             return self._coerce_string(value, options)
         if normalised in {"boolean", "bool"}:
@@ -2805,15 +2805,14 @@ class DataWeaveRuntime:
             return self._coerce_time(value)
         return value
 
-    @staticmethod
-    def _coerce_number(value: Any) -> Any:
+    def _coerce_number(self, value: Any, options: Any = None) -> Any:
         if value is None:
             return None
         if isinstance(value, bool):
-            return 1 if value else 0
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            return int(value) if float(value).is_integer() else float(value)
-        if isinstance(value, str):
+            coerced: int | float = 1 if value else 0
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            coerced = int(value) if float(value).is_integer() else float(value)
+        elif isinstance(value, str):
             text = value.strip()
             if not text:
                 return None
@@ -2821,8 +2820,21 @@ class DataWeaveRuntime:
                 number = float(text)
             except ValueError as exc:
                 raise TypeError(f"Cannot coerce string '{value}' to Number") from exc
-            return int(number) if number.is_integer() else number
-        raise TypeError(f"Cannot coerce {type(value).__name__} to Number")
+            coerced = int(number) if number.is_integer() else number
+        else:
+            raise TypeError(f"Cannot coerce {type(value).__name__} to Number")
+        format_pattern = self._extract_format_pattern(options)
+        if format_pattern is None:
+            return coerced
+        return FormattedNumber(
+            coerced,
+            self._format_number_as_string(
+                float(coerced),
+                format_pattern,
+                locale=self._extract_option_string(options, "locale") or "",
+                rounding=self._extract_option_string(options, "rounding") or "",
+            ),
+        )
 
     def _coerce_string(self, value: Any, options: Any = None) -> Optional[str]:
         if value is None:
@@ -2883,6 +2895,84 @@ class DataWeaveRuntime:
         if raw_pattern is None:
             return None
         return str(raw_pattern)
+
+    @staticmethod
+    def _extract_option_string(options: Any, key: str) -> Optional[str]:
+        if not isinstance(options, Mapping):
+            return None
+        raw_value = options.get(key)
+        if raw_value is None:
+            return None
+        return str(raw_value)
+
+    def _format_number_as_string(
+        self,
+        value: float,
+        pattern: str,
+        *,
+        locale: str = "",
+        rounding: str = "",
+    ) -> str:
+        pattern, literal_suffix = self._split_number_format_literal(pattern)
+        decimal_index = pattern.find(".")
+        decimals = (
+            sum(1 for ch in pattern[decimal_index + 1 :] if ch in {"#", "0"})
+            if decimal_index >= 0
+            else 0
+        )
+        fixed_decimals = decimal_index >= 0 and "0" in pattern[decimal_index + 1 :]
+        prefix_chars: list[str] = []
+        for ch in pattern:
+            if ch in {"#", "0", "."}:
+                break
+            prefix_chars.append(ch)
+        prefix = "".join(prefix_chars)
+        integer_pattern = pattern[:decimal_index] if decimal_index >= 0 else pattern
+        omit_leading_zero = abs(value) < 1.0 and (
+            integer_pattern == "" or pattern.startswith("#.00")
+        )
+        rounded = self._round_number(value, decimals, rounding)
+        if decimals == 0:
+            text = str(int(rounded))
+        elif fixed_decimals:
+            text = f"{rounded:.{decimals}f}"
+        else:
+            text = f"{rounded:.{decimals}f}".rstrip("0").rstrip(".")
+        if omit_leading_zero:
+            if text.startswith("0."):
+                text = text[1:]
+            elif text.startswith("-0."):
+                text = "-" + text[2:]
+        if locale.lower() == "es":
+            text = text.replace(".", ",")
+        return f"{prefix}{text}{literal_suffix}"
+
+    @staticmethod
+    def _split_number_format_literal(pattern: str) -> tuple[str, str]:
+        start = pattern.find("'")
+        if start < 0:
+            return pattern, ""
+        end = pattern.find("'", start + 1)
+        if end < 0:
+            return pattern, ""
+        before_literal = pattern[:start]
+        literal_separator = " " if before_literal.endswith(tuple(" \t\r\n")) else ""
+        literal = literal_separator + pattern[start + 1 : end]
+        return before_literal.rstrip(), literal
+
+    @staticmethod
+    def _round_number(value: float, decimals: int, rounding: str) -> float:
+        scale = 10 ** decimals
+        scaled = value * scale
+        if rounding.lower() == "half_even":
+            floor = math.floor(scaled)
+            fraction = scaled - floor
+            if math.isclose(fraction, 0.5, abs_tol=1e-9):
+                rounded = floor if floor % 2 == 0 else floor + 1
+            else:
+                rounded = round(scaled)
+            return rounded / scale
+        return round(scaled) / scale
 
     def _format_temporal_as_string(self, value: Any, pattern: str) -> str:
         temporal_value = self._to_datetime_for_format(value)

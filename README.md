@@ -92,7 +92,7 @@ cargo run -p dwpy-cli -- run '%dw 2.0\noutput application/json\n---\npayload' --
 
 ## Homebrew
 
-The Rust-native CLI is scaffolded for a separate Homebrew tap at
+The Rust-native CLI is distributed through a separate Homebrew tap repository:
 `estebanwasinger/homebrew-tap`.
 
 The intended user flow is:
@@ -109,7 +109,6 @@ This repository includes:
   archive used by the formula
 - `.github/workflows/release-dw-cli-source.yml` to upload that archive to a
   GitHub release
-- `homebrew-tap/` as a scaffold for the separate tap repository
 
 The release split is intentional:
 

@@ -30,6 +30,22 @@ class XMLNodeDict(dict):
     """Dictionary wrapper used to mark XML element nodes."""
 
 
+class FormattedNumber(float):
+    """Numeric value that preserves DataWeave formatting metadata for string writers."""
+
+    def __new__(cls, value: Any, formatted_text: str) -> "FormattedNumber":
+        instance = float.__new__(cls, float(value))
+        instance.formatted_text = str(formatted_text)
+        return instance
+
+    def raw_value(self) -> int | float:
+        numeric_value = float(self)
+        return int(numeric_value) if numeric_value.is_integer() else numeric_value
+
+    def __str__(self) -> str:
+        return self.formatted_text
+
+
 class DWObject(dict):
     """Dictionary-like object that preserves duplicate key entries."""
 
@@ -232,6 +248,8 @@ def _yaml_writer(value: Any, options: Dict[str, Any]) -> str:
 
 
 def _normalize_yaml_value(value: Any) -> Any:
+    if isinstance(value, FormattedNumber):
+        return value.raw_value()
     if hasattr(value, "to_iso8601") and callable(getattr(value, "to_iso8601")):
         return value.to_iso8601()
     if isinstance(value, datetime):
@@ -325,6 +343,8 @@ class _JSONEncoder:
         self.sort_keys = sort_keys
 
     def encode(self, value: Any, level: int = 0) -> str:
+        if isinstance(value, FormattedNumber):
+            return json.dumps(value.raw_value(), ensure_ascii=self.ensure_ascii)
         if isinstance(value, XMLNodeDict):
             return self._encode_object(value, level)
         if isinstance(value, Mapping):
@@ -433,6 +453,8 @@ class _JSONEncoder:
         return "[" + newline + (",\n".join(parts)) + newline + closing_pad + "]"
 
     def _normalize_value(self, value: Any) -> Any:
+        if isinstance(value, FormattedNumber):
+            return value.raw_value()
         if hasattr(value, "to_iso8601") and callable(getattr(value, "to_iso8601")):
             return value.to_iso8601()
         if isinstance(value, datetime):

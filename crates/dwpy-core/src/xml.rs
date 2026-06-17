@@ -2,7 +2,7 @@ use serde_json::Map;
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::selectors::value_with_metadata;
+use crate::selectors::{unwrap_metadata_value, value_with_metadata};
 use crate::{as_dataweave_string, output_option, DwError};
 
 const XML_LIST_KEY: &str = "__dwpy_xml_list";
@@ -452,6 +452,15 @@ pub(crate) fn render_xml_output(value: &Value, directive: &str) -> Result<String
 }
 
 fn render_xml_element(name: &str, value: &Value) -> String {
+    if let Some(unwrapped) = unwrap_metadata_value(value) {
+        return match unwrapped {
+            Value::Object(_) | Value::Array(_) => render_xml_element(name, &unwrapped),
+            _ => format!(
+                "<{name}>{}</{name}>",
+                escape_xml_text(&as_dataweave_string(value))
+            ),
+        };
+    }
     if let Some(items) = xml_list_items(value) {
         return items
             .iter()
