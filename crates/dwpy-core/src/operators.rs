@@ -5,8 +5,11 @@ use crate::builtins::{binary_value, to_string_with_options};
 use crate::literals::parse_string_literal;
 use crate::periods::{
     concatenate_temporals, evaluate_period_additive, period_literal, period_or_temporal_to_number,
+    temporal_from_value,
 };
-use crate::selectors::{duplicate_object_pairs, duplicate_object_value, value_with_metadata};
+use crate::selectors::{
+    duplicate_object_pairs, duplicate_object_value, unwrap_metadata_value, value_with_metadata,
+};
 use crate::syntax::split_top_level;
 use crate::{as_dataweave_string, number_result, DwError};
 
@@ -970,6 +973,12 @@ fn is_iso_date(value: &str) -> bool {
 }
 
 fn compare_values(left: &Value, right: &Value) -> Result<i8, DwError> {
+    if let Some(unwrapped) = unwrap_metadata_value(left) {
+        return compare_values(&unwrapped, right);
+    }
+    if let Some(unwrapped) = unwrap_metadata_value(right) {
+        return compare_values(left, &unwrapped);
+    }
     if left.is_number() && right.is_number() {
         let left = number_value(left)?;
         let right = number_value(right)?;
@@ -989,9 +998,65 @@ fn compare_values(left: &Value, right: &Value) -> Result<i8, DwError> {
         } else {
             0
         }),
+        _ if temporal_from_value(left).is_some() && temporal_from_value(right).is_some() => {
+            compare_temporal_values(left, right)
+        }
         _ => Err(DwError::UnsupportedFeature(format!(
             "comparison between {left:?} and {right:?}"
         ))),
+    }
+}
+
+fn compare_temporal_values(left: &Value, right: &Value) -> Result<i8, DwError> {
+    let left = temporal_from_value(left)
+        .ok_or_else(|| DwError::UnsupportedFeature(format!("comparison between {left:?} and {right:?}")))?;
+    let right = temporal_from_value(right)
+        .ok_or_else(|| DwError::UnsupportedFeature(format!("comparison between {left:?} and {right:?}")))?;
+
+    match (left.kind.as_str(), right.kind.as_str()) {
+        ("date", "date") => Ok(compare_ordering(&left.value.cmp(&right.value))),
+        ("datetime", "datetime") => {
+            let left = parse_datetime_epoch_seconds(&left.value)
+                .ok_or_else(|| DwError::UnsupportedFeature(format!("comparison between {left:?} and {right:?}")))?;
+            let right = parse_datetime_epoch_seconds(&right.value)
+                .ok_or_else(|| DwError::UnsupportedFeature(format!("comparison between {left:?} and {right:?}")))?;
+            Ok(compare_datetime_parts(left, right))
+        }
+        ("date", "datetime") => compare_date_and_datetime(&left.value, &right.value),
+        ("datetime", "date") => compare_date_and_datetime(&right.value, &left.value).map(|value| -value),
+        ("time", "time") => Ok(compare_ordering(&left.value.cmp(&right.value))),
+        _ => Err(DwError::UnsupportedFeature(format!(
+            "comparison between {left:?} and {right:?}"
+        ))),
+    }
+}
+
+fn compare_date_and_datetime(date_value: &str, datetime_value: &str) -> Result<i8, DwError> {
+    let (year, month, day) = parse_iso_date(date_value).ok_or_else(|| {
+        DwError::UnsupportedFeature(format!(
+            "comparison between {:?} and {:?}",
+            date_value, datetime_value
+        ))
+    })?;
+    let date_epoch = unix_days_from_civil(year, month, day) * 86_400;
+    let datetime_epoch = parse_datetime_epoch_seconds(datetime_value).ok_or_else(|| {
+        DwError::UnsupportedFeature(format!(
+            "comparison between {:?} and {:?}",
+            date_value, datetime_value
+        ))
+    })?;
+    Ok(compare_datetime_parts((date_epoch, 0), datetime_epoch))
+}
+
+fn compare_datetime_parts(left: (i64, i64), right: (i64, i64)) -> i8 {
+    compare_ordering(&left.cmp(&right))
+}
+
+fn compare_ordering(ordering: &std::cmp::Ordering) -> i8 {
+    match ordering {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
     }
 }
 

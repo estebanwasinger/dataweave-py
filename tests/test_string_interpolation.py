@@ -211,6 +211,29 @@ output application/json
     assert result == {"message": "Hello World"}
 
 
+def test_interpolation_in_object_key_with_indexed_access(runtime):
+    """Test using indexed payload access inside an interpolated object key."""
+    result = runtime.execute(
+        """%dw 2.0
+output application/json
+---
+{
+  "$(payload.Parameters[0].Name)": payload.Parameters[0].Value
+}
+""",
+        {
+            "Parameters": [
+                {
+                    "Name": "/dev/chat-db/db-api-username",
+                    "Value": "chat",
+                }
+            ],
+            "InvalidParameters": [],
+        },
+    )
+    assert result == {"/dev/chat-db/db-api-username": "chat"}
+
+
 def test_interpolation_with_concatenation(runtime):
     """Test interpolation with string concatenation."""
     result = runtime.execute(
@@ -235,5 +258,4 @@ output application/json
         {"price": 19.99},
     )
     assert result == "Price: 19.99"
-
 

@@ -66,6 +66,13 @@ class OutputDirective:
 
 
 @dataclass
+class UpdatePathSegment:
+    kind: str
+    value: Any
+    assert_present: bool = False
+
+
+@dataclass
 class LambdaCallable:
     runtime: "DataWeaveRuntime"
     parameters: List[parser.Parameter]
@@ -700,6 +707,8 @@ class DataWeaveRuntime:
             value = self._evaluate(expr.expression, ctx)
             options = self._evaluate(expr.options, ctx) if expr.options else None
             return self._coerce_value(value, expr.target, options, ctx)
+        if isinstance(expr, parser.UpdateExpression):
+            return self._evaluate_update_expression(expr, ctx)
         raise TypeError(f"Unsupported expression: {expr!r}")
 
     def _resolve_identifier(
@@ -741,6 +750,270 @@ class DataWeaveRuntime:
             length=max(length, 1),
         )
 
+    def _evaluate_update_expression(
+        self,
+        expr: parser.UpdateExpression,
+        ctx: EvaluationContext,
+    ) -> Any:
+        value = self._evaluate(expr.value, ctx)
+        if expr.cases is not None:
+            current = value
+            for case in expr.cases:
+                path_source = self._resolve_update_path_source(case.path_source, ctx)
+                path_segments = self._parse_update_path_segments(path_source)
+                selected = self._select_update_path_value(current, path_segments)
+                bound_name = case.binding or "$"
+                case_variables = dict(ctx.variables)
+                case_variables[bound_name] = selected
+                case_ctx = EvaluationContext(
+                    payload=ctx.payload,
+                    variables=case_variables,
+                    header=ctx.header,
+                    line_offset=ctx.line_offset,
+                )
+                if case.guard is not None and not self._is_truthy(self._evaluate(case.guard, case_ctx)):
+                    continue
+                replacement = self._evaluate(case.expression, case_ctx)
+                current = self._apply_update_path(current, path_segments, replacement)
+            return current
+
+        if expr.selector is None or expr.replacement is None:
+            raise TypeError("Update expression is missing selector or replacement")
+        selector = self._parse_update_selector(self._evaluate(expr.selector, ctx))
+        replacement = self._evaluate(expr.replacement, ctx)
+        return self._apply_update_selector(value, selector, replacement)
+
+    def _resolve_update_path_source(self, source: str, ctx: EvaluationContext) -> str:
+        result: List[str] = []
+        index = 0
+        while index < len(source):
+            start = source.find("$(", index)
+            if start == -1:
+                result.append(source[index:])
+                break
+            result.append(source[index:start])
+            depth = 1
+            cursor = start + 2
+            while cursor < len(source) and depth > 0:
+                char = source[cursor]
+                if char == "(":
+                    depth += 1
+                elif char == ")":
+                    depth -= 1
+                cursor += 1
+            if depth != 0:
+                raise DataWeaveEvaluationError("Unclosed interpolation in update path")
+            expr_source = source[start + 2 : cursor - 1]
+            interpolated = self._evaluate(parser.parse_expression_from_source(expr_source), ctx)
+            result.append(self._to_string(interpolated))
+            index = cursor
+        return "".join(result)
+
+    def _parse_update_path_segments(self, source: str) -> List[UpdatePathSegment]:
+        segments: List[UpdatePathSegment] = []
+        index = 0
+        length = len(source)
+        while index < length:
+            if source[index].isspace():
+                index += 1
+                continue
+            if source[index] == "[":
+                close = source.find("]", index)
+                if close == -1:
+                    raise DataWeaveEvaluationError(f"Unterminated update path index: {source}")
+                index_value = source[index + 1 : close].strip()
+                try:
+                    parsed_index = int(index_value)
+                except ValueError as exc:
+                    raise DataWeaveEvaluationError(f"Unsupported update path index: {source}") from exc
+                segments.append(UpdatePathSegment(kind="index", value=parsed_index))
+                index = close + 1
+                continue
+            if source[index] != ".":
+                raise DataWeaveEvaluationError(f"Unsupported update path: {source}")
+            index += 1
+            if index >= length:
+                raise DataWeaveEvaluationError(f"Empty update path segment: {source}")
+            if source[index] in {'"', "'"}:
+                quote = source[index]
+                index += 1
+                start = index
+                escaped = False
+                value_chars: List[str] = []
+                while index < length:
+                    char = source[index]
+                    if escaped:
+                        value_chars.append(char)
+                        escaped = False
+                    elif char == "\\":
+                        escaped = True
+                    elif char == quote:
+                        break
+                    else:
+                        value_chars.append(char)
+                    index += 1
+                if index >= length or source[index] != quote:
+                    raise DataWeaveEvaluationError(f"Unterminated update path segment: {source}")
+                attribute = "".join(value_chars)
+                index += 1
+            else:
+                start = index
+                while index < length and (source[index].isalnum() or source[index] == "_"):
+                    index += 1
+                attribute = source[start:index]
+                if not attribute:
+                    raise DataWeaveEvaluationError(f"Unsupported update path: {source}")
+            assert_present = False
+            if index < length and source[index] == "!":
+                assert_present = True
+                index += 1
+            segments.append(
+                UpdatePathSegment(
+                    kind="property",
+                    value=attribute,
+                    assert_present=assert_present,
+                )
+            )
+        return segments
+
+    def _select_update_path_value(self, value: Any, segments: List[UpdatePathSegment]) -> Any:
+        current = value
+        for segment in segments:
+            if segment.kind == "property":
+                if not isinstance(current, Mapping):
+                    return None
+                current = current.get(str(segment.value))
+            elif segment.kind == "index":
+                if not isinstance(current, list):
+                    return None
+                resolved = self._resolve_update_index(int(segment.value), len(current))
+                if resolved is None:
+                    return None
+                current = current[resolved]
+            else:
+                return None
+        return current
+
+    def _apply_update_path(
+        self,
+        value: Any,
+        segments: List[UpdatePathSegment],
+        replacement: Any,
+    ) -> Any:
+        if not segments:
+            return replacement
+        head, *tail = segments
+        if head.kind == "property":
+            if not isinstance(value, Mapping):
+                return value
+            output = DWObject() if isinstance(value, DWObject) else dict(value)
+            key = str(head.value)
+            if not tail:
+                if key in output or head.assert_present:
+                    if isinstance(output, DWObject):
+                        output[key] = replacement
+                    else:
+                        output[key] = replacement
+                return output
+            if key in output:
+                output[key] = self._apply_update_path(output[key], tail, replacement)
+            return output
+        if head.kind == "index":
+            if not isinstance(value, list):
+                return value
+            resolved = self._resolve_update_index(int(head.value), len(value))
+            if resolved is None:
+                return value
+            output = list(value)
+            output[resolved] = self._apply_update_path(output[resolved], tail, replacement)
+            return output
+        return value
+
+    @staticmethod
+    def _resolve_update_index(index: int, length: int) -> Optional[int]:
+        resolved = length + index if index < 0 else index
+        if resolved < 0 or resolved >= length:
+            return None
+        return resolved
+
+    def _parse_update_selector(self, value: Any) -> Any:
+        if isinstance(value, str):
+            return ("key", value)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            if isinstance(value, float) and not value.is_integer():
+                raise TypeError(f"Unsupported update index {value}")
+            return ("index", int(value))
+        if isinstance(value, list):
+            return ("path", [self._parse_update_selector(item) for item in value])
+        if isinstance(value, Mapping):
+            kind = value.get("kind")
+            selector = value.get("selector")
+            if kind == "Object":
+                return ("key", self._to_string(selector))
+            if kind == "Array":
+                return ("index", int(selector))
+        raise TypeError(f"Unsupported update selector {value!r}")
+
+    def _apply_update_selector(self, value: Any, selector: Any, replacement: Any) -> Any:
+        selector_kind, selector_value = selector
+        if selector_kind == "path":
+            return self._apply_update_selector_path(value, selector_value, replacement)
+        if selector_kind == "key":
+            if isinstance(value, list):
+                return [self._apply_update_selector(item, selector, replacement) for item in value]
+            if isinstance(value, Mapping):
+                output = DWObject() if isinstance(value, DWObject) else dict(value)
+                for key, item in list(output.items()):
+                    if key == selector_value:
+                        output[key] = replacement
+                    else:
+                        output[key] = self._apply_update_selector(item, selector, replacement)
+                return output
+            return value
+        if selector_kind == "index":
+            if isinstance(value, list):
+                output = list(value)
+                resolved = self._resolve_update_index(int(selector_value), len(output))
+                if resolved is not None:
+                    output[resolved] = replacement
+                return output
+            if isinstance(value, Mapping):
+                output = DWObject() if isinstance(value, DWObject) else dict(value)
+                for key, item in list(output.items()):
+                    output[key] = self._apply_update_selector(item, selector, replacement)
+                return output
+            return value
+        return value
+
+    def _apply_update_selector_path(self, value: Any, path: List[Any], replacement: Any) -> Any:
+        if not path:
+            return replacement
+        head, *tail = path
+        selector_kind, selector_value = head
+        if selector_kind == "key":
+            if not isinstance(value, Mapping):
+                return value
+            output = DWObject() if isinstance(value, DWObject) else dict(value)
+            if selector_value in output:
+                output[selector_value] = self._apply_update_selector_path(
+                    output[selector_value],
+                    tail,
+                    replacement,
+                )
+            return output
+        if selector_kind == "index":
+            if not isinstance(value, list):
+                return value
+            resolved = self._resolve_update_index(int(selector_value), len(value))
+            if resolved is None:
+                return value
+            output = list(value)
+            output[resolved] = self._apply_update_selector_path(output[resolved], tail, replacement)
+            return output
+        if selector_kind == "path":
+            return self._apply_update_selector_path(value, selector_value, replacement)
+        return value
+
     def _resolve_property(self, base: Any, attribute: str, *, multi_value: bool = False) -> Any:
         if base is None:
             return None
@@ -770,11 +1043,63 @@ class DataWeaveRuntime:
             if isinstance(value, XMLNodeList):
                 return value[0] if value else None
             return value
+        temporal_base = self._coerce_temporal_value(base)
+        if temporal_base is not None:
+            return self._resolve_temporal_attribute(temporal_base, attribute)
         if hasattr(base, attribute):
             return getattr(base, attribute)
         if attribute.startswith("@"):
             return None
         raise TypeError(f"Cannot access attribute '{attribute}' on {type(base).__name__}")
+
+    def _resolve_temporal_attribute(self, value: Any, attribute: str) -> Any:
+        if attribute == "nanoseconds":
+            return getattr(value, "microsecond", 0) * 1000
+        if attribute == "milliseconds":
+            return getattr(value, "microsecond", 0) // 1000
+        if attribute == "seconds":
+            return getattr(value, "second", 0)
+        if attribute == "minutes":
+            return getattr(value, "minute", 0)
+        if attribute == "hour":
+            return getattr(value, "hour", 0)
+        if attribute == "day":
+            return getattr(value, "day", 1)
+        if attribute == "month":
+            return getattr(value, "month", 1)
+        if attribute == "year":
+            return getattr(value, "year", 1970)
+        if attribute == "quarter":
+            month = getattr(value, "month", 1)
+            return ((month - 1) // 3) + 1
+        if attribute == "dayOfWeek":
+            base_date = value if isinstance(value, date) and not isinstance(value, datetime) else value.date()
+            return base_date.isoweekday()
+        if attribute == "dayOfYear":
+            base_date = value if isinstance(value, date) and not isinstance(value, datetime) else value.date()
+            return base_date.timetuple().tm_yday
+        if attribute == "offsetSeconds":
+            if isinstance(value, datetime):
+                offset = value.utcoffset()
+            elif isinstance(value, time):
+                offset = value.utcoffset()
+            else:
+                offset = None
+            return int(offset.total_seconds()) if offset is not None else 0
+        raise TypeError(f"Cannot access attribute '{attribute}' on {type(value).__name__}")
+
+    def _coerce_temporal_value(self, value: Any) -> Any:
+        if isinstance(value, (datetime, date, time)):
+            return value
+        if isinstance(value, str):
+            parsed = self._parse_temporal_literal(value)
+            if isinstance(parsed, (datetime, date, time)):
+                return parsed
+        return None
+
+    def _coerce_temporal_operand(self, value: Any) -> Any:
+        temporal_value = self._coerce_temporal_value(value)
+        return temporal_value if temporal_value is not None else value
 
     @staticmethod
     def _xml_local_name(key: str) -> str:
@@ -1710,6 +2035,14 @@ class DataWeaveRuntime:
                         return datetime.strptime(value, pattern)
                     except ValueError:
                         continue
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})?", value):
+            normalised = value.replace(" ", "T", 1)
+            if normalised.endswith("Z"):
+                normalised = normalised[:-1] + "+00:00"
+            try:
+                return datetime.fromisoformat(normalised)
+            except ValueError:
+                pass
         if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
             try:
                 return date.fromisoformat(value)
@@ -2060,6 +2393,8 @@ class DataWeaveRuntime:
         line: Optional[int] = None,
         column: Optional[int] = None,
     ) -> Any:
+        left = self._coerce_temporal_operand(left)
+        right = self._coerce_temporal_operand(right)
         if isinstance(left, (int, float, bool)) and isinstance(right, (int, float, bool)):
             left_num = float(left)
             right_num = float(right)
@@ -2096,6 +2431,8 @@ class DataWeaveRuntime:
         line: Optional[int] = None,
         column: Optional[int] = None,
     ) -> Any:
+        left = self._coerce_temporal_operand(left)
+        right = self._coerce_temporal_operand(right)
         if isinstance(left, (int, float, bool)) and isinstance(right, (int, float, bool)):
             left_num = float(left)
             right_num = float(right)
@@ -2202,6 +2539,45 @@ class DataWeaveRuntime:
         result_delta = left_delta + right_delta if operation == "+" else left_delta - right_delta
         total_seconds = result_delta.total_seconds()
         return int(total_seconds) if total_seconds.is_integer() else total_seconds
+
+    def _compare_values(self, left: Any, right: Any) -> int:
+        left_temporal = self._coerce_temporal_value(left)
+        right_temporal = self._coerce_temporal_value(right)
+        if left_temporal is not None and right_temporal is not None:
+            normalized = self._normalize_temporal_comparison(left_temporal, right_temporal)
+            if normalized is not None:
+                left_temporal, right_temporal = normalized
+                if left_temporal < right_temporal:
+                    return -1
+                if left_temporal > right_temporal:
+                    return 1
+                return 0
+        if left < right:
+            return -1
+        if left > right:
+            return 1
+        return 0
+
+    def _normalize_temporal_comparison(self, left: Any, right: Any) -> Optional[Tuple[Any, Any]]:
+        if isinstance(left, (date, datetime)) and isinstance(right, (date, datetime)):
+            left_dt = self._temporal_to_comparable_datetime(left)
+            right_dt = self._temporal_to_comparable_datetime(right)
+            if left_dt.tzinfo is None and right_dt.tzinfo is not None:
+                left_dt = left_dt.replace(tzinfo=timezone.utc)
+            if right_dt.tzinfo is None and left_dt.tzinfo is not None:
+                right_dt = right_dt.replace(tzinfo=timezone.utc)
+            return left_dt, right_dt
+        if isinstance(left, time) and isinstance(right, time):
+            return left, right
+        return None
+
+    @staticmethod
+    def _temporal_to_comparable_datetime(value: Any) -> datetime:
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, date):
+            return datetime.combine(value, time.min)
+        raise TypeError(f"Cannot compare temporal value {value!r}")
 
     @staticmethod
     def _func_binary_times(left: Any, right: Any) -> Any:
@@ -2318,21 +2694,17 @@ class DataWeaveRuntime:
     def _func_binary_neq(left: Any, right: Any) -> bool:
         return left != right
 
-    @staticmethod
-    def _func_binary_gt(left: Any, right: Any) -> bool:
-        return left > right
+    def _func_binary_gt(self, left: Any, right: Any) -> bool:
+        return self._compare_values(left, right) > 0
 
-    @staticmethod
-    def _func_binary_lt(left: Any, right: Any) -> bool:
-        return left < right
+    def _func_binary_lt(self, left: Any, right: Any) -> bool:
+        return self._compare_values(left, right) < 0
 
-    @staticmethod
-    def _func_binary_gte(left: Any, right: Any) -> bool:
-        return left >= right
+    def _func_binary_gte(self, left: Any, right: Any) -> bool:
+        return self._compare_values(left, right) >= 0
 
-    @staticmethod
-    def _func_binary_lte(left: Any, right: Any) -> bool:
-        return left <= right
+    def _func_binary_lte(self, left: Any, right: Any) -> bool:
+        return self._compare_values(left, right) <= 0
 
     def _func_binary_and(self, left: Any, right: Any) -> bool:
         return self._is_truthy(left) and self._is_truthy(right)
@@ -2411,6 +2783,18 @@ class DataWeaveRuntime:
                         if pattern.guard is not None:
                             visit(pattern.guard)
                     visit(case.expression)
+                return
+            if isinstance(node, parser.UpdateExpression):
+                visit(node.value)
+                if node.selector is not None:
+                    visit(node.selector)
+                if node.replacement is not None:
+                    visit(node.replacement)
+                if node.cases is not None:
+                    for case in node.cases:
+                        if case.guard is not None:
+                            visit(case.guard)
+                        visit(case.expression)
                 return
             if isinstance(node, parser.TypeCoercion):
                 visit(node.expression)

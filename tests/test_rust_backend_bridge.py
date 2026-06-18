@@ -1409,6 +1409,57 @@ map $.file_id
     assert runtime._rust_runtime.last_execution_engine() == "rust-core"
 
 
+def test_rust_bridge_update_filter_pipeline_handles_relative_date_comparison_in_core() -> None:
+    runtime = DataWeaveRuntime(backend="rust")
+    script = """%dw 2.0
+output application/json
+---
+payload map ((item, index) -> item update {
+    case .created_at -> $[0 to 9] as Date
+})
+filter ($.name startsWith "keypilot-")
+filter ((item, index) -> item.created_at < now() - |P1M|)
+"""
+    payload = [
+        {
+            "name": "01KNME7Y6AQ14D04YPAN2P1H91",
+            "created_at": "2026-06-17 12:30:46-03:00",
+            "created_by": "estebanwasinger-1",
+        },
+        {
+            "name": "01HBXW7CKH47FC1YT95EYV0WCD",
+            "created_at": "2026-06-17 12:08:44-03:00",
+            "created_by": "estebanwasinger-1",
+        },
+        {
+            "name": "keypilot-11c19c6608e613f3c6d336fb9131dff61f707c17d7228a47",
+            "created_at": "2026-06-17 11:32:17-03:00",
+            "created_by": "estebanwasinger-1",
+        },
+        {
+            "name": "keypilot-5da4431e7d4a8bd0aea144ecbae31bda1a7fde9c9266117d",
+            "created_at": "2026-06-17 11:27:16-03:00",
+            "created_by": "estebanwasinger-1",
+        },
+        {
+            "name": "keypilot-5d35840b1caa363e1a394542da7b3b9b2410a5ba9bd8c002",
+            "created_at": "2026-03-17 11:26:01-03:00",
+            "created_by": "estebanwasinger-1",
+        },
+    ]
+
+    result = runtime.execute(script, payload)
+
+    assert json.loads(result) == [
+        {
+            "name": "keypilot-5d35840b1caa363e1a394542da7b3b9b2410a5ba9bd8c002",
+            "created_at": "2026-03-17",
+            "created_by": "estebanwasinger-1",
+        }
+    ]
+    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+
+
 def test_rust_bridge_renders_yaml_writer_options_in_core() -> None:
     runtime = DataWeaveRuntime()
     script = """%dw 2.0

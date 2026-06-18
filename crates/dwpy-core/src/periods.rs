@@ -17,9 +17,9 @@ struct Period {
 }
 
 #[derive(Debug, Clone)]
-struct Temporal {
-    kind: String,
-    value: String,
+pub(crate) struct Temporal {
+    pub(crate) kind: String,
+    pub(crate) value: String,
 }
 
 pub(crate) fn period_function(function_name: &str, value: &Value) -> Result<Value, DwError> {
@@ -750,7 +750,7 @@ fn period_from_value(value: &Value) -> Option<Period> {
     })
 }
 
-fn temporal_from_value(value: &Value) -> Option<Temporal> {
+pub(crate) fn temporal_from_value(value: &Value) -> Option<Temporal> {
     if let Value::Object(map) = value {
         let kind = map.get(DW_TEMPORAL_MARKER)?.as_str()?.to_string();
         let value = map.get("value")?.as_str()?.to_string();

@@ -250,6 +250,22 @@ class MatchExpression(Expression):
     cases: List[MatchCase]
 
 
+@dataclass
+class UpdateCase:
+    path_source: str
+    expression: Expression
+    binding: Optional[str] = None
+    guard: Optional[Expression] = None
+
+
+@dataclass
+class UpdateExpression(Expression):
+    value: Expression
+    cases: Optional[List[UpdateCase]] = None
+    selector: Optional[Expression] = None
+    replacement: Optional[Expression] = None
+
+
 Token = Tuple[str, Optional[str], int, int, int, int]
 
 
@@ -503,6 +519,9 @@ class Parser:
             token = self.current()
             token_type = token[0]
             token_value = token[1]
+            if token_type == "IDENT" and token_value == "update":
+                expr = self._parse_update_expression(expr)
+                continue
             if (
                 token_type != "IDENT"
                 or token_value in RESERVED_INFIX_STOP
@@ -522,6 +541,97 @@ class Parser:
                 arguments=[expr, argument],
             )
         return expr
+
+    def _parse_update_expression(self, value_expr: Expression) -> Expression:
+        self.advance()
+        if self.current()[0] == "LBRACE":
+            return UpdateExpression(
+                value=value_expr,
+                cases=self._parse_update_cases(),
+            )
+
+        selector = self.parse_comparison()
+        token = self.current()
+        if token[0] != "IDENT" or token[1] != "with":
+            raise ParseError(
+                f"Expected 'with' in update expression at line {token[2]}, column {token[3]}",
+                token[2],
+                token[3],
+            )
+        self.advance()
+        replacement = self.parse_expression()
+        return UpdateExpression(
+            value=value_expr,
+            selector=selector,
+            replacement=replacement,
+        )
+
+    def _parse_update_cases(self) -> List[UpdateCase]:
+        self.expect("LBRACE")
+        cases: List[UpdateCase] = []
+        while not self.match("RBRACE"):
+            token = self.current()
+            if token[0] != "IDENT" or token[1] != "case":
+                raise ParseError(
+                    f"Expected 'case' in update expression at line {token[2]}, column {token[3]}",
+                    token[2],
+                    token[3],
+                )
+            self.advance()
+
+            binding: Optional[str] = None
+            if self.current()[0] == "IDENT" and self.peek(1)[0] == "IDENT" and self.peek(1)[1] == "at":
+                binding = self.current()[1] or ""
+                self.advance()
+                self.advance()
+
+            path_start = self.current()
+            path_start_index = self.index
+            depth = 0
+            while True:
+                token = self.current()
+                token_type = token[0]
+                token_value = token[1]
+                if token_type == "EOF":
+                    raise ParseError("Unterminated update case", path_start[2], path_start[3])
+                if token_type in {"LPAREN", "LBRACKET", "LBRACE"}:
+                    depth += 1
+                elif token_type in {"RPAREN", "RBRACKET", "RBRACE"}:
+                    depth -= 1
+                elif depth == 0 and token_type == "ARROW":
+                    break
+                elif depth == 0 and token_type == "IDENT" and token_value == "if":
+                    break
+                self.advance()
+
+            if self.index == path_start_index:
+                token = self.current()
+                raise ParseError(
+                    f"Expected update path at line {token[2]}, column {token[3]}",
+                    token[2],
+                    token[3],
+                )
+
+            path_end = self.tokens[self.index - 1]
+            path_source = self.source[path_start[4] : path_end[5]].strip()
+
+            guard: Optional[Expression] = None
+            if self.current()[0] == "IDENT" and self.current()[1] == "if":
+                self.advance()
+                guard = self.parse_expression()
+
+            self.expect("ARROW")
+            result_expr = self.parse_expression()
+            cases.append(
+                UpdateCase(
+                    path_source=path_source,
+                    expression=result_expr,
+                    binding=binding,
+                    guard=guard,
+                )
+            )
+            self.match("COMMA")
+        return cases
 
     def parse_comparison(self) -> Expression:
         expr = self.parse_range()

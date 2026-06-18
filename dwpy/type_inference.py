@@ -406,6 +406,8 @@ class TypeInferencer:
             return union_types(true_type, false_type)
         if isinstance(expr, parser.MatchExpression):
             return self._infer_match_expression(expr, ctx)
+        if isinstance(expr, parser.UpdateExpression):
+            return self._infer_expression(expr.value, ctx)
         if isinstance(expr, parser.LambdaExpression):
             return FunctionType(
                 parameter_types=[
