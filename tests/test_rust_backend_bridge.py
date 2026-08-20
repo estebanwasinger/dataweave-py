@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import textwrap
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -1448,6 +1449,10 @@ map $.file_id
 
 
 def test_rust_bridge_update_filter_pipeline_handles_relative_date_comparison_in_core() -> None:
+    today = datetime.now(timezone.utc).date()
+    recent_date = (today - timedelta(days=7)).isoformat()
+    old_date = (today - timedelta(days=45)).isoformat()
+
     runtime = DataWeaveRuntime(backend="rust")
     script = """%dw 2.0
 output application/json
@@ -1471,17 +1476,17 @@ filter ((item, index) -> item.created_at < now() - |P1M|)
         },
         {
             "name": "keypilot-11c19c6608e613f3c6d336fb9131dff61f707c17d7228a47",
-            "created_at": "2026-06-17 11:32:17-03:00",
+            "created_at": f"{recent_date} 11:32:17-03:00",
             "created_by": "estebanwasinger-1",
         },
         {
             "name": "keypilot-5da4431e7d4a8bd0aea144ecbae31bda1a7fde9c9266117d",
-            "created_at": "2026-06-17 11:27:16-03:00",
+            "created_at": f"{recent_date} 11:27:16-03:00",
             "created_by": "estebanwasinger-1",
         },
         {
             "name": "keypilot-5d35840b1caa363e1a394542da7b3b9b2410a5ba9bd8c002",
-            "created_at": "2026-03-17 11:26:01-03:00",
+            "created_at": f"{old_date} 11:26:01-03:00",
             "created_by": "estebanwasinger-1",
         },
     ]
@@ -1491,7 +1496,7 @@ filter ((item, index) -> item.created_at < now() - |P1M|)
     assert json.loads(result) == [
         {
             "name": "keypilot-5d35840b1caa363e1a394542da7b3b9b2410a5ba9bd8c002",
-            "created_at": "2026-03-17",
+            "created_at": old_date,
             "created_by": "estebanwasinger-1",
         }
     ]
