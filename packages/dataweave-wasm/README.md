@@ -1,4 +1,4 @@
-# @unlockre/dataweave-wasm
+# @estebanwasinger/dataweave-wasm
 
 Node.js bindings for the strict Rust DataWeave runtime.
 

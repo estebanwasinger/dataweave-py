@@ -28,7 +28,7 @@ jobs:
         with:
           node-version: 24
           registry-url: https://npm.pkg.github.com
-          scope: "@unlockre"
+          scope: "@estebanwasinger"
 
       - name: Install wasm-pack
         uses: jetli/wasm-pack-action@v0.4.0
