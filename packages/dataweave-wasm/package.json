@@ -2,6 +2,7 @@
   "name": "@unlockre/dataweave-wasm",
   "version": "0.1.0",
   "description": "Node.js WASM bindings for the DataWeave Rust runtime",
+  "repository": "https://github.com/estebanwasinger/dataweave-py",
   "type": "commonjs",
   "main": "index.js",
   "types": "index.d.ts",
