@@ -1170,6 +1170,9 @@ fn find_data_format_descriptor_by_mime(mime: &Value) -> Result<Value, DwError> {
         (_, "json") => Some(("json", "application/json")),
         (_, "xml") => Some(("xml", "application/xml")),
         (_, "csv") => Some(("csv", "application/csv")),
+        (_, "x-ndjson" | "x-ldjson" | "ndjson" | "ldjson") => {
+            Some(("ndjson", "application/x-ndjson"))
+        }
         (_, "yaml" | "x-yaml") => Some(("yaml", "application/yaml")),
         ("text", "plain") => Some(("text/plain", "text/plain")),
         _ => None,

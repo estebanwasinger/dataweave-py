@@ -301,6 +301,9 @@ pub(crate) fn read_format_with_options(
         "application/json" | "json" | "text/json" => {
             serde_json::from_str(&text).map_err(|err| DwError::InvalidJson(err.to_string()))
         }
+        "application/x-ndjson" | "application/x-ldjson" | "ndjson" => {
+            crate::ndjson::read_ndjson(&text, options)
+        }
         "application/xml" | "text/xml" | "xml" => {
             let parsed = parse_xml_document(&text)?;
             Ok(apply_xml_null_value_option(parsed, options))
@@ -509,6 +512,9 @@ pub(crate) fn write_format_with_options(
                 .map(Value::String)
                 .map_err(|err| DwError::InvalidJson(err.to_string()))
         }
+        "application/x-ndjson" | "application/x-ldjson" | "ndjson" => {
+            crate::ndjson::render_ndjson_value(value, options).map(Value::String)
+        }
         "text/plain" | "plain" => match value {
             Value::String(value) => Ok(Value::String(value.clone())),
             _ => Err(DwError::UnsupportedFeature(
@@ -524,7 +530,7 @@ pub(crate) fn write_format_with_options(
     }
 }
 
-fn json_write_value_with_options(value: &Value, options: &Value) -> Value {
+pub(crate) fn json_write_value_with_options(value: &Value, options: &Value) -> Value {
     let options = options.as_object();
     let skip_null_on = options
         .and_then(|map| map.get("skipNullOn"))

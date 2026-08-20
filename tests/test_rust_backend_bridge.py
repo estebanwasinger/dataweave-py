@@ -1276,6 +1276,34 @@ payload
     assert runtime._rust_runtime.last_execution_engine() == "rust-core"
 
 
+def test_rust_bridge_executes_ndjson_writer_in_core() -> None:
+    runtime = DataWeaveRuntime(backend="rust")
+    script = '%dw 2.0\noutput application/x-ndjson skipNullOn="objects" writeAttributes=true\n---\npayload'
+
+    result = runtime.execute(
+        script,
+        [{"id": 1, "name": None}, {"#text": "ok", "@source": "test"}],
+    )
+
+    assert result == '{"id":1}\n{"__text":"ok","@source":"test"}\n'
+    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+
+
+def test_rust_bridge_parses_ndjson_payload_in_core() -> None:
+    runtime = DataWeaveRuntime(backend="rust")
+    script = "%dw 2.0\noutput application/python\n---\npayload map ((item) -> item.id)"
+
+    result = runtime.execute(
+        script,
+        '{"id":1}\ninvalid\n{"id":2}\n',
+        payload_format="application/x-ldjson",
+        payload_format_options={"skipInvalid": True},
+    )
+
+    assert result == [1, 2]
+    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+
+
 def test_rust_bridge_parses_nested_yaml_payload_in_core() -> None:
     runtime = DataWeaveRuntime(backend="rust")
     script = """%dw 2.0

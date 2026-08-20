@@ -147,6 +147,15 @@ def _register_builtin_formats() -> None:
     )
     FormatRegistry.register(
         FormatDefinition(
+            id="ndjson",
+            mime_type="application/x-ndjson",
+            reader=_ndjson_reader,
+            writer=_ndjson_writer,
+        ),
+        aliases=["ndjson", "application/x-ldjson"],
+    )
+    FormatRegistry.register(
+        FormatDefinition(
             id="csv",
             mime_type="application/csv",
             reader=_csv_reader,
@@ -224,6 +233,110 @@ def _json_writer(value: Any, options: Dict[str, Any]) -> str:
     sort_keys = _to_bool(options.get("sort_keys", False))
     encoder = _JSONEncoder(indent=indent, ensure_ascii=ensure_ascii, sort_keys=sort_keys)
     return encoder.encode(value)
+
+
+def _ndjson_reader(value: Any, options: Dict[str, Any]) -> Any:
+    if isinstance(value, (dict, list)):
+        return value
+    text = _ensure_text(value, options)
+    ignore_empty_line = _to_bool(options.get("ignoreEmptyLine", True))
+    skip_invalid = _to_bool(options.get("skipInvalid", False))
+    records: list[Any] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        if not line.strip() and ignore_empty_line:
+            continue
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError as err:
+            if skip_invalid:
+                continue
+            raise FormatError(f"Invalid NDJSON record on line {line_number}: {err}") from err
+    return records
+
+
+def _ndjson_writer(value: Any, options: Dict[str, Any]) -> str:
+    rows = value if isinstance(value, list) else [value]
+    skip_null_on = options.get("skipNullOn")
+    normalized_mode = str(skip_null_on).lower() if skip_null_on is not None else ""
+    if normalized_mode and normalized_mode not in {"arrays", "objects", "everywhere"}:
+        raise FormatError("NDJSON skipNullOn must be 'arrays', 'objects', or 'everywhere'")
+    write_attributes = _to_bool(options.get("writeAttributes", False))
+    ensure_ascii = _to_bool(options.get("ensure_ascii", True))
+    encoder = _JSONEncoder(indent=None, ensure_ascii=ensure_ascii, sort_keys=False)
+    rendered: list[str] = []
+    for row in rows:
+        normalized = _normalize_ndjson_value(row, write_attributes=write_attributes)
+        if normalized_mode:
+            normalized = _skip_ndjson_nulls(normalized, normalized_mode)
+        rendered.append(encoder.encode(normalized))
+    return "\n".join(rendered) + ("\n" if rendered else "")
+
+
+def _normalize_ndjson_value(value: Any, *, write_attributes: bool) -> Any:
+    if isinstance(value, FormattedNumber):
+        return value.raw_value()
+    if hasattr(value, "to_iso8601") and callable(getattr(value, "to_iso8601")):
+        return value.to_iso8601()
+    if isinstance(value, datetime):
+        return value.isoformat().replace("+00:00", "Z")
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, time):
+        return value.isoformat().replace("+00:00", "Z")
+    if isinstance(value, timedelta):
+        return _format_timedelta_iso(value)
+    if isinstance(value, XMLNodeDict):
+        normalized_children: Dict[str, Any] = {}
+        text_value = None
+        for key, child in value.items():
+            if key.startswith("@") and not write_attributes:
+                continue
+            if key == "#text":
+                text_value = _normalize_ndjson_value(child, write_attributes=write_attributes)
+                if write_attributes:
+                    normalized_children["__text"] = text_value
+                continue
+            normalized_children[key] = _normalize_ndjson_value(
+                child, write_attributes=write_attributes
+            )
+        if normalized_children:
+            return normalized_children
+        if text_value is not None:
+            return text_value
+        return ""
+    if isinstance(value, XMLNodeList):
+        return [
+            _normalize_ndjson_value(item, write_attributes=write_attributes) for item in value
+        ]
+    if isinstance(value, (list, tuple)):
+        return [
+            _normalize_ndjson_value(item, write_attributes=write_attributes) for item in value
+        ]
+    if isinstance(value, Mapping):
+        normalized: Dict[str, Any] = {}
+        for key, item in value.items():
+            normalized_key = "__text" if write_attributes and str(key) == "#text" else str(key)
+            normalized[normalized_key] = _normalize_ndjson_value(
+                item, write_attributes=write_attributes
+            )
+        return normalized
+    return value
+
+
+def _skip_ndjson_nulls(value: Any, mode: str) -> Any:
+    if isinstance(value, list):
+        items = [_skip_ndjson_nulls(item, mode) for item in value]
+        if mode in {"arrays", "everywhere"}:
+            return [item for item in items if item is not None]
+        return items
+    if isinstance(value, Mapping):
+        result = {}
+        for key, item in value.items():
+            if item is None and mode in {"objects", "everywhere"}:
+                continue
+            result[key] = _skip_ndjson_nulls(item, mode)
+        return result
+    return value
 
 
 def _yaml_reader(value: Any, options: Dict[str, Any]) -> Any:

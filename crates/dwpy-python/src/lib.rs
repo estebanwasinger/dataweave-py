@@ -549,6 +549,12 @@ fn is_core_candidate(script_source: &str) -> bool {
             };
             is_supported_csv_output_line(line)
         }
+        Some("ndjson") | Some("application/x-ndjson") | Some("application/x-ldjson") => {
+            let Some(line) = output_line else {
+                return false;
+            };
+            is_supported_ndjson_output_line(line)
+        }
         Some("application/xml") => {
             let Some(line) = output_line else {
                 return false;
@@ -591,6 +597,9 @@ fn is_supported_payload_request(
             value,
             Some("json")
                 | Some("application/json")
+                | Some("ndjson")
+                | Some("application/x-ndjson")
+                | Some("application/x-ldjson")
                 | Some("xml")
                 | Some("application/xml")
                 | Some("text/xml")
@@ -628,6 +637,9 @@ fn is_supported_payload_options(
         Some("markdown") | Some("md") | Some("text/markdown") | Some("text/x-markdown") => {
             map.keys().all(|key| key == "header")
         }
+        Some("ndjson") | Some("application/x-ndjson") | Some("application/x-ldjson") => map
+            .keys()
+            .all(|key| matches!(key.as_str(), "ignoreEmptyLine" | "skipInvalid")),
         _ => map.is_empty(),
     }
 }
@@ -700,6 +712,29 @@ fn is_supported_csv_output_line(line: &str) -> bool {
         return false;
     }
     true
+}
+
+fn is_supported_ndjson_output_line(line: &str) -> bool {
+    let mut tokens = line.split_whitespace();
+    if !matches!(
+        tokens.next(),
+        Some("ndjson" | "application/x-ndjson" | "application/x-ldjson")
+    ) {
+        return false;
+    }
+    parse_output_option_tokens(tokens.collect()).is_some_and(|options| {
+        options.into_iter().all(|(key, _)| {
+            matches!(
+                key,
+                "skipNullOn"
+                    | "writeAttributes"
+                    | "bufferSize"
+                    | "deferred"
+                    | "encoding"
+                    | "ensure_ascii"
+            )
+        })
+    })
 }
 
 fn is_supported_xml_output_line(line: &str) -> bool {

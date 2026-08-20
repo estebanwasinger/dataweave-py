@@ -26,6 +26,13 @@ pub(crate) fn is_csv_mime(value: &str) -> bool {
     matches!(value, "csv" | "application/csv" | "text/csv")
 }
 
+pub(crate) fn is_ndjson_mime(value: &str) -> bool {
+    matches!(
+        value,
+        "ndjson" | "application/x-ndjson" | "application/x-ldjson"
+    )
+}
+
 pub(crate) fn is_markdown_mime(value: &str) -> bool {
     matches!(
         value,

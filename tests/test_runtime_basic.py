@@ -524,6 +524,61 @@ output application/python
     assert result == {"upper": "MULE"}
 
 
+def test_python_backend_reads_ndjson_payload_into_an_array():
+    script = """%dw 2.0
+output application/python
+---
+payload map ((item) -> item.name)
+"""
+    runtime = DataWeaveRuntime(backend="python")
+
+    result = runtime.execute(
+        script,
+        '{"name":"Ana"}\n\n{"name":"Bob"}\n',
+        payload_format="application/x-ndjson",
+    )
+
+    assert result == ["Ana", "Bob"]
+
+
+def test_python_backend_ndjson_reader_options_control_invalid_lines():
+    script = """%dw 2.0
+output application/python
+---
+payload
+"""
+    runtime = DataWeaveRuntime(backend="python")
+    payload = '{"id":1}\nnot-json\n{"id":2}\n'
+
+    with pytest.raises(DataWeaveEvaluationError) as exc:
+        runtime.execute(script, payload, payload_format="ndjson")
+    assert "Invalid NDJSON record on line 2" in str(exc.value)
+
+    result = runtime.execute(
+        script,
+        payload,
+        payload_format="application/x-ldjson",
+        payload_format_options={"skipInvalid": True},
+    )
+    assert result == [{"id": 1}, {"id": 2}]
+
+
+def test_python_backend_writes_ndjson_records_with_writer_options():
+    script = """%dw 2.0
+output application/x-ndjson skipNullOn="objects" writeAttributes=true
+---
+payload
+"""
+    runtime = DataWeaveRuntime(backend="python")
+
+    result = runtime.execute(
+        script,
+        [{"id": 1, "name": None}, {"#text": "ok", "@source": "test"}],
+    )
+
+    assert result == '{"id":1}\n{"__text":"ok","@source":"test"}\n'
+
+
 def test_payload_accepts_dataframe_input():
     script = """%dw 2.0
 output application/json

@@ -335,12 +335,14 @@ String interpolation allows you to embed expressions directly within strings usi
 The runtime supports these output directives:
 - `application/python` (native Python objects)
 - `application/json`
+- `application/x-ndjson` (also accepts `ndjson` and `application/x-ldjson`)
 - `application/csv`
 - `application/xml`
 - `text/plain`
 - `text/markdown`
 
 Format-specific notes:
+- `application/x-ndjson` maps newline-delimited JSON records to an array. Empty lines are ignored by default; use `skipInvalid=true` to skip malformed records. Writers emit one compact JSON record per line and support `skipNullOn` and `writeAttributes`.
 - `output text/plain` only works when the final script result is a string.
 - `output text/markdown` expects a tabular value (`list` or `dict`) and renders a Markdown table.
 - `output text/markdown header=false` is rejected because Markdown table rendering requires headers.
