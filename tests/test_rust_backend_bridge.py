@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import textwrap
 from pathlib import Path
 
@@ -13,6 +14,17 @@ from dwpy.type_inference import infer_script_type
 from dwpy.typesystem import ArrayType, ObjectType, STRING
 
 
+BACKEND_CONTRACT_TEST = pytest.mark.skipif(
+    os.environ.get("DWPY_TEST_BACKEND") is not None,
+    reason="backend-selection contract is covered outside the forced backend matrix",
+)
+pytestmark = pytest.mark.skipif(
+    os.environ.get("DWPY_TEST_BACKEND") == "python",
+    reason="this module validates the native Rust/WASM bridge",
+)
+
+
+@BACKEND_CONTRACT_TEST
 def test_default_runtime_uses_rust_backend_bridge() -> None:
     runtime = DataWeaveRuntime()
 
@@ -22,6 +34,7 @@ def test_default_runtime_uses_rust_backend_bridge() -> None:
     assert runtime._rust_runtime.last_execution_engine() == "rust-core"
 
 
+@BACKEND_CONTRACT_TEST
 def test_python_backend_remains_available_for_parity() -> None:
     runtime = DataWeaveRuntime(backend="python")
 
@@ -29,6 +42,7 @@ def test_python_backend_remains_available_for_parity() -> None:
     assert runtime.execute("payload.name", {"name": "legacy"}) == "legacy"
 
 
+@BACKEND_CONTRACT_TEST
 def test_auto_backend_falls_back_only_when_rust_extension_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     import dwpy.runtime as runtime_module
 
@@ -51,6 +65,7 @@ def test_auto_backend_falls_back_only_when_rust_extension_is_unavailable(monkeyp
     assert runtime.execute("payload.name", {"name": "fallback"}) == "fallback"
 
 
+@BACKEND_CONTRACT_TEST
 def test_explicit_rust_backend_is_strict_for_unsupported_features() -> None:
     strict_runtime = DataWeaveRuntime(backend="rust")
     script = "%dw 2.0\noutput application/python\n---\npayload[0].city\n"
@@ -155,6 +170,29 @@ output application/json indent=4 sort_keys=true ensure_ascii=true
     result = runtime.execute(script, {"word": "niño"})
 
     assert result == '{\n    "a": "caf\\u00e9",\n    "z": "ni\\u00f1o"\n}'
+    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+
+
+def test_rust_bridge_evaluates_simple_dynamic_core_expressions() -> None:
+    runtime = DataWeaveRuntime(backend="rust")
+
+    now = json.loads(
+        runtime.execute(
+            "%dw 2.0\noutput application/json\n---\nnow()",
+            {},
+        )
+    )
+    assert isinstance(now, str)
+    assert now.endswith("Z")
+
+    random_int = json.loads(
+        runtime.execute(
+            "%dw 2.0\noutput application/json\n---\nrandomInt(1233)",
+            {},
+        )
+    )
+    assert isinstance(random_int, int)
+    assert 0 <= random_int < 1233
     assert runtime._rust_runtime.last_execution_engine() == "rust-core"
 
 

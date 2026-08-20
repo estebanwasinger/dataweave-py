@@ -157,6 +157,206 @@ pub fn infer_type_descriptor(
     infer_expression_type(parsed.body.trim(), &payload_type, &vars_type)
 }
 
+/// Performs the static portion of expression analysis used by embedders.
+///
+/// The returned descriptor deliberately contains syntax-level reference paths
+/// rather than application-specific field ids. Embedders such as Deal API own
+/// the symbol table and resolve these paths to their durable schema ids.
+pub fn analyze_expression(
+    expression: &str,
+    payload: Option<Value>,
+    vars: Option<Value>,
+) -> Result<Value, DwError> {
+    let (inferred_type, diagnostics) =
+        match infer_type_descriptor(expression, payload.clone(), vars) {
+            Ok(inferred_type) => (inferred_type, Vec::new()),
+            Err(DwError::UnsupportedFeature(message)) => (
+                type_any(),
+                vec![serde_json::json!({
+                    "message": message,
+                    "severity": "warning",
+                })],
+            ),
+            Err(error) => return Err(error),
+        };
+    let reference_paths = extract_reference_paths(expression);
+    let wildcard_references = reference_paths
+        .iter()
+        .filter(|path| has_dynamic_selector(expression, path))
+        .cloned()
+        .map(Value::String)
+        .collect::<Vec<_>>();
+    let unresolved_references = payload
+        .as_ref()
+        .map(|payload| {
+            reference_paths
+                .iter()
+                .filter(|path| !reference_path_exists(payload, path))
+                .cloned()
+                .map(Value::String)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let references = reference_paths
+        .into_iter()
+        .map(Value::String)
+        .collect::<Vec<_>>();
+
+    Ok(serde_json::json!({
+        "diagnostics": diagnostics,
+        "inferredType": inferred_type,
+        "references": references,
+        "unresolvedReferences": unresolved_references,
+        "wildcardReferences": wildcard_references,
+    }))
+}
+
+fn has_dynamic_selector(expression: &str, path: &str) -> bool {
+    expression.match_indices(path).any(|(index, _)| {
+        expression[index + path.len()..]
+            .trim_start()
+            .starts_with('[')
+    })
+}
+
+fn reference_path_exists(payload: &Value, path: &str) -> bool {
+    !path
+        .split('.')
+        .fold(vec![payload], |values, segment| {
+            values
+                .into_iter()
+                .flat_map(|value| match value {
+                    Value::Object(object) => object.get(segment).into_iter().collect::<Vec<_>>(),
+                    Value::Array(items) => items
+                        .iter()
+                        .flat_map(|item| match item {
+                            Value::Object(object) => object.get(segment).into_iter().collect(),
+                            _ => Vec::new(),
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                })
+                .collect()
+        })
+        .is_empty()
+}
+
+fn extract_reference_paths(expression: &str) -> Vec<String> {
+    let mut references = Vec::new();
+    let chars = expression.char_indices().collect::<Vec<_>>();
+    let mut position = 0;
+    let mut quote = None;
+    let mut escaped = false;
+
+    while position < chars.len() {
+        let (_, character) = chars[position];
+
+        if let Some(quote_character) = quote {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == quote_character {
+                quote = None;
+            }
+            position += 1;
+            continue;
+        }
+
+        if matches!(character, '\'' | '"' | '`') {
+            quote = Some(character);
+            position += 1;
+            continue;
+        }
+
+        if !is_reference_identifier_start(character) {
+            position += 1;
+            continue;
+        }
+
+        let start = chars[position].0;
+        if expression[..start].chars().last() == Some('.') {
+            position += 1;
+            while position < chars.len() && is_reference_identifier_continue(chars[position].1) {
+                position += 1;
+            }
+            continue;
+        }
+        position += 1;
+        while position < chars.len() && is_reference_identifier_continue(chars[position].1) {
+            position += 1;
+        }
+
+        let mut end = if position < chars.len() {
+            chars[position].0
+        } else {
+            expression.len()
+        };
+
+        while position < chars.len() && chars[position].1 == '.' {
+            let dot_position = position;
+            position += 1;
+            if position >= chars.len() || !is_reference_identifier_start(chars[position].1) {
+                position = dot_position;
+                break;
+            }
+            position += 1;
+            while position < chars.len() && is_reference_identifier_continue(chars[position].1) {
+                position += 1;
+            }
+            end = if position < chars.len() {
+                chars[position].0
+            } else {
+                expression.len()
+            };
+        }
+
+        let path = &expression[start..end];
+        let following = expression[end..].trim_start();
+        let root = path.split('.').next().unwrap_or(path);
+        if path.contains('.') || (!following.starts_with('(') && !is_reference_keyword(root)) {
+            references.push(path.to_string());
+        }
+    }
+
+    references.sort();
+    references.dedup();
+    references
+}
+
+fn is_reference_identifier_start(character: char) -> bool {
+    character == '_' || character.is_alphabetic()
+}
+
+fn is_reference_identifier_continue(character: char) -> bool {
+    character == '_' || character.is_alphanumeric()
+}
+
+fn is_reference_keyword(identifier: &str) -> bool {
+    matches!(
+        identifier,
+        "and"
+            | "as"
+            | "case"
+            | "default"
+            | "do"
+            | "else"
+            | "false"
+            | "fun"
+            | "if"
+            | "import"
+            | "is"
+            | "not"
+            | "null"
+            | "or"
+            | "output"
+            | "true"
+            | "type"
+            | "using"
+            | "var"
+    )
+}
+
 pub fn execute_json(script: &str, payload: Value, render_output: bool) -> Result<Value, DwError> {
     execute_json_scoped(script, payload, Map::new(), render_output)
 }
@@ -4653,6 +4853,19 @@ output application/python
     }
 
     #[test]
+    fn evaluates_size_of_mapped_range_without_misparsing_the_endpoint() {
+        assert_eq!(
+            execute_json(
+                "%dw 2.0\noutput application/json\n---\nsizeOf(1 to 10 map $ * 2)",
+                Value::Null,
+                false,
+            )
+            .unwrap(),
+            json!(10)
+        );
+    }
+
+    #[test]
     fn evaluates_prefix_and_infix_string_collection_helpers() {
         let script = r#"%dw 2.0
 output application/python
@@ -5348,5 +5561,105 @@ output application/python
         assert_eq!(result["offsetSeconds"], json!(0));
         assert!(result["epochTime"].as_i64().unwrap() > 0);
         assert!(result["formattedTime"].as_str().unwrap().len() >= 7);
+    }
+
+    #[test]
+    fn evaluates_simple_dynamic_core_expressions() {
+        let now = execute_json(
+            "%dw 2.0\noutput application/json\n---\nnow()",
+            Value::Null,
+            false,
+        )
+        .unwrap();
+        let now = now.as_str().unwrap();
+        assert!(now.ends_with('Z'));
+        assert_eq!(now.len(), 20);
+
+        let random_int = execute_json(
+            "%dw 2.0\noutput application/json\n---\nrandomInt(1233)",
+            Value::Null,
+            false,
+        )
+        .unwrap();
+        let random_int = random_int.as_i64().unwrap();
+        assert!((0..1233).contains(&random_int));
+    }
+
+    #[test]
+    fn analyzes_static_reference_paths() {
+        let result = analyze_expression(
+            "sum(recurring_billings.amount) + record.baseRent",
+            Some(json!({
+                "record": {"baseRent": 100},
+                "recurring_billings": [{"amount": 10}]
+            })),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            result["references"],
+            json!(["record.baseRent", "recurring_billings.amount"])
+        );
+    }
+
+    #[test]
+    fn evaluates_recurring_billings_formula() {
+        let script = r#"%dw 2.0
+output application/python
+var recurring_billings = payload.recurring_billings
+---
+sum(recurring_billings.amount)
+"#;
+
+        assert_eq!(
+            execute_smoke(
+                script,
+                json!({"recurring_billings": [{"amount": 1200}, {"amount": 800}]})
+            )
+            .unwrap(),
+            json!(2000)
+        );
+    }
+
+    #[test]
+    fn recurring_billings_sum_preserves_native_null_failure() {
+        let script = r#"%dw 2.0
+output application/python
+var recurring_billings = payload.recurring_billings
+---
+sum(recurring_billings.amount)
+"#;
+
+        assert!(execute_smoke(
+            script,
+            json!({"recurring_billings": [{"amount": 1200}, {"amount": null}]})
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn reference_analysis_ignores_functions_keywords_and_strings() {
+        let result = analyze_expression(
+            "if (sizeOf(items) > 0) items[0].amount else 'record.fake'",
+            Some(json!({"items": [{"amount": 10}]})),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(result["references"], json!(["items"]));
+    }
+
+    #[test]
+    fn analysis_reports_unresolved_and_dynamic_references() {
+        let result = analyze_expression(
+            "record[record.selector] + record.missing",
+            Some(json!({"record": {"selector": "amount", "amount": 10}})),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(result["wildcardReferences"], json!(["record"]));
+        assert_eq!(result["unresolvedReferences"], json!(["record.missing"]));
     }
 }

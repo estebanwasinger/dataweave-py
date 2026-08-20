@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -79,6 +80,10 @@ def test_cli_reports_usage_error_for_multiple_script_sources() -> None:
     assert exc_info.value.code == 2
 
 
+@pytest.mark.skipif(
+    os.environ.get("DWPY_TEST_BACKEND") == "wasm",
+    reason="this test asserts the native Rust CLI's strict-mode error path",
+)
 def test_cli_rejects_unsupported_features_in_strict_rust_mode(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

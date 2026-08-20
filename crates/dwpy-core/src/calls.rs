@@ -29,7 +29,7 @@ use crate::selectors::collapse_xml_like_value;
 use crate::strings::{pad_string, replace_all};
 use crate::syntax::{
     split_top_level, split_top_level_arrow, split_top_level_char, split_top_level_keyword,
-    strip_wrapping_parens,
+    split_top_level_keyword_or_call_operator, strip_wrapping_parens,
 };
 use crate::{evaluate_expression_scoped, number_result, DwError};
 
@@ -1193,6 +1193,31 @@ fn evaluate_size_of_range(
     locals: &Map<String, Value>,
 ) -> Result<Option<i64>, DwError> {
     let source = strip_wrapping_parens(argument_source.trim());
+
+    // Collection operators bind more tightly than the range operator. In
+    // particular, `1 to 10 map $ * 2` is a map over the range, not a range
+    // whose right endpoint is `10 map $ * 2`. A map preserves the number of
+    // items, so retain the range fast path without evaluating the mapper.
+    if let Some((collection_source, operator, _)) =
+        split_top_level_keyword_or_call_operator(source, &["map"])
+    {
+        if operator == "map" {
+            if let Some((left, right)) = split_top_level_keyword(collection_source, "to") {
+                let left_value = evaluate_expression_scoped(left, payload, locals)?;
+                let right_value = evaluate_expression_scoped(right, payload, locals)?;
+                let start = number_value(&left_value)? as i64;
+                let end = number_value(&right_value)? as i64;
+                let size = (end as i128 - start as i128).abs() + 1;
+                let size = i64::try_from(size).map_err(|_| {
+                    DwError::UnsupportedFeature(format!(
+                        "range size from {start} to {end} exceeds i64"
+                    ))
+                })?;
+                return Ok(Some(size));
+            }
+        }
+    }
+
     let Some((left, right)) = split_top_level_keyword(source, "to") else {
         return Ok(None);
     };

@@ -693,10 +693,7 @@ pub(crate) fn current_utc_date_string(day_offset: i64) -> String {
 }
 
 fn current_utc_datetime_parts(day_offset: i64) -> (i64, i64, i64, i64, i64, i64) {
-    let seconds = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or(0);
+    let seconds = unix_time_seconds();
     let days = seconds.div_euclid(86_400) + day_offset;
     let second_of_day = seconds.rem_euclid(86_400);
     let (year, month, day) = civil_from_unix_days(days);
@@ -707,10 +704,7 @@ fn current_utc_datetime_parts(day_offset: i64) -> (i64, i64, i64, i64, i64, i64)
 }
 
 pub(crate) fn generate_uuid_like() -> String {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
+    let nanos = unix_time_nanos();
     let text = format!("{:032x}", nanos);
     format!(
         "{}-{}-4{}-a{}-{}",
@@ -738,11 +732,46 @@ fn random_int(value: &Value) -> Result<Value, DwError> {
 }
 
 pub(crate) fn pseudo_random_unit() -> f64 {
-    let nanos = std::time::SystemTime::now()
+    #[cfg(target_arch = "wasm32")]
+    {
+        return js_sys::Math::random();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.subsec_nanos())
+            .unwrap_or(500_000_000);
+        (nanos as f64 / 1_000_000_000.0).clamp(0.0, 0.999_999_999)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn unix_time_seconds() -> i64 {
+    // `SystemTime::now()` traps on wasm32-unknown-unknown; use the host clock.
+    (js_sys::Date::now() / 1_000.0).floor() as i64
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn unix_time_seconds() -> i64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.subsec_nanos())
-        .unwrap_or(500_000_000);
-    (nanos as f64 / 1_000_000_000.0).clamp(0.0, 0.999_999_999)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn unix_time_nanos() -> u128 {
+    (js_sys::Date::now() * 1_000_000.0) as u128
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn unix_time_nanos() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0)
 }
 
 fn civil_from_unix_days(days: i64) -> (i64, i64, i64) {

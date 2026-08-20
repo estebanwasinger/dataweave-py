@@ -54,6 +54,7 @@ DataWeave-Py (`dwpy`) is a Python-facing interpreter for the DataWeave language,
 
 - Python 3.10 or higher
 - Rust stable toolchain with `cargo`
+- Node.js, npm, `wasm-pack`, and the `wasm32-unknown-unknown` target for the WASM backend
 - Dependencies managed via [uv](https://github.com/astral-sh/uv) (recommended) or pip
 
 ## Rust Engine And Python Bridge
@@ -136,6 +137,8 @@ Backend selection:
 - `DataWeaveRuntime(backend="rust")` runs strict Rust mode and fails instead of
   falling back.
 - `DataWeaveRuntime(backend="python")` uses the legacy Python interpreter.
+- `DataWeaveRuntime(backend="wasm")` runs the Rust evaluator compiled to WASM
+  through the Node.js bridge.
 - `DWPY_BACKEND=rust` forces strict Rust mode for process-wide test runs.
 
 Build a distributable wheel with the Rust extension:
@@ -160,6 +163,21 @@ Run the default Python package path, which exercises the Python bridge:
 
 ```bash
 UV_CACHE_DIR=.uv-cache uv run --extra dev pytest
+```
+
+Run the Python suite in all three runtime modes—legacy Python, native Rust,
+and Rust compiled to WASM:
+
+```bash
+bash scripts/test_backends.sh
+```
+
+The script rebuilds the WASM package before its test pass and preserves the
+individual pytest results. It accepts normal pytest arguments for focused
+runs, for example:
+
+```bash
+bash scripts/test_backends.sh tests/test_runtime_basic.py -k dynamic
 ```
 
 ## Quick Start

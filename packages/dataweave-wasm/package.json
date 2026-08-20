@@ -1,0 +1,20 @@
+{
+  "name": "@unlockre/dataweave-wasm",
+  "version": "0.1.0",
+  "description": "Node.js WASM bindings for the DataWeave Rust runtime",
+  "type": "commonjs",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "dist"
+  ],
+  "scripts": {
+    "build": "wasm-pack build ../../crates/dwpy-wasm --target nodejs --out-dir ../../packages/dataweave-wasm/dist --release"
+  },
+  "publishConfig": {
+    "access": "restricted",
+    "registry": "https://npm.pkg.github.com/"
+  }
+}

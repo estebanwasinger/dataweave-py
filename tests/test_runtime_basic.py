@@ -1,4 +1,5 @@
 import json
+import os
 import re
 from pathlib import Path
 import textwrap
@@ -917,6 +918,10 @@ output application/python
     }
 
 
+@pytest.mark.skipif(
+    os.environ.get("DWPY_TEST_BACKEND") == "wasm",
+    reason="core-function registry introspection applies to the in-process Python facade",
+)
 def test_every_named_core_function_is_available_by_default():
     runtime = DataWeaveRuntime()
     core_source = (Path(__file__).parents[1] / "dwpy/modules/dw/Core.dwl").read_text()

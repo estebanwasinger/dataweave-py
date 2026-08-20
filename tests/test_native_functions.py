@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
+
+import pytest
 
 from dwpy.runtime import DataWeaveRuntime
 
@@ -15,6 +18,10 @@ def _all_module_native_ids() -> set[str]:
     return ids
 
 
+@pytest.mark.skipif(
+    os.environ.get("DWPY_TEST_BACKEND") == "wasm",
+    reason="native registry introspection applies to the in-process Python facade",
+)
 def test_native_registry_covers_all_module_native_identifiers() -> None:
     runtime = DataWeaveRuntime()
     module_ids = _all_module_native_ids()

@@ -51,6 +51,25 @@ pub fn run_dataweave_request(request_json: &str) -> Result<String, JsValue> {
     serde_json::to_string(&result).map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
+#[wasm_bindgen]
+pub fn analyze_dataweave_request(request_json: &str) -> Result<String, JsValue> {
+    let request: serde_json::Value =
+        serde_json::from_str(request_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let request = request
+        .as_object()
+        .ok_or_else(|| JsValue::from_str("DataWeave analysis request must be a JSON object"))?;
+    let expression = request
+        .get("expression")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| JsValue::from_str("Invalid message: expected an 'expression' string"))?;
+    let payload = request.get("payload").cloned();
+    let vars = request.get("vars").cloned();
+
+    let result = dwpy_core::analyze_expression(expression, payload, vars)
+        .map_err(|err| JsValue::from_str(&wasm_error_message(err, expression)))?;
+    serde_json::to_string(&result).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
 fn wasm_error_message(err: dwpy_core::DwError, script_source: &str) -> String {
     match err {
         dwpy_core::DwError::UnsupportedFeature(message) => {
