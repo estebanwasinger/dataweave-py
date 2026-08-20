@@ -1949,13 +1949,18 @@ class DataWeaveRuntime:
     def _func_data_format_descriptors(self) -> List[Dict[str, Any]]:
         descriptors: List[Dict[str, Any]] = []
         for definition in FormatRegistry._FORMATS.values():  # type: ignore[attr-defined]
+            accepted_mime_types = [definition.mime_type]
+            extensions: list[str] = []
+            if definition.id == "ndjson":
+                accepted_mime_types.append("application/x-ldjson")
+                extensions = [".ndjson", ".ldjson"]
             descriptors.append(
                 {
                     "name": definition.id,
                     "binary": definition.id == "python",
-                    "extensions": [],
+                    "extensions": extensions,
                     "defaultMimeType": definition.mime_type,
-                    "acceptedMimeTypes": [definition.mime_type],
+                    "acceptedMimeTypes": accepted_mime_types,
                     "readerProperties": [],
                     "writerProperties": [],
                 }

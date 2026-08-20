@@ -199,6 +199,7 @@ fn infer_payload_format_from_path(path: &str) -> Option<String> {
         .to_ascii_lowercase();
     match extension.as_str() {
         "json" => Some("application/json".to_string()),
+        "ndjson" | "ldjson" => Some("application/x-ndjson".to_string()),
         "xml" => Some("application/xml".to_string()),
         "csv" => Some("application/csv".to_string()),
         "yaml" | "yml" => Some("application/yaml".to_string()),

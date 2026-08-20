@@ -13,6 +13,8 @@ def infer_payload_format_from_path(path: str) -> Optional[str]:
     suffix = Path(path).suffix.lower()
     if suffix == ".json":
         return "application/json"
+    if suffix in {".ndjson", ".ldjson"}:
+        return "application/x-ndjson"
     if suffix == ".xml":
         return "application/xml"
     if suffix == ".csv":

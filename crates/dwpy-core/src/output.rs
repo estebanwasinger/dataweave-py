@@ -4,7 +4,8 @@ use crate::csv::render_csv_output;
 use crate::json::{json_output_options, render_json_string, render_json_value, JsonOutputOptions};
 use crate::literals::evaluate_object_key;
 use crate::markdown::render_markdown_output;
-use crate::mime::{is_json_mime, is_markdown_mime, is_yaml_mime, output_mime};
+use crate::mime::{is_json_mime, is_markdown_mime, is_ndjson_mime, is_yaml_mime, output_mime};
+use crate::ndjson::render_ndjson_output;
 use crate::selectors::unwrap_metadata_value;
 use crate::syntax::{
     find_matching_delimiter, split_top_level, split_top_level_char, strip_wrapping_parens,
@@ -35,6 +36,9 @@ pub(crate) fn render_output_value(
         }
     }
     if let Some(directive) = output_directive {
+        if output_mime(directive).is_some_and(is_ndjson_mime) {
+            return render_ndjson_output(&evaluated, directive).map(Value::String);
+        }
         if output_mime(directive) == Some("application/csv") {
             return render_csv_output(&evaluated, directive).map(Value::String);
         }

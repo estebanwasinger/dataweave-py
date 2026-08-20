@@ -14,6 +14,7 @@ mod literals;
 mod markdown;
 mod matches;
 mod mime;
+mod ndjson;
 mod operators;
 mod output;
 mod periods;
@@ -56,7 +57,11 @@ use literals::{
 };
 use markdown::read_simple_markdown_table;
 use matches::{evaluate_match_expression, parse_match_expression_source};
-use mime::{is_csv_mime, is_json_mime, is_markdown_mime, is_xml_mime, is_yaml_mime, output_mime};
+use mime::{
+    is_csv_mime, is_json_mime, is_markdown_mime, is_ndjson_mime, is_xml_mime, is_yaml_mime,
+    output_mime,
+};
+use ndjson::read_ndjson;
 use operators::{
     evaluate_additive, evaluate_coercion, evaluate_comparison, evaluate_index_access,
     evaluate_index_range, evaluate_matches, evaluate_multiplicative, evaluate_range,
@@ -393,6 +398,13 @@ pub fn parse_payload_format_with_options(
             other => as_dataweave_string(&other),
         };
         return serde_json::from_str(&text).map_err(|err| DwError::InvalidJson(err.to_string()));
+    }
+    if is_ndjson_mime(payload_format) {
+        let text = match payload {
+            Value::String(text) => text,
+            other => as_dataweave_string(&other),
+        };
+        return read_ndjson(&text, options.unwrap_or(&Value::Null));
     }
     if is_xml_mime(payload_format) {
         let text = match payload {
@@ -1988,6 +2000,82 @@ output application/python
         )
         .unwrap();
         assert_eq!(result, json!("name;age\nAnn;20\n"));
+    }
+
+    #[test]
+    fn renders_ndjson_output_when_requested() {
+        let result = execute_json(
+            "%dw 2.0\noutput application/x-ndjson\n---\npayload",
+            json!([{"name": "Ann"}, {"name": "Bob"}]),
+            true,
+        )
+        .unwrap();
+        assert_eq!(result, json!("{\"name\":\"Ann\"}\n{\"name\":\"Bob\"}\n"));
+    }
+
+    #[test]
+    fn renders_ndjson_writer_options_when_requested() {
+        let result = execute_json(
+            "%dw 2.0\noutput application/x-ldjson skipNullOn=\"objects\" writeAttributes=true\n---\npayload",
+            json!([{"id": 1, "name": null}, {"#text": "ok", "@source": "test"}]),
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            result,
+            json!("{\"id\":1}\n{\"__text\":\"ok\",\"@source\":\"test\"}\n")
+        );
+    }
+
+    #[test]
+    fn parses_ndjson_payload_and_read_options() {
+        let payload = parse_payload_format_with_options(
+            json!("{\"id\":1}\ninvalid\n{\"id\":2}\n"),
+            Some("application/x-ndjson"),
+            Some(&json!({"skipInvalid": true})),
+        )
+        .unwrap();
+        assert_eq!(payload, json!([{"id": 1}, {"id": 2}]));
+
+        let result = execute_json(
+            r#"%dw 2.0
+output application/python
+---
+read("{\"id\":1}\n{\"id\":2}\n", "application/x-ldjson")"#,
+            Value::Null,
+            false,
+        )
+        .unwrap();
+        assert_eq!(result, json!([{"id": 1}, {"id": 2}]));
+    }
+
+    #[test]
+    fn reads_and_writes_ndjson_helpers() {
+        let result = execute_json(
+            r#"%dw 2.0
+output application/python
+---
+{
+  parsed: read("{\"id\":1}\n{\"id\":2}\n", "application/x-ndjson"),
+  written: write([{id: 1}, {id: 2}], "application/x-ldjson")
+}"#,
+            Value::Null,
+            false,
+        )
+        .unwrap();
+        assert_eq!(result["parsed"], json!([{"id": 1}, {"id": 2}]));
+        assert_eq!(result["written"], json!("{\"id\":1}\n{\"id\":2}\n"));
+    }
+
+    #[test]
+    fn finds_ndjson_data_format_descriptor() {
+        let result = execute_json(
+            "%dw 2.0\noutput application/python\n---\nfindDataFormatDescriptorByMime({type: \"application\", subtype: \"x-ndjson\", parameters: {}})",
+            Value::Null,
+            false,
+        )
+        .unwrap();
+        assert_eq!(result, json!({"name": "ndjson", "defaultMimeType": "application/x-ndjson"}));
     }
 
     #[test]

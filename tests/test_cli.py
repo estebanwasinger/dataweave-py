@@ -54,6 +54,35 @@ def test_cli_runs_script_file_with_inferred_payload_file_format(
     assert captured.err == ""
 
 
+def test_cli_infers_ndjson_payload_file_format(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    script_path = tmp_path / "script.dwl"
+    payload_path = tmp_path / "payload.ldjson"
+    script_path.write_text(
+        "%dw 2.0\noutput application/json\n---\npayload map $.id",
+        encoding="utf-8",
+    )
+    payload_path.write_text('{"id":1}\n{"id":2}\n', encoding="utf-8")
+
+    exit_code = cli.main(
+        [
+            "run",
+            "--file",
+            str(script_path),
+            "--payload-file",
+            str(payload_path),
+        ]
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert json.loads(captured.out) == [1, 2]
+    assert captured.err == ""
+
+
 def test_cli_prints_rendered_text_output_as_is(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
