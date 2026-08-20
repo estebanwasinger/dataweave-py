@@ -1,5 +1,5 @@
 {
-  "name": "@unlockre/dataweave-wasm",
+  "name": "@estebanwasinger/dataweave-wasm",
   "version": "0.1.0",
   "description": "Node.js WASM bindings for the DataWeave Rust runtime",
   "repository": "https://github.com/estebanwasinger/dataweave-py",
