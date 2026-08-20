@@ -1818,6 +1818,27 @@ pub(crate) fn char_slice(source: &str, start: usize, end: usize) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn utc_date_with_offset(offset_days: i64) -> String {
+        let unix_days = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after Unix epoch")
+            .as_secs() as i64
+            / 86_400;
+        let z = unix_days + offset_days + 719_468;
+        let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+        let year = yoe + era * 400;
+        let day_of_year = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let month_part = (5 * day_of_year + 2) / 153;
+        let day = day_of_year - (153 * month_part + 2) / 5 + 1;
+        let month = month_part + if month_part < 10 { 3 } else { -9 };
+        let year = year + if month <= 2 { 1 } else { 0 };
+
+        format!("{year:04}-{month:02}-{day:02}")
+    }
 
     #[test]
     fn finds_top_level_script_delimiter() {
@@ -4257,6 +4278,9 @@ output application/python
 
     #[test]
     fn evaluates_update_filter_pipeline_with_relative_date_comparison() {
+        let recent_date = utc_date_with_offset(-7);
+        let old_date = utc_date_with_offset(-45);
+
         let script = r#"%dw 2.0
 output application/python
 ---
@@ -4282,17 +4306,17 @@ filter ((item, index) -> item.created_at < now() - |P1M|)
                 },
                 {
                     "name": "keypilot-11c19c6608e613f3c6d336fb9131dff61f707c17d7228a47",
-                    "created_at": "2026-06-17 11:32:17-03:00",
+                    "created_at": format!("{recent_date} 11:32:17-03:00"),
                     "created_by": "estebanwasinger-1"
                 },
                 {
                     "name": "keypilot-5da4431e7d4a8bd0aea144ecbae31bda1a7fde9c9266117d",
-                    "created_at": "2026-06-17 11:27:16-03:00",
+                    "created_at": format!("{recent_date} 11:27:16-03:00"),
                     "created_by": "estebanwasinger-1"
                 },
                 {
                     "name": "keypilot-5d35840b1caa363e1a394542da7b3b9b2410a5ba9bd8c002",
-                    "created_at": "2026-03-17 11:26:01-03:00",
+                    "created_at": format!("{old_date} 11:26:01-03:00"),
                     "created_by": "estebanwasinger-1"
                 }
             ]),
@@ -4305,7 +4329,7 @@ filter ((item, index) -> item.created_at < now() - |P1M|)
             json!([
                 {
                     "name": "keypilot-5d35840b1caa363e1a394542da7b3b9b2410a5ba9bd8c002",
-                    "created_at": "2026-03-17",
+                    "created_at": old_date,
                     "created_by": "estebanwasinger-1"
                 }
             ])
