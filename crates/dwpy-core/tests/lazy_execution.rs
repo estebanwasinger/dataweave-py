@@ -207,6 +207,27 @@ fn lazy_map_filter_flat_map_and_distinct_match_eager_execution() {
 }
 
 #[test]
+fn object_take_while_falls_back_without_losing_object_semantics() {
+    let script = compile(
+        "%dw 2.0\nimport takeWhile from dw::core::Objects\nvar obj = { a: 1, b: 2, c: 3 }\noutput application/json\n---\nobj takeWhile ((value, key) -> value < 3)",
+    )
+    .unwrap();
+
+    assert_eq!(
+        script
+            .execute(Value::Null, None, &ExecutionOptions::default())
+            .unwrap(),
+        json!("{\"a\":1,\"b\":2}")
+    );
+
+    let mut output = Vec::new();
+    script
+        .execute_to_writer(Value::Null, None, &ExecutionOptions::default(), &mut output)
+        .unwrap();
+    assert_eq!(String::from_utf8(output).unwrap(), "{\"a\":1,\"b\":2}");
+}
+
+#[test]
 fn lazy_terminals_match_eager_execution_and_short_circuit() {
     for source in [
         "1 to 20 some ((item) -> item > 10)",

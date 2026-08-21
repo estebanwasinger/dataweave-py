@@ -312,12 +312,15 @@ impl CompiledScript {
                         }
                     }
                 }
-                let evaluated = body.evaluate(&payload, &locals, options.max_materialized_bytes)?;
-                return render_output_value(
-                    self.parsed.output_directive.as_deref(),
-                    evaluated,
-                    options.render_output,
-                );
+                if let Some(evaluated) =
+                    body.evaluate(&payload, &locals, options.max_materialized_bytes)?
+                {
+                    return render_output_value(
+                        self.parsed.output_directive.as_deref(),
+                        evaluated,
+                        options.render_output,
+                    );
+                }
             }
         }
 

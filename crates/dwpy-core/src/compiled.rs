@@ -421,7 +421,7 @@ impl CompiledBody {
         payload: &Value,
         locals: &Map<String, Value>,
         max_materialized_bytes: usize,
-    ) -> Result<Value, DwError> {
+    ) -> Result<Option<Value>, DwError> {
         match self {
             Self::Sequence(sequence) => {
                 sequence.materialize(payload, locals, max_materialized_bytes)
@@ -457,11 +457,13 @@ impl CompiledBody {
         let Self::Sequence(sequence) = self else {
             return Ok(false);
         };
-        writer
-            .write_all(b"[")
-            .map_err(|error| DwError::Output(error.to_string()))?;
         let mut first = true;
-        sequence.for_each(payload, locals, |value, _| {
+        let valid = sequence.for_each(payload, locals, |value, _| {
+            if first {
+                writer
+                    .write_all(b"[")
+                    .map_err(|error| DwError::Output(error.to_string()))?;
+            }
             if options.indent.is_some() {
                 if !first {
                     writer
@@ -491,6 +493,14 @@ impl CompiledBody {
                     .map_err(|error| DwError::Output(error.to_string()))
             }
         })?;
+        if !valid {
+            return Ok(false);
+        }
+        if first {
+            writer
+                .write_all(b"[")
+                .map_err(|error| DwError::Output(error.to_string()))?;
+        }
         if options.indent.is_some() && !first {
             writer
                 .write_all(b"\n")
@@ -512,14 +522,14 @@ impl CompiledBody {
         let Self::Sequence(sequence) = self else {
             return Ok(false);
         };
-        sequence.for_each(payload, locals, |value, _| {
+        let valid = sequence.for_each(payload, locals, |value, _| {
             let rendered =
                 crate::ndjson::render_ndjson_record_output(&value.to_json()?, directive)?;
             writer
                 .write_all(rendered.as_bytes())
                 .map_err(|error| DwError::Output(error.to_string()))
         })?;
-        Ok(true)
+        Ok(valid)
     }
 
     pub(crate) fn write_csv<W: Write>(
@@ -533,10 +543,10 @@ impl CompiledBody {
             return Ok(false);
         };
         let mut csv = crate::csv::CsvRecordWriter::new(directive);
-        sequence.for_each(payload, locals, |value, _| {
+        let valid = sequence.for_each(payload, locals, |value, _| {
             csv.write_record(&value.to_json()?, writer)
         })?;
-        Ok(true)
+        Ok(valid)
     }
 }
 
@@ -740,7 +750,7 @@ impl CompiledSequence {
         locals: &Map<String, Value>,
         operation: TerminalOperation,
         lambda: &CompiledLambda,
-    ) -> Result<Value, DwError> {
+    ) -> Result<Option<Value>, DwError> {
         let mut boolean = matches!(operation, TerminalOperation::Every);
         let mut selected = Value::Null;
         let mut count = 0i64;
@@ -786,25 +796,23 @@ impl CompiledSequence {
             Ok(true)
         })?;
         if !valid {
-            return Ok(match operation {
-                TerminalOperation::Some | TerminalOperation::Every => Value::Bool(false),
-                _ => Value::Null,
-            });
+            return Ok(None);
         }
-        match operation {
-            TerminalOperation::Some => Ok(Value::Bool(boolean)),
-            TerminalOperation::Every => Ok(Value::Bool(saw_item && boolean)),
-            TerminalOperation::FirstWith => Ok(selected),
+        let value = match operation {
+            TerminalOperation::Some => Value::Bool(boolean),
+            TerminalOperation::Every => Value::Bool(saw_item && boolean),
+            TerminalOperation::FirstWith => selected,
             TerminalOperation::IndexWhere => {
                 if selected.is_null() {
-                    Ok(Value::Number((-1).into()))
+                    Value::Number((-1).into())
                 } else {
-                    Ok(selected)
+                    selected
                 }
             }
-            TerminalOperation::CountBy => Ok(Value::Number(count.into())),
-            TerminalOperation::SumBy => number_result(sum),
-        }
+            TerminalOperation::CountBy => Value::Number(count.into()),
+            TerminalOperation::SumBy => number_result(sum)?,
+        };
+        Ok(Some(value))
     }
 
     fn reduce(
@@ -813,7 +821,7 @@ impl CompiledSequence {
         locals: &Map<String, Value>,
         reducer: &CompiledReducer,
         default: Option<FastValue>,
-    ) -> Result<Value, DwError> {
+    ) -> Result<Option<Value>, DwError> {
         let mut accumulator = default;
         let valid = self.for_each(payload, locals, |item, _| {
             accumulator = Some(match accumulator.take() {
@@ -823,12 +831,13 @@ impl CompiledSequence {
             Ok(())
         })?;
         if !valid {
-            return Ok(Value::Null);
+            return Ok(None);
         }
         accumulator
             .map(FastValue::into_json)
             .transpose()
             .map(|value| value.unwrap_or(Value::Null))
+            .map(Some)
     }
 
     fn materialize(
@@ -836,7 +845,7 @@ impl CompiledSequence {
         payload: &Value,
         locals: &Map<String, Value>,
         max_materialized_bytes: usize,
-    ) -> Result<Value, DwError> {
+    ) -> Result<Option<Value>, DwError> {
         let mut items = Vec::new();
         let mut estimated_bytes = std::mem::size_of::<Vec<Value>>();
         let valid = self.for_each(payload, locals, |item, index| {
@@ -854,9 +863,9 @@ impl CompiledSequence {
             Ok(())
         })?;
         if valid {
-            Ok(Value::Array(items))
+            Ok(Some(Value::Array(items)))
         } else {
-            Ok(Value::Null)
+            Ok(None)
         }
     }
 }

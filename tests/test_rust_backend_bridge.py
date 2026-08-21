@@ -1719,6 +1719,22 @@ output application/python
     assert runtime._rust_runtime.last_execution_engine() == "rust-core"
 
 
+def test_rust_bridge_preserves_object_take_while_result() -> None:
+    runtime = DataWeaveRuntime(backend="rust")
+    script = """%dw 2.0
+import takeWhile from dw::core::Objects
+var obj = { a: 1, b: 2, c: 3 }
+output application/json
+---
+obj takeWhile ((value, key) -> value < 3)
+"""
+
+    result = runtime.execute(script, payload=None, render_output=True)
+
+    assert json.loads(result) == {"a": 1, "b": 2}
+    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+
+
 def test_rust_bridge_smoke_json_identity() -> None:
     runtime = DataWeaveRuntime()
     native = runtime._rust_runtime
