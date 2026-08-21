@@ -2,10 +2,12 @@
 
 use serde_json::Map;
 use serde_json::Value;
+use std::io::Write;
 
 mod builtins;
 mod calls;
 mod collections;
+mod compiled;
 mod csv;
 mod evaluator;
 mod functions;
@@ -131,6 +133,214 @@ const COLLECTION_OPERATORS: &[&str] = &[
     "wait",
 ];
 
+pub const DEFAULT_MAX_MATERIALIZED_BYTES: usize = 256 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExecutionOptions {
+    pub render_output: bool,
+    pub max_materialized_bytes: usize,
+    pub lazy_sequences: bool,
+}
+
+impl Default for ExecutionOptions {
+    fn default() -> Self {
+        Self {
+            render_output: true,
+            max_materialized_bytes: DEFAULT_MAX_MATERIALIZED_BYTES,
+            lazy_sequences: true,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct CompiledScript {
+    source: String,
+    parsed: script::ParsedScript,
+    compiled_body: Option<compiled::CompiledBody>,
+}
+
+pub fn compile(script: &str) -> Result<CompiledScript, DwError> {
+    let parsed = split_script(script);
+    if parsed.body.trim().is_empty() {
+        return Err(DwError::Parse("empty expression".to_string()));
+    }
+    let compiled_body = compiled::compile_body(parsed.body.trim());
+    Ok(CompiledScript {
+        source: script.to_string(),
+        parsed,
+        compiled_body,
+    })
+}
+
+impl CompiledScript {
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    pub fn execute(
+        &self,
+        payload: Value,
+        vars: Option<Value>,
+        options: &ExecutionOptions,
+    ) -> Result<Value, DwError> {
+        let mut locals = Map::new();
+        if let Some(vars) = vars {
+            locals.insert("vars".to_string(), vars);
+        }
+        self.execute_scoped(payload, locals, options)
+    }
+
+    pub fn execute_to_writer<W: Write>(
+        &self,
+        payload: Value,
+        vars: Option<Value>,
+        options: &ExecutionOptions,
+        writer: &mut W,
+    ) -> Result<(), DwError> {
+        let mut locals = Map::new();
+        if let Some(vars) = vars {
+            locals.insert("vars".to_string(), vars);
+        }
+        evaluate_header_declarations(&self.parsed.header, &payload, &mut locals)?;
+
+        if options.render_output && options.lazy_sequences {
+            if let (Some(body), Some(directive)) =
+                (&self.compiled_body, self.parsed.output_directive.as_deref())
+            {
+                if output_mime(directive).is_some_and(is_json_mime)
+                    && !directive.contains("with binary")
+                {
+                    let json_options = json_output_options(directive)?;
+                    if body.write_json(&payload, &locals, json_options, writer)? {
+                        return Ok(());
+                    }
+                }
+                if output_mime(directive).is_some_and(is_ndjson_mime)
+                    && body.write_ndjson(&payload, &locals, directive, writer)?
+                {
+                    return Ok(());
+                }
+                if output_mime(directive).is_some_and(is_csv_mime)
+                    && body.write_csv(&payload, &locals, directive, writer)?
+                {
+                    return Ok(());
+                }
+            }
+        }
+
+        let result = self.execute_scoped_after_header(payload, locals, options)?;
+        if rendered_text_output(
+            self.parsed.output_directive.as_deref(),
+            options.render_output,
+        ) {
+            let Value::String(text) = result else {
+                return Err(DwError::Output(format!(
+                    "expected rendered text output, got {result:?}"
+                )));
+            };
+            writer
+                .write_all(text.as_bytes())
+                .map_err(|error| DwError::Output(error.to_string()))?;
+        } else {
+            serde_json::to_writer_pretty(&mut *writer, &result)
+                .map_err(|error| DwError::Output(error.to_string()))?;
+            writer
+                .write_all(b"\n")
+                .map_err(|error| DwError::Output(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    fn execute_scoped(
+        &self,
+        payload: Value,
+        mut locals: Map<String, Value>,
+        options: &ExecutionOptions,
+    ) -> Result<Value, DwError> {
+        evaluate_header_declarations(&self.parsed.header, &payload, &mut locals)?;
+        self.execute_scoped_after_header(payload, locals, options)
+    }
+
+    fn execute_scoped_after_header(
+        &self,
+        payload: Value,
+        locals: Map<String, Value>,
+        options: &ExecutionOptions,
+    ) -> Result<Value, DwError> {
+        if options.lazy_sequences {
+            if let Some(body) = &self.compiled_body {
+                if options.render_output {
+                    if let Some(directive) = self
+                        .parsed
+                        .output_directive
+                        .as_deref()
+                        .filter(|directive| output_mime(directive).is_some_and(is_json_mime))
+                        .filter(|directive| !directive.contains("with binary"))
+                    {
+                        let json_options = json_output_options(directive)?;
+                        let mut output = Vec::new();
+                        if body.write_json(&payload, &locals, json_options, &mut output)? {
+                            let output = String::from_utf8(output)
+                                .map_err(|error| DwError::Output(error.to_string()))?;
+                            return Ok(Value::String(output));
+                        }
+                    }
+                    if let Some(directive) = self
+                        .parsed
+                        .output_directive
+                        .as_deref()
+                        .filter(|directive| output_mime(directive).is_some_and(is_ndjson_mime))
+                    {
+                        let mut output = Vec::new();
+                        if body.write_ndjson(&payload, &locals, directive, &mut output)? {
+                            let output = String::from_utf8(output)
+                                .map_err(|error| DwError::Output(error.to_string()))?;
+                            return Ok(Value::String(output));
+                        }
+                    }
+                    if let Some(directive) = self
+                        .parsed
+                        .output_directive
+                        .as_deref()
+                        .filter(|directive| output_mime(directive).is_some_and(is_csv_mime))
+                    {
+                        let mut output = Vec::new();
+                        if body.write_csv(&payload, &locals, directive, &mut output)? {
+                            let output = String::from_utf8(output)
+                                .map_err(|error| DwError::Output(error.to_string()))?;
+                            return Ok(Value::String(output));
+                        }
+                    }
+                }
+                let evaluated = body.evaluate(&payload, &locals, options.max_materialized_bytes)?;
+                return render_output_value(
+                    self.parsed.output_directive.as_deref(),
+                    evaluated,
+                    options.render_output,
+                );
+            }
+        }
+
+        execute_parsed_scoped(&self.parsed, &payload, &locals, options.render_output)
+    }
+}
+
+fn rendered_text_output(directive: Option<&str>, render_output: bool) -> bool {
+    if !render_output {
+        return false;
+    }
+    let Some(mime) = directive.and_then(output_mime) else {
+        return false;
+    };
+    is_json_mime(mime)
+        || is_ndjson_mime(mime)
+        || is_csv_mime(mime)
+        || is_xml_mime(mime)
+        || is_yaml_mime(mime)
+        || is_markdown_mime(mime)
+        || matches!(mime, "text/plain" | "plain")
+}
+
 pub fn engine_capabilities() -> Vec<&'static str> {
     vec![
         "rust-core-evaluator",
@@ -138,6 +348,9 @@ pub fn engine_capabilities() -> Vec<&'static str> {
         "wasm-crate",
         "dw-value-model",
         "script-boundary-parser",
+        "compiled-script",
+        "lazy-sequences",
+        "streaming-writers",
     ]
 }
 
@@ -363,7 +576,14 @@ fn is_reference_keyword(identifier: &str) -> bool {
 }
 
 pub fn execute_json(script: &str, payload: Value, render_output: bool) -> Result<Value, DwError> {
-    execute_json_scoped(script, payload, Map::new(), render_output)
+    compile(script)?.execute(
+        payload,
+        None,
+        &ExecutionOptions {
+            render_output,
+            ..ExecutionOptions::default()
+        },
+    )
 }
 
 pub fn execute_json_with_vars(
@@ -372,9 +592,14 @@ pub fn execute_json_with_vars(
     vars: Value,
     render_output: bool,
 ) -> Result<Value, DwError> {
-    let mut locals = Map::new();
-    locals.insert("vars".to_string(), vars);
-    execute_json_scoped(script, payload, locals, render_output)
+    compile(script)?.execute(
+        payload,
+        Some(vars),
+        &ExecutionOptions {
+            render_output,
+            ..ExecutionOptions::default()
+        },
+    )
 }
 
 pub fn parse_payload_format(
@@ -470,15 +695,12 @@ fn input_bool_option(options: Option<&Value>, name: &str, default: bool) -> bool
         .unwrap_or(default)
 }
 
-fn execute_json_scoped(
-    script: &str,
-    payload: Value,
-    locals: Map<String, Value>,
+fn execute_parsed_scoped(
+    parsed: &script::ParsedScript,
+    payload: &Value,
+    locals: &Map<String, Value>,
     render_output: bool,
 ) -> Result<Value, DwError> {
-    let parsed = split_script(script);
-    let mut locals = locals;
-    evaluate_header_declarations(&parsed.header, &payload, &mut locals)?;
     if render_output {
         if let Some(directive) = parsed
             .output_directive
@@ -489,14 +711,14 @@ fn execute_json_scoped(
             let options = json_output_options(directive)?;
             if options.indent.is_none() {
                 if let Ok(rendered) =
-                    render_json_compact_expression(parsed.body.trim(), &payload, &locals, options)
+                    render_json_compact_expression(parsed.body.trim(), payload, locals, options)
                 {
                     return Ok(Value::String(rendered));
                 }
             }
         }
     }
-    let evaluated = evaluate_expression_scoped(parsed.body.trim(), &payload, &locals)?;
+    let evaluated = evaluate_expression_scoped(parsed.body.trim(), payload, locals)?;
     render_output_value(parsed.output_directive.as_deref(), evaluated, render_output)
 }
 
@@ -2075,7 +2297,10 @@ output application/python
             false,
         )
         .unwrap();
-        assert_eq!(result, json!({"name": "ndjson", "defaultMimeType": "application/x-ndjson"}));
+        assert_eq!(
+            result,
+            json!({"name": "ndjson", "defaultMimeType": "application/x-ndjson"})
+        );
     }
 
     #[test]

@@ -297,6 +297,42 @@ fn build_scenarios() -> Vec<Scenario> {
 
     vec![
         Scenario {
+            name: "range_reduce_10k",
+            script: r#"%dw 2.0
+output application/python
+---
+1 to 10000 reduce ((item, accum = 0) -> item + accum)
+"#,
+            payload: Value::Null,
+            payload_format: None,
+            render_output: false,
+            normalize_json_text: false,
+        },
+        Scenario {
+            name: "range_reduce_100k",
+            script: r#"%dw 2.0
+output application/python
+---
+1 to 100000 reduce ((item, accum = 0) -> item + accum)
+"#,
+            payload: Value::Null,
+            payload_format: None,
+            render_output: false,
+            normalize_json_text: false,
+        },
+        Scenario {
+            name: "range_reduce_1m",
+            script: r#"%dw 2.0
+output application/python
+---
+1 to 1000000 reduce ((item, accum = 0) -> item + accum)
+"#,
+            payload: Value::Null,
+            payload_format: None,
+            render_output: false,
+            normalize_json_text: false,
+        },
+        Scenario {
             name: "basic_projection",
             script: r#"%dw 2.0
 output application/python

@@ -44,3 +44,25 @@ Generated at: `2026-06-01T11:05:03+00:00`
 - Speedup greater than `1.0x` means Rust is faster.
 - Results are local-machine measurements, not CI performance guarantees.
 - Each scenario is validated for equal normalized Rust and Python output before timing.
+
+## Lazy Range/Reduce Microbenchmark
+
+Measured on `2026-08-20` using the release-mode native CLI on macOS arm64:
+
+```dataweave
+%dw 2.0
+output application/json
+---
+1 to 1000000 reduce ((item, accum = 0) -> item + accum)
+```
+
+| Engine path | Wall time | Peak RSS | Result |
+|---|---:|---:|---:|
+| Previous eager range and interpreted reducer | ~8.3 s | ~180 MB | `500000500000` |
+| Compiled lazy range and slot-based reducer | ~0.04 s | ~2.4 MB | `500000500000` |
+
+The pure-Rust benchmark harness reports approximately `35 ms` for the one
+million-item scenario after warmup. The sequence is iterated rather than
+replaced with a closed-form sum, so reducer evaluation order and errors remain
+observable. The range itself and numeric accumulator are not materialized as
+`serde_json::Value` instances.

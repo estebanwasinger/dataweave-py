@@ -91,6 +91,36 @@ Run the standalone native Rust binary:
 cargo run -p dwpy-cli -- run '%dw 2.0\noutput application/json\n---\npayload' --payload '{"name":"dw"}'
 ```
 
+Rust embedders can compile once and execute repeatedly. Lazy collection
+pipelines are enabled by default, and materializing a lazy result is limited to
+256 MiB unless the caller supplies a different budget:
+
+```rust
+use dwpy_core::{compile, ExecutionOptions};
+use serde_json::Value;
+
+let script = compile(
+    "%dw 2.0\noutput application/json\n---\n\
+     1 to 1000000 reduce ((item, accum = 0) -> item + accum)",
+)?;
+let result = script.execute(Value::Null, None, &ExecutionOptions::default())?;
+assert_eq!(result, Value::String("500000500000".to_string()));
+
+// Render directly to any std::io::Write sink. Streaming sink failures are
+// non-atomic and may leave a valid output prefix in the writer.
+let mut bytes = Vec::new();
+script.execute_to_writer(
+    Value::Null,
+    None,
+    &ExecutionOptions::default(),
+    &mut bytes,
+)?;
+```
+
+The native CLI uses the sink API for streaming JSON, NDJSON, and CSV output.
+Expressions outside the compiled lazy subset continue through the compatible
+legacy Rust evaluator.
+
 ## Homebrew
 
 The Rust-native CLI is distributed through a separate Homebrew tap repository:

@@ -21,6 +21,17 @@ pub enum DwError {
     InvalidJson(String),
     #[error("DataWeave parse error: {0}")]
     Parse(String),
+    #[error(
+        "Resource limit exceeded while {operation}: estimated {estimated_bytes} bytes at item {item_index}, limit is {limit_bytes} bytes"
+    )]
+    ResourceLimit {
+        operation: String,
+        limit_bytes: usize,
+        estimated_bytes: usize,
+        item_index: usize,
+    },
+    #[error("DataWeave output error: {0}")]
+    Output(String),
 }
 
 impl TryFrom<Value> for DwValue {

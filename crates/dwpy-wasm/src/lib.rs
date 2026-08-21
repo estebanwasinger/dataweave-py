@@ -79,6 +79,7 @@ fn wasm_error_message(err: dwpy_core::DwError, script_source: &str) -> String {
             format!("DataWeave parse error: {message}")
         }
         dwpy_core::DwError::InvalidJson(message) => format!("Invalid JSON value: {message}"),
+        dwpy_core::DwError::ResourceLimit { .. } | dwpy_core::DwError::Output(_) => err.to_string(),
     }
 }
 

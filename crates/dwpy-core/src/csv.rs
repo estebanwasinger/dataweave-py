@@ -1,7 +1,102 @@
 use serde_json::Map;
 use serde_json::Value;
+use std::io::Write;
 
 use crate::{as_dataweave_string, output_bool_option, output_option, DwError};
+
+pub(crate) struct CsvRecordWriter {
+    separator: char,
+    quote: char,
+    include_header: bool,
+    configured_columns: Option<Vec<String>>,
+    columns: Option<Vec<String>>,
+    object_rows: bool,
+    started: bool,
+}
+
+impl CsvRecordWriter {
+    pub(crate) fn new(directive: &str) -> Self {
+        Self {
+            separator: output_option(directive, "separator")
+                .and_then(|value| value.chars().next())
+                .unwrap_or(','),
+            quote: output_option(directive, "quote")
+                .and_then(|value| value.chars().next())
+                .unwrap_or('"'),
+            include_header: output_bool_option(directive, "header", true),
+            configured_columns: output_option(directive, "columns").map(|columns| {
+                columns
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|column| !column.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            }),
+            columns: None,
+            object_rows: false,
+            started: false,
+        }
+    }
+
+    pub(crate) fn write_record<W: Write>(
+        &mut self,
+        value: &Value,
+        writer: &mut W,
+    ) -> Result<(), DwError> {
+        let mut output = String::new();
+        if !self.started {
+            self.started = true;
+            if let Value::Object(map) = value {
+                self.object_rows = true;
+                let columns = self
+                    .configured_columns
+                    .clone()
+                    .unwrap_or_else(|| map.keys().cloned().collect());
+                if self.include_header {
+                    write_csv_text_row(
+                        &mut output,
+                        columns.iter().map(String::as_str),
+                        self.separator,
+                        self.quote,
+                    );
+                }
+                self.columns = Some(columns);
+            }
+        }
+
+        if self.object_rows {
+            let Value::Object(map) = value else {
+                return Err(DwError::UnsupportedFeature(
+                    "CSV writer mixed row types".to_string(),
+                ));
+            };
+            let columns = self.columns.as_ref().expect("object columns");
+            write_csv_row(
+                &mut output,
+                columns
+                    .iter()
+                    .map(|column| map.get(column).unwrap_or(&Value::Null)),
+                self.separator,
+                self.quote,
+            );
+        } else {
+            match value {
+                Value::Array(items) => {
+                    write_csv_row(&mut output, items.iter(), self.separator, self.quote)
+                }
+                other => write_csv_row(
+                    &mut output,
+                    std::iter::once(other),
+                    self.separator,
+                    self.quote,
+                ),
+            }
+        }
+        writer
+            .write_all(output.as_bytes())
+            .map_err(|error| DwError::Output(error.to_string()))
+    }
+}
 
 pub(crate) fn render_csv_output(value: &Value, directive: &str) -> Result<String, DwError> {
     let separator = output_option(directive, "separator")

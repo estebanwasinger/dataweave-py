@@ -58,6 +58,24 @@ pub(crate) fn render_ndjson_output(value: &Value, directive: &str) -> Result<Str
     render_ndjson_value(value, &directive_options(directive))
 }
 
+pub(crate) fn render_ndjson_record_output(
+    value: &Value,
+    directive: &str,
+) -> Result<String, DwError> {
+    let options = directive_options(directive);
+    validate_options(&options)?;
+    let prepared = json_write_value_with_options(value, &options);
+    let output_options = JsonOutputOptions {
+        indent: None,
+        ensure_ascii: bool_option(&options, "ensure_ascii", true),
+        sort_keys: false,
+        duplicate_key_as_array: false,
+    };
+    let mut output = render_json_value(&prepared, output_options)?;
+    output.push('\n');
+    Ok(output)
+}
+
 fn directive_options(directive: &str) -> Value {
     let mut options = Map::new();
     let tokens = directive.split_whitespace().skip(1).collect::<Vec<_>>();
