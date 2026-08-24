@@ -118,6 +118,7 @@ class WasmDataWeaveRuntime:
         payload_format_options: Optional[Dict[str, Any]] = None,
         render_output: bool = True,
     ) -> Any:
+        _validate_properties(properties)
         request: Dict[str, Any] = {
             "script": script_source,
             "payload": _encode_wasm_value(payload),
@@ -152,6 +153,7 @@ class WasmDataWeaveRuntime:
         attributes: Any = None,
         properties: Optional[Dict[str, str]] = None,
     ) -> Any:
+        _validate_properties(properties)
         return self._bridge.execute(
             {
                 "operation": "analyze",
@@ -208,6 +210,17 @@ def _decode_wasm_value(value: Any) -> Any:
             result.add(pair["key"], _decode_wasm_value(pair.get("value")))
         return result
     return {key: _decode_wasm_value(item) for key, item in value.items()}
+
+
+def _validate_properties(properties: Optional[Dict[str, str]]) -> None:
+    """Reject invalid execution properties before crossing the WASM boundary."""
+    if properties is None:
+        return
+    if not isinstance(properties, dict):
+        raise ValueError("properties must be a JSON object with string values")
+    for key, value in properties.items():
+        if not isinstance(value, str):
+            raise ValueError(f"property '{key}' must be a string value")
 
 
 def _parse_error_location(request: Dict[str, Any]) -> tuple[Optional[int], Optional[int]]:
