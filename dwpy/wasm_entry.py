@@ -18,6 +18,8 @@ def run_dataweave(
     script: str,
     payload: Any,
     vars: dict[str, Any] | None = None,
+    attributes: Any = None,
+    properties: dict[str, str] | None = None,
     payload_format: str | None = None,
     payload_format_options: dict[str, Any] | None = None,
     render_output: bool = True,
@@ -30,6 +32,8 @@ def run_dataweave(
         script,
         payload,
         vars=vars,
+        attributes=attributes,
+        properties=properties,
         payload_format=payload_format,
         payload_format_options=payload_format_options,
         render_output=render_output,
@@ -44,6 +48,8 @@ def complete_dataweave(
     column: int,
     payload: Any = None,
     vars: dict[str, Any] | None = None,
+    attributes: Any = None,
+    properties: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     items = _LANGUAGE_ENGINE.complete(
         script=script,
@@ -51,6 +57,8 @@ def complete_dataweave(
         column=column,
         payload=payload,
         vars=vars if vars is not None else {},
+        attributes=attributes if attributes is not None else {},
+        properties=properties if properties is not None else {},
     )
     return {
         "items": [
@@ -75,6 +83,8 @@ def hover_dataweave(
     column: int,
     payload: Any = None,
     vars: dict[str, Any] | None = None,
+    attributes: Any = None,
+    properties: dict[str, str] | None = None,
 ) -> dict[str, Any] | None:
     hover = _LANGUAGE_ENGINE.hover(
         script=script,
@@ -82,6 +92,8 @@ def hover_dataweave(
         column=column,
         payload=payload,
         vars=vars if vars is not None else {},
+        attributes=attributes if attributes is not None else {},
+        properties=properties if properties is not None else {},
     )
     if hover is None:
         return None
@@ -95,6 +107,8 @@ def signature_help_dataweave(
     column: int,
     payload: Any = None,
     vars: dict[str, Any] | None = None,
+    attributes: Any = None,
+    properties: dict[str, str] | None = None,
 ) -> dict[str, Any] | None:
     help_value = _LANGUAGE_ENGINE.signature_help(
         script=script,
@@ -102,6 +116,8 @@ def signature_help_dataweave(
         column=column,
         payload=payload,
         vars=vars if vars is not None else {},
+        attributes=attributes if attributes is not None else {},
+        properties=properties if properties is not None else {},
     )
     if help_value is None:
         return None

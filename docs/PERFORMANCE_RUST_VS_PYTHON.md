@@ -1,4 +1,4 @@
-# Rust Bridge vs Python DataWeave Performance
+ry# Rust Bridge vs Python DataWeave Performance
 
 Generated at: `2026-06-01T11:05:03+00:00`
 

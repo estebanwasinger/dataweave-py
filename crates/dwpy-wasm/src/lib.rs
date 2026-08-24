@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
@@ -45,8 +46,20 @@ pub fn run_dataweave_request(request_json: &str) -> Result<String, JsValue> {
         .get("vars")
         .cloned()
         .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
-    let result = dwpy_core::execute_json_with_vars(script_source, payload, vars, render_output)
+    let attributes = request
+        .get("attributes")
+        .cloned()
+        .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+    let properties = request
+        .get("properties")
+        .map(properties_to_map)
+        .transpose()
+        .map_err(|err| JsValue::from_str(&err))?;
+    let context = dwpy_core::ExecutionContext::new(Some(vars), Some(attributes), properties)
         .map_err(|err| JsValue::from_str(&wasm_error_message(err, script_source)))?;
+    let result =
+        dwpy_core::execute_json_with_context(script_source, payload, context, render_output)
+            .map_err(|err| JsValue::from_str(&wasm_error_message(err, script_source)))?;
 
     serde_json::to_string(&result).map_err(|err| JsValue::from_str(&err.to_string()))
 }
@@ -64,10 +77,26 @@ pub fn analyze_dataweave_request(request_json: &str) -> Result<String, JsValue> 
         .ok_or_else(|| JsValue::from_str("Invalid message: expected an 'expression' string"))?;
     let payload = request.get("payload").cloned();
     let vars = request.get("vars").cloned();
+    let attributes = request.get("attributes").cloned();
 
-    let result = dwpy_core::analyze_expression(expression, payload, vars)
+    let result = dwpy_core::analyze_expression_with_context(expression, payload, vars, attributes)
         .map_err(|err| JsValue::from_str(&wasm_error_message(err, expression)))?;
     serde_json::to_string(&result).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+fn properties_to_map(value: &serde_json::Value) -> Result<BTreeMap<String, String>, String> {
+    let Some(object) = value.as_object() else {
+        return Err("properties must be a JSON object with string values".to_string());
+    };
+    object
+        .iter()
+        .map(|(key, value)| {
+            value
+                .as_str()
+                .map(|value| (key.clone(), value.to_string()))
+                .ok_or_else(|| format!("property '{key}' must be a string value"))
+        })
+        .collect()
 }
 
 fn wasm_error_message(err: dwpy_core::DwError, script_source: &str) -> String {

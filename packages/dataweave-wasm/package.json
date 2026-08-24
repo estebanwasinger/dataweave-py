@@ -12,7 +12,8 @@
     "dist"
   ],
   "scripts": {
-    "build": "wasm-pack build ../../crates/dwpy-wasm --target nodejs --out-dir ../../packages/dataweave-wasm/dist --release"
+    "build": "wasm-pack build ../../crates/dwpy-wasm --target nodejs --out-dir ../../packages/dataweave-wasm/dist --release",
+    "test": "node --test test/*.test.js"
   },
   "publishConfig": {
     "access": "restricted",

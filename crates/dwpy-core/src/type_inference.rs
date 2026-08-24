@@ -1,6 +1,6 @@
 use serde_json::{Map, Value};
 
-use crate::literals::{parse_string_literal, string_literal_inner};
+use crate::literals::{parse_call_args, parse_string_literal, string_literal_inner};
 use crate::selectors::{parse_path_segments, PathSegment};
 use crate::syntax::{
     is_identifier, parse_index_access, split_top_level, split_top_level_char,
@@ -16,6 +16,7 @@ pub(crate) fn infer_expression_type(
     source: &str,
     payload_type: &Value,
     vars_type: &Value,
+    attributes_type: &Value,
 ) -> Result<Value, DwError> {
     let source = strip_wrapping_parens(source.trim());
     if source.is_empty() {
@@ -28,28 +29,28 @@ pub(crate) fn infer_expression_type(
 
     if let Some((left, right)) = split_top_level_keyword(source, "default") {
         return Ok(type_union(vec![
-            infer_expression_type(left, payload_type, vars_type)?,
-            infer_expression_type(right, payload_type, vars_type)?,
+            infer_expression_type(left, payload_type, vars_type, attributes_type)?,
+            infer_expression_type(right, payload_type, vars_type, attributes_type)?,
         ]));
     }
 
     if let Some((left, _operator, right)) = split_top_level_operator(source, &["++", "+"]) {
-        let left_type = infer_expression_type(left, payload_type, vars_type)?;
-        let right_type = infer_expression_type(right, payload_type, vars_type)?;
+        let left_type = infer_expression_type(left, payload_type, vars_type, attributes_type)?;
+        let right_type = infer_expression_type(right, payload_type, vars_type, attributes_type)?;
         return Ok(infer_concat_type(&left_type, &right_type));
     }
 
     if source.starts_with('{') && source.ends_with('}') {
-        return infer_object_literal_type(source, payload_type, vars_type);
+        return infer_object_literal_type(source, payload_type, vars_type, attributes_type);
     }
 
     if source.starts_with('[') && source.ends_with(']') {
-        return infer_array_literal_type(source, payload_type, vars_type);
+        return infer_array_literal_type(source, payload_type, vars_type, attributes_type);
     }
 
     if let Some((base, index)) = parse_index_access(source) {
-        let base_type = infer_expression_type(base, payload_type, vars_type)?;
-        let index_type = infer_expression_type(index, payload_type, vars_type)?;
+        let base_type = infer_expression_type(base, payload_type, vars_type, attributes_type)?;
+        let index_type = infer_expression_type(index, payload_type, vars_type, attributes_type)?;
         return Ok(infer_index_type(&base_type, &index_type));
     }
 
@@ -66,11 +67,32 @@ pub(crate) fn infer_expression_type(
         return Ok(type_number());
     }
 
+    if let Some((function_name, _arguments)) = parse_call_args(source) {
+        if matches!(
+            function_name,
+            "p" | "Mule::p" | "prop" | "Mule::prop" | "dw::Runtime::p" | "dw::Runtime::prop"
+        ) {
+            return Ok(type_union(vec![type_string(), type_null()]));
+        }
+        if matches!(
+            function_name,
+            "props" | "Mule::props" | "dw::Runtime::props"
+        ) {
+            return Ok(type_object(Map::new(), true));
+        }
+    }
+
     if source == "payload" || source.starts_with("payload.") || source.starts_with("payload?.") {
         return infer_path_type(source, "payload", payload_type);
     }
     if source == "vars" || source.starts_with("vars.") || source.starts_with("vars?.") {
         return infer_path_type(source, "vars", vars_type);
+    }
+    if source == "attributes"
+        || source.starts_with("attributes.")
+        || source.starts_with("attributes?.")
+    {
+        return infer_path_type(source, "attributes", attributes_type);
     }
 
     Err(DwError::UnsupportedFeature(format!(
@@ -82,6 +104,7 @@ fn infer_object_literal_type(
     source: &str,
     payload_type: &Value,
     vars_type: &Value,
+    attributes_type: &Value,
 ) -> Result<Value, DwError> {
     let inner = &source[1..source.len() - 1];
     let mut fields = Map::new();
@@ -116,7 +139,8 @@ fn infer_object_literal_type(
             open = true;
             None
         };
-        let value_type = infer_expression_type(value_source, payload_type, vars_type)?;
+        let value_type =
+            infer_expression_type(value_source, payload_type, vars_type, attributes_type)?;
         if let Some(key) = key {
             fields.insert(key, field_descriptor(value_type, false, false));
         }
@@ -128,6 +152,7 @@ fn infer_array_literal_type(
     source: &str,
     payload_type: &Value,
     vars_type: &Value,
+    attributes_type: &Value,
 ) -> Result<Value, DwError> {
     let inner = &source[1..source.len() - 1];
     if inner.trim().is_empty() {
@@ -137,7 +162,12 @@ fn infer_array_literal_type(
     for item in split_top_level(inner, ',') {
         let item = item.trim();
         if !item.is_empty() {
-            element_types.push(infer_expression_type(item, payload_type, vars_type)?);
+            element_types.push(infer_expression_type(
+                item,
+                payload_type,
+                vars_type,
+                attributes_type,
+            )?);
         }
     }
     Ok(type_array(type_union(element_types)))

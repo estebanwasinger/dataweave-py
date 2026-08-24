@@ -1,5 +1,7 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyFloat, PyList, PyModule};
+use serde_json::Value;
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 #[pyclass]
@@ -39,6 +41,8 @@ impl RustDataWeaveRuntime {
         payload,
         vars = None,
         *,
+        attributes = None,
+        properties = None,
         payload_format = None,
         payload_format_options = None,
         render_output = true
@@ -49,10 +53,21 @@ impl RustDataWeaveRuntime {
         script_source: &str,
         payload: Py<PyAny>,
         vars: Option<Py<PyAny>>,
+        attributes: Option<Py<PyAny>>,
+        properties: Option<Py<PyAny>>,
         payload_format: Option<&str>,
         payload_format_options: Option<Py<PyAny>>,
         render_output: bool,
     ) -> PyResult<Py<PyAny>> {
+        let attributes_json = attributes
+            .as_ref()
+            .map(|value| py_to_json(py, value.bind(py)))
+            .transpose()?;
+        let properties_json = properties
+            .as_ref()
+            .map(|value| py_to_json(py, value.bind(py)))
+            .transpose()?;
+        let properties_map = properties_json.map(properties_to_map).transpose()?;
         let payload_format_options_json = payload_format_options
             .as_ref()
             .map(|options| py_to_json(py, options.bind(py)))
@@ -65,6 +80,8 @@ impl RustDataWeaveRuntime {
                     script_source,
                     payload,
                     vars,
+                    attributes,
+                    properties,
                     payload_format,
                     payload_format_options,
                     render_output,
@@ -89,6 +106,8 @@ impl RustDataWeaveRuntime {
                             script_source,
                             payload,
                             vars,
+                            attributes,
+                            properties,
                             payload_format,
                             payload_format_options,
                             render_output,
@@ -96,20 +115,26 @@ impl RustDataWeaveRuntime {
                         );
                     }
                 };
-                let rust_result = if let Some(vars) = vars.as_ref() {
-                    py_to_json(py, vars.bind(py)).and_then(|vars_json| {
-                        dwpy_core::execute_json_with_vars(
+                let vars_json = vars
+                    .as_ref()
+                    .map(|value| py_to_json(py, value.bind(py)))
+                    .transpose();
+                let rust_result = vars_json.and_then(|vars_json| {
+                    dwpy_core::ExecutionContext::new(
+                        vars_json,
+                        attributes_json.clone(),
+                        properties_map.clone(),
+                    )
+                    .and_then(|context| {
+                        dwpy_core::execute_json_with_context(
                             script_source,
                             payload_json,
-                            vars_json,
+                            context,
                             render_output,
                         )
-                        .map_err(|err| rust_core_error(py, err, script_source))
                     })
-                } else {
-                    dwpy_core::execute_json(script_source, payload_json, render_output)
-                        .map_err(|err| rust_core_error(py, err, script_source))
-                };
+                    .map_err(|err| rust_core_error(py, err, script_source))
+                });
 
                 match rust_result {
                     Ok(result) => {
@@ -122,6 +147,8 @@ impl RustDataWeaveRuntime {
                             script_source,
                             payload,
                             vars,
+                            attributes,
+                            properties,
                             payload_format,
                             payload_format_options,
                             render_output,
@@ -137,6 +164,8 @@ impl RustDataWeaveRuntime {
             script_source,
             payload,
             vars,
+            attributes,
+            properties,
             payload_format,
             payload_format_options,
             render_output,
@@ -164,13 +193,15 @@ impl RustDataWeaveRuntime {
             .map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))
     }
 
-    #[pyo3(signature = (script_source, payload = None, vars = None))]
+    #[pyo3(signature = (script_source, payload = None, vars = None, *, attributes = None, properties = None))]
     fn infer_type_descriptor(
         &self,
         py: Python<'_>,
         script_source: &str,
         payload: Option<Py<PyAny>>,
         vars: Option<Py<PyAny>>,
+        attributes: Option<Py<PyAny>>,
+        properties: Option<Py<PyAny>>,
     ) -> PyResult<Py<PyAny>> {
         let payload_json = payload
             .as_ref()
@@ -180,8 +211,23 @@ impl RustDataWeaveRuntime {
             .as_ref()
             .map(|value| py_to_json(py, value.bind(py)))
             .transpose()?;
-        let result = dwpy_core::infer_type_descriptor(script_source, payload_json, vars_json)
-            .map_err(|err| pyo3::exceptions::PyNotImplementedError::new_err(err.to_string()))?;
+        let attributes_json = attributes
+            .as_ref()
+            .map(|value| py_to_json(py, value.bind(py)))
+            .transpose()?;
+        let _properties_json = properties
+            .as_ref()
+            .map(|value| py_to_json(py, value.bind(py)))
+            .transpose()?
+            .map(properties_to_map)
+            .transpose()?;
+        let result = dwpy_core::infer_type_descriptor_with_context(
+            script_source,
+            payload_json,
+            vars_json,
+            attributes_json,
+        )
+        .map_err(|err| pyo3::exceptions::PyNotImplementedError::new_err(err.to_string()))?;
         json_to_py(py, result)
     }
 }
@@ -199,6 +245,8 @@ impl RustDataWeaveRuntime {
         script_source: &str,
         payload: Py<PyAny>,
         vars: Option<Py<PyAny>>,
+        attributes: Option<Py<PyAny>>,
+        properties: Option<Py<PyAny>>,
         payload_format: Option<&str>,
         payload_format_options: Option<Py<PyAny>>,
         render_output: bool,
@@ -211,6 +259,12 @@ impl RustDataWeaveRuntime {
         let kwargs = PyDict::new(py);
         if let Some(vars) = vars {
             kwargs.set_item("vars", vars)?;
+        }
+        if let Some(attributes) = attributes {
+            kwargs.set_item("attributes", attributes)?;
+        }
+        if let Some(properties) = properties {
+            kwargs.set_item("properties", properties)?;
         }
         if let Some(payload_format) = payload_format {
             kwargs.set_item("payload_format", payload_format)?;
@@ -235,6 +289,8 @@ impl RustDataWeaveRuntime {
         script_source: &str,
         payload: Py<PyAny>,
         vars: Option<Py<PyAny>>,
+        attributes: Option<Py<PyAny>>,
+        properties: Option<Py<PyAny>>,
         payload_format: Option<&str>,
         payload_format_options: Option<Py<PyAny>>,
         render_output: bool,
@@ -246,6 +302,8 @@ impl RustDataWeaveRuntime {
                 script_source,
                 payload,
                 vars,
+                attributes,
+                properties,
                 payload_format,
                 payload_format_options,
                 render_output,
@@ -270,6 +328,25 @@ fn py_to_json(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<serde_json::
         .extract()?;
     serde_json::from_str(&encoded)
         .map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))
+}
+
+fn properties_to_map(value: Value) -> PyResult<BTreeMap<String, String>> {
+    let Value::Object(object) = value else {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "properties must be a JSON object with string values",
+        ));
+    };
+    object
+        .into_iter()
+        .map(|(key, value)| {
+            let Value::String(value) = value else {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "property '{key}' must be a string value",
+                )));
+            };
+            Ok((key, value))
+        })
+        .collect()
 }
 
 fn json_to_py(py: Python<'_>, value: serde_json::Value) -> PyResult<Py<PyAny>> {

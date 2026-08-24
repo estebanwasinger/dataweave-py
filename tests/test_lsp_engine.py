@@ -46,6 +46,87 @@ fun localName(value) = value
     assert "vars" in labels
 
 
+def test_completion_includes_attributes_and_nested_fields() -> None:
+    engine = DataWeaveLanguageEngine()
+    script, line, column = _cursor("attributes.<cursor>")
+    items = engine.complete(
+        script=script,
+        line=line,
+        column=column,
+        attributes={"headers": {"x-request-id": "abc"}, "queryParams": {"page": "1"}},
+    )
+    assert {item.label for item in items} == {"headers", "queryParams"}
+
+    nested_script, line, column = _cursor("attributes.headers.<cursor>")
+    nested_items = engine.complete(
+        script=nested_script,
+        line=line,
+        column=column,
+        attributes={"headers": {"x-request-id": "abc"}},
+    )
+    assert {item.label for item in nested_items} == {"x-request-id"}
+
+
+def test_property_signature_help_and_property_key_completion() -> None:
+    engine = DataWeaveLanguageEngine()
+    script, line, column = _cursor('p("<cursor>')
+    items = engine.complete(
+        script=script,
+        line=line,
+        column=column,
+        properties={"env": "dev", "app.config.value": "yes"},
+    )
+    assert {item.label for item in items} == {"env", "app.config.value"}
+
+    signature = engine.signature_help(
+        script='Mule::p("',
+        line=0,
+        column=len('Mule::p("'),
+        properties={"env": "dev"},
+    )
+    assert signature is not None
+    assert signature.signatures[0].label == "p(propertyName) -> String | Null"
+
+
+def test_context_sidecars_load_independently_and_ignore_invalid_files(tmp_path: Path) -> None:
+    script_path = tmp_path / "transform.dwl"
+    script_path.write_text("%dw 2.0\n---\nattributes.headers", encoding="utf-8")
+    script_path.with_name("transform.dwl.attributes.json").write_text(
+        '{"headers":{"requestId":"abc"}}', encoding="utf-8"
+    )
+    script_path.with_name("transform.dwl.properties.json").write_text(
+        '{"env":"dev"}', encoding="utf-8"
+    )
+    engine = DataWeaveLanguageEngine()
+    script, line, column = _cursor("attributes.headers.<cursor>")
+    assert {
+        item.label
+        for item in engine.complete(
+            script=script,
+            line=line,
+            column=column,
+            document_path=str(script_path),
+        )
+    } == {"requestId"}
+
+    script_path.with_name("transform.dwl.attributes.json").write_text(
+        "not-json", encoding="utf-8"
+    )
+    script_path.with_name("transform.dwl.vars.json").write_text(
+        '{"name":"Ana"}', encoding="utf-8"
+    )
+    fallback_script, line, column = _cursor("vars.<cursor>")
+    assert {
+        item.label
+        for item in engine.complete(
+            script=fallback_script,
+            line=line,
+            column=column,
+            document_path=str(script_path),
+        )
+    } == {"name"}
+
+
 def test_completion_uses_lambda_snippet_for_group_by() -> None:
     engine = DataWeaveLanguageEngine()
     script, line, column = _cursor(

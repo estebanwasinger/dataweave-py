@@ -297,6 +297,7 @@ TOKEN_REGEX = re.compile(
   | (?P<RBRACKET>\])
   | (?P<LPAREN>\()
   | (?P<RPAREN>\))
+  | (?P<NAMESPACE>::)
   | (?P<COLON>:)
   | (?P<COMMA>,)
   | (?P<HASH>\#)
@@ -1140,7 +1141,12 @@ class Parser:
             return NullLiteral()
         if token_type == "IDENT":
             self.advance()
-            return Identifier(name=value or "", line=token[2], column=token[3])
+            name = value or ""
+            while self.current()[0] == "NAMESPACE":
+                self.advance()
+                namespace_token = self.expect("IDENT")
+                name += "::" + (namespace_token[1] or "")
+            return Identifier(name=name, line=token[2], column=token[3])
         if token_type == "DOLLAR":
             self.advance()
             placeholder_text = value or ""

@@ -13,7 +13,7 @@ import hmac
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 from decimal import Decimal, InvalidOperation, localcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib import metadata as importlib_metadata
 from pathlib import Path
 from urllib.parse import urlparse
@@ -56,6 +56,8 @@ class EvaluationContext:
     variables: Dict[str, Any]
     header: Optional[parser.Header] = None
     line_offset: int = 0
+    attributes: Any = field(default_factory=dict)
+    properties: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -80,6 +82,8 @@ class LambdaCallable:
     closure_variables: Dict[str, Any]
     payload: Any
     header: Optional[parser.Header]
+    attributes: Any = None
+    properties: Dict[str, str] = field(default_factory=dict)
 
     def __call__(self, *args: Any) -> Any:
         local_vars: Dict[str, Any] = dict(self.closure_variables)
@@ -95,6 +99,8 @@ class LambdaCallable:
                         payload=self.payload,
                         variables=dict(local_vars),
                         header=self.header,
+                        attributes=self.attributes or {},
+                        properties=self.properties,
                     )
                     local_vars[parameter.name] = self.runtime._evaluate(
                         parameter.default, default_ctx
@@ -113,6 +119,8 @@ class LambdaCallable:
             payload=self.payload,
             variables=local_vars,
             header=self.header,
+            attributes=self.attributes or {},
+            properties=self.properties,
         )
         return self.runtime._evaluate(self.body, body_ctx)
 
@@ -139,6 +147,8 @@ class DefinedFunction:
                         payload=self.context.payload,
                         variables=dict(local_vars),
                         header=self.context.header,
+                        attributes=self.context.attributes,
+                        properties=self.context.properties,
                     )
                     local_vars[parameter.name] = self.runtime._evaluate(
                         parameter.default, default_ctx
@@ -149,6 +159,8 @@ class DefinedFunction:
             payload=self.context.payload,
             variables=local_vars,
             header=self.context.header,
+            attributes=self.context.attributes,
+            properties=self.context.properties,
         )
         result = self.runtime._evaluate(self.body, body_ctx)
         if self.return_type is not None:
@@ -191,6 +203,8 @@ class ImplicitLambdaCallable:
     payload: Any
     header: Optional[parser.Header]
     placeholders: Set[int]
+    attributes: Any = None
+    properties: Dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if 2 in self.placeholders:
@@ -211,6 +225,8 @@ class ImplicitLambdaCallable:
             payload=self.payload,
             variables=local_vars,
             header=self.header,
+            attributes=self.attributes or {},
+            properties=self.properties,
         )
         return self.runtime._evaluate(self.body, body_ctx)
 
@@ -292,6 +308,8 @@ class DataWeaveRuntime:
         payload: Any,
         vars: Optional[Dict[str, Any]] = None,
         *,
+        attributes: Any = None,
+        properties: Optional[Mapping[str, str]] = None,
         payload_format: Optional[str] = None,
         payload_format_options: Optional[Dict[str, Any]] = None,
         render_output: bool = True,
@@ -302,6 +320,16 @@ class DataWeaveRuntime:
         variables = {
             name: self._normalise_input_value(value) for name, value in provided_vars.items()
         }
+        if attributes is None:
+            attributes = {}
+        if not isinstance(attributes, Mapping):
+            raise ValueError("attributes must be a JSON object")
+        effective_properties = dict(os.environ)
+        for key, value in (properties or {}).items():
+            if not isinstance(value, str):
+                raise ValueError(f"property '{key}' must be a string value")
+            effective_properties[str(key)] = value
+        attributes = self._normalise_input_value(attributes)
         try:
             script = parser.parse_script(script_source)
         except parser.ParseError as err:
@@ -317,6 +345,8 @@ class DataWeaveRuntime:
             variables=variables,
             header=script.header,
             line_offset=0,
+            attributes=attributes,
+            properties=effective_properties,
         )
         self._populate_context_from_header(script.header, header_context)
         body_line_offset = self._compute_body_line_offset(script_source)
@@ -325,6 +355,8 @@ class DataWeaveRuntime:
             variables=header_context.variables,
             header=script.header,
             line_offset=body_line_offset,
+            attributes=header_context.attributes,
+            properties=header_context.properties,
         )
         try:
             result = self._evaluate(script.body, body_context)
@@ -628,6 +660,32 @@ class DataWeaveRuntime:
                 return self._assert_selector_present(expr.value, ctx)
             raise TypeError(f"Unsupported selector modifier: {expr.mode}")
         if isinstance(expr, parser.FunctionCall):
+            if isinstance(expr.function, parser.Identifier) and expr.function.name in {
+                "p",
+                "Mule::p",
+                "prop",
+                "Mule::prop",
+                "dw::Runtime::p",
+                "dw::Runtime::prop",
+                "props",
+                "Mule::props",
+                "dw::Runtime::props",
+            }:
+                arguments = [self._evaluate(argument, ctx) for argument in expr.arguments]
+                return self._evaluate_property_function(expr.function.name, arguments, ctx)
+            if isinstance(expr.function, parser.Identifier) and expr.function.name in {
+                "read",
+                "run",
+                "eval",
+                "dw::Runtime::run",
+                "dw::Runtime::eval",
+            }:
+                arguments = [self._evaluate(argument, ctx) for argument in expr.arguments]
+                if expr.function.name == "read":
+                    return self._func_read(*arguments, execution_context=ctx)
+                if expr.function.name in {"run", "dw::Runtime::run"}:
+                    return self._func_run_script(*arguments, execution_context=ctx)
+                return self._func_eval_script(*arguments, execution_context=ctx)
             function = self._evaluate(expr.function, ctx)
             placeholder_positions = self._resolve_placeholder_argument_indexes(expr.function)
             args: List[Any] = []
@@ -642,6 +700,8 @@ class DataWeaveRuntime:
                                 closure_variables=dict(ctx.variables),
                                 payload=ctx.payload,
                                 header=ctx.header,
+                                attributes=ctx.attributes,
+                                properties=ctx.properties,
                                 placeholders=placeholders,
                             )
                         )
@@ -663,6 +723,8 @@ class DataWeaveRuntime:
                 closure_variables=dict(ctx.variables),
                 payload=ctx.payload,
                 header=ctx.header,
+                attributes=ctx.attributes,
+                properties=ctx.properties,
             )
         if isinstance(expr, parser.IfExpression):
             condition_value = self._evaluate(expr.condition, ctx)
@@ -675,6 +737,8 @@ class DataWeaveRuntime:
                 variables=scoped_variables,
                 header=expr.header,
                 line_offset=ctx.line_offset,
+                attributes=ctx.attributes,
+                properties=ctx.properties,
             )
             self._populate_context_from_header(expr.header, do_context)
             return self._evaluate(expr.body, do_context)
@@ -692,6 +756,8 @@ class DataWeaveRuntime:
                         payload=ctx.payload,
                         variables=bound_variables,
                         header=ctx.header,
+                        attributes=ctx.attributes,
+                        properties=ctx.properties,
                     )
                 matches = True
                 if pattern.matcher is not None:
@@ -724,6 +790,8 @@ class DataWeaveRuntime:
             return ctx.payload
         if name == "vars":
             return ctx.variables
+        if name == "attributes":
+            return ctx.attributes
         if name in self._builtins:
             builtin = self._builtins[name]
             if name == "_binary_plus" and line is not None:
@@ -750,6 +818,23 @@ class DataWeaveRuntime:
             length=max(length, 1),
         )
 
+    def _evaluate_property_function(
+        self,
+        function_name: str,
+        arguments: List[Any],
+        ctx: EvaluationContext,
+    ) -> Any:
+        if function_name.endswith("props"):
+            if arguments:
+                raise TypeError("props() does not accept arguments")
+            return dict(ctx.properties)
+        if len(arguments) != 1:
+            raise TypeError(f"{function_name}() expects one property name")
+        property_name = arguments[0]
+        if not isinstance(property_name, str):
+            raise ValueError("property name passed to p()/prop() must be a string")
+        return ctx.properties.get(property_name)
+
     def _evaluate_update_expression(
         self,
         expr: parser.UpdateExpression,
@@ -770,6 +855,8 @@ class DataWeaveRuntime:
                     variables=case_variables,
                     header=ctx.header,
                     line_offset=ctx.line_offset,
+                    attributes=ctx.attributes,
+                    properties=ctx.properties,
                 )
                 if case.guard is not None and not self._is_truthy(self._evaluate(case.guard, case_ctx)):
                     continue
@@ -1290,6 +1377,8 @@ class DataWeaveRuntime:
             variables=dict(ctx.variables),
             header=ctx.header,
             line_offset=ctx.line_offset,
+            attributes=ctx.attributes,
+            properties=ctx.properties,
         )
         scoped.variables["$"] = value
         scoped.variables["$$"] = key_or_index
@@ -1985,7 +2074,14 @@ class DataWeaveRuntime:
                 return f"{major}/{sub}"
         return str(value)
 
-    def _func_read(self, string_to_parse: Any, content_type: Any = "application/dw", reader_properties: Any = None) -> Any:
+    def _func_read(
+        self,
+        string_to_parse: Any,
+        content_type: Any = "application/dw",
+        reader_properties: Any = None,
+        *,
+        execution_context: Optional[EvaluationContext] = None,
+    ) -> Any:
         content_type_text = "application/dw" if content_type is None else str(content_type)
         options = reader_properties if isinstance(reader_properties, Mapping) else {}
         if content_type_text.startswith("application/dw"):
@@ -1994,9 +2090,28 @@ class DataWeaveRuntime:
             if not source:
                 return None
             if source.startswith("%dw"):
-                return self.execute(source, payload={}, render_output=False)
+                context = execution_context
+                return self.execute(
+                    source,
+                    payload={},
+                    vars=dict(context.variables) if context is not None else {},
+                    attributes=context.attributes if context is not None else {},
+                    properties=context.properties if context is not None else None,
+                    render_output=False,
+                )
             expr = parser.parse_expression_from_source(source)
-            ctx = EvaluationContext(payload={}, variables={}, header=None)
+            context = execution_context
+            ctx = EvaluationContext(
+                payload={},
+                variables=dict(context.variables) if context is not None else {},
+                header=context.header if context is not None else None,
+                attributes=context.attributes if context is not None else {},
+                properties=(
+                    dict(context.properties)
+                    if context is not None
+                    else dict(os.environ)
+                ),
+            )
             return self._evaluate(expr, ctx)
         format_name = content_type_text.split(";", 1)[0].strip()
         return self._convert_input_format(string_to_parse, format_name, dict(options))
@@ -2238,8 +2353,16 @@ class DataWeaveRuntime:
         reader_inputs: Any = None,
         input_values: Any = None,
         configuration: Any = None,  # noqa: ARG002
+        *,
+        execution_context: Optional[EvaluationContext] = None,
     ) -> Dict[str, Any]:
-        result = self._execute_embedded_script(file_to_execute, fs, reader_inputs, input_values)
+        result = self._execute_embedded_script(
+            file_to_execute,
+            fs,
+            reader_inputs,
+            input_values,
+            execution_context=execution_context,
+        )
         if result.get("success") is True:
             return {
                 "success": True,
@@ -2258,8 +2381,16 @@ class DataWeaveRuntime:
         reader_inputs: Any = None,
         input_values: Any = None,
         configuration: Any = None,  # noqa: ARG002
+        *,
+        execution_context: Optional[EvaluationContext] = None,
     ) -> Dict[str, Any]:
-        result = self._execute_embedded_script(file_to_execute, fs, reader_inputs, input_values)
+        result = self._execute_embedded_script(
+            file_to_execute,
+            fs,
+            reader_inputs,
+            input_values,
+            execution_context=execution_context,
+        )
         if result.get("success") is True:
             return {
                 "success": True,
@@ -2279,6 +2410,8 @@ class DataWeaveRuntime:
         fs: Any,
         reader_inputs: Any,
         input_values: Any,
+        *,
+        execution_context: Optional[EvaluationContext] = None,
     ) -> Dict[str, Any]:
         try:
             script_name = str(file_to_execute)
@@ -2286,7 +2419,9 @@ class DataWeaveRuntime:
                 raise FileNotFoundError(f"Unable to resolve script '{script_name}'")
             script_source = fs[script_name]
             payload = {}
-            vars_context: Dict[str, Any] = {}
+            vars_context: Dict[str, Any] = (
+                dict(execution_context.variables) if execution_context is not None else {}
+            )
             if isinstance(reader_inputs, Mapping):
                 payload = self._extract_reader_input(reader_inputs.get("payload"))
                 for key, value in reader_inputs.items():
@@ -2295,7 +2430,14 @@ class DataWeaveRuntime:
                     vars_context[key] = self._extract_reader_input(value)
             if isinstance(input_values, Mapping):
                 vars_context.update(input_values)
-            result = self.execute(str(script_source), payload=payload, vars=vars_context, render_output=False)
+            result = self.execute(
+                str(script_source),
+                payload=payload,
+                vars=vars_context,
+                attributes=execution_context.attributes if execution_context is not None else {},
+                properties=execution_context.properties if execution_context is not None else None,
+                render_output=False,
+            )
             return {"success": True, "result": result}
         except Exception as err:
             return {
@@ -2646,6 +2788,8 @@ class DataWeaveRuntime:
                 payload=function.payload,
                 variables=dict(function.closure_variables),
                 header=function.header,
+                attributes=function.attributes or {},
+                properties=function.properties,
             )
             return True, self._evaluate(default_expr, default_ctx)
         if isinstance(function, DefinedFunction):
@@ -2653,6 +2797,8 @@ class DataWeaveRuntime:
                 payload=function.context.payload,
                 variables=dict(function.context.variables),
                 header=function.context.header,
+                attributes=function.context.attributes,
+                properties=function.context.properties,
             )
             return True, self._evaluate(default_expr, default_ctx)
         return False, Missing

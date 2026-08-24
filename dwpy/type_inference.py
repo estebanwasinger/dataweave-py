@@ -45,9 +45,10 @@ from .typesystem import (
 
 
 class TypeInferenceContext:
-    def __init__(self, payload_type: DWType, vars_type: DWType) -> None:
+    def __init__(self, payload_type: DWType, vars_type: DWType, attributes_type: DWType = ANY) -> None:
         self.payload_type = payload_type
         self.vars_type = vars_type
+        self.attributes_type = attributes_type
         self.env: Dict[str, DWType] = {}
         # Keep type definitions case-insensitive to mirror DW resolution
         self._defined_types: Dict[str, DWType] = {}
@@ -61,6 +62,8 @@ class TypeInferenceContext:
             return self.payload_type
         if name == "vars":
             return self.vars_type
+        if name == "attributes":
+            return self.attributes_type
         
         # Check defined types first
         defined = self._defined_types.get(self._normalize_name(name))
@@ -79,7 +82,7 @@ class TypeInferenceContext:
         return self._defined_types.get(self._normalize_name(name))
 
     def clone(self) -> "TypeInferenceContext":
-        new_ctx = TypeInferenceContext(self.payload_type, self.vars_type)
+        new_ctx = TypeInferenceContext(self.payload_type, self.vars_type, self.attributes_type)
         new_ctx.env = dict(self.env)
         new_ctx._defined_types = dict(self._defined_types)
         return new_ctx
@@ -90,19 +93,26 @@ def infer_script_type(
     *,
     payload_type: DWType | Any = ANY,
     vars_type: DWType | Any = ANY,
+    attributes_type: DWType | Any = ANY,
 ) -> DWType:
     rust_inferred = _infer_script_type_rust(
         script_source,
         payload_type=payload_type,
         vars_type=vars_type,
+        attributes_type=attributes_type,
     )
     if rust_inferred is not None:
         return rust_inferred
 
     payload_type = _python_value_to_type(payload_type)
     vars_type = _python_value_to_type(vars_type)
+    attributes_type = _python_value_to_type(attributes_type)
     script = parser.parse_script(script_source)
-    inferencer = TypeInferencer(payload_type=payload_type, vars_type=vars_type)
+    inferencer = TypeInferencer(
+        payload_type=payload_type,
+        vars_type=vars_type,
+        attributes_type=attributes_type,
+    )
     return inferencer.infer_script(script)
 
 
@@ -111,6 +121,7 @@ def _infer_script_type_rust(
     *,
     payload_type: DWType | Any,
     vars_type: DWType | Any,
+    attributes_type: DWType | Any,
 ) -> Optional[DWType]:
     payload_arg: Any
     vars_arg: Any
@@ -118,8 +129,11 @@ def _infer_script_type_rust(
         return None
     if isinstance(vars_type, DWType) and vars_type is not ANY:
         return None
+    if isinstance(attributes_type, DWType) and attributes_type is not ANY:
+        return None
     payload_arg = None if payload_type is ANY else payload_type
     vars_arg = None if vars_type is ANY else vars_type
+    attributes_arg = None if attributes_type is ANY else attributes_type
     try:
         from ._dwpy_rust import RustDataWeaveRuntime
 
@@ -127,6 +141,7 @@ def _infer_script_type_rust(
             script_source,
             payload=payload_arg,
             vars=vars_arg,
+            attributes=attributes_arg,
         )
     except Exception:
         return None
@@ -221,6 +236,7 @@ def infer_script_pydantic_model(
     *,
     payload_type: DWType | Any = ANY,
     vars_type: DWType | Any = ANY,
+    attributes_type: DWType | Any = ANY,
     model_name: str = "DWOutputModel",
 ):
     """
@@ -231,7 +247,12 @@ def infer_script_pydantic_model(
     except Exception as exc:  # pragma: no cover - optional dependency
         raise RuntimeError("pydantic is required for infer_script_pydantic_model") from exc
 
-    inferred = infer_script_type(script_source, payload_type=payload_type, vars_type=vars_type)
+    inferred = infer_script_type(
+        script_source,
+        payload_type=payload_type,
+        vars_type=vars_type,
+        attributes_type=attributes_type,
+    )
 
     def to_annotation(dw_type: DWType) -> Any:
         if isinstance(dw_type, AnyType) or isinstance(dw_type, NothingType):
@@ -293,14 +314,24 @@ def infer_script_pydantic_model(
 
 
 class TypeInferencer:
-    def __init__(self, payload_type: DWType, vars_type: DWType) -> None:
+    def __init__(
+        self,
+        payload_type: DWType,
+        vars_type: DWType,
+        attributes_type: DWType = ANY,
+    ) -> None:
         self.payload_type = payload_type
         self.vars_type = vars_type
+        self.attributes_type = attributes_type
         self.context: Optional[TypeInferenceContext] = None
         self._functions: Dict[str, parser.FunctionDeclaration] = {}
 
     def infer_script(self, script: parser.Script) -> DWType:
-        ctx = TypeInferenceContext(self.payload_type, self.vars_type)
+        ctx = TypeInferenceContext(
+            self.payload_type,
+            self.vars_type,
+            self.attributes_type,
+        )
         self.context = ctx
 
         # Process type definitions first
@@ -561,6 +592,17 @@ class TypeInferencer:
     def _infer_function_call(self, expr: parser.FunctionCall, ctx: TypeInferenceContext) -> DWType:
         if isinstance(expr.function, parser.Identifier):
             name = expr.function.name
+            if name in {
+                "p",
+                "Mule::p",
+                "prop",
+                "Mule::prop",
+                "dw::Runtime::p",
+                "dw::Runtime::prop",
+            }:
+                return union_types(STRING, NULL)
+            if name in {"props", "Mule::props", "dw::Runtime::props"}:
+                return object_type({}, is_open_flag=True)
             if name == "_binary_plus" and len(expr.arguments) == 2:
                 left = self._infer_expression(expr.arguments[0], ctx)
                 right = self._infer_expression(expr.arguments[1], ctx)

@@ -112,6 +112,8 @@ class WasmDataWeaveRuntime:
         payload: Any,
         vars: Optional[Dict[str, Any]] = None,
         *,
+        attributes: Any = None,
+        properties: Optional[Dict[str, str]] = None,
         payload_format: Optional[str] = None,
         payload_format_options: Optional[Dict[str, Any]] = None,
         render_output: bool = True,
@@ -120,6 +122,8 @@ class WasmDataWeaveRuntime:
             "script": script_source,
             "payload": _encode_wasm_value(payload),
             "vars": _encode_wasm_value(vars or {}),
+            "attributes": _encode_wasm_value(attributes or {}),
+            "properties": _encode_wasm_value(properties or {}),
             "render_output": render_output,
         }
         if payload_format is not None:
@@ -145,6 +149,8 @@ class WasmDataWeaveRuntime:
         script_source: str,
         payload: Any = None,
         vars: Optional[Dict[str, Any]] = None,
+        attributes: Any = None,
+        properties: Optional[Dict[str, str]] = None,
     ) -> Any:
         return self._bridge.execute(
             {
@@ -152,6 +158,8 @@ class WasmDataWeaveRuntime:
                 "expression": script_source,
                 "payload": _encode_wasm_value(payload),
                 "vars": _encode_wasm_value(vars or {}),
+                "attributes": _encode_wasm_value(attributes or {}),
+                "properties": _encode_wasm_value(properties or {}),
             }
         )["inferredType"]
 

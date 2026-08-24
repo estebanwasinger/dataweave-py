@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -162,8 +163,11 @@ class EngineSignatureHelp:
 class _AnalysisContext:
     payload_type: DWType
     vars_type: DWType
+    attributes_type: DWType
     payload_value: Any
     vars_value: Any
+    attributes_value: Any
+    properties_value: Any
     symbol_types: Dict[str, DWType]
     local_signatures: Dict[str, Tuple[FunctionSignature, ...]]
     imported_signatures: Dict[str, Tuple[FunctionSignature, ...]]
@@ -192,10 +196,19 @@ class DataWeaveLanguageEngine:
         document_path: Optional[str] = None,
         payload: Any = _MISSING,
         vars: Any = _MISSING,
+        attributes: Any = _MISSING,
+        properties: Any = _MISSING,
     ) -> List[EngineCompletionItem]:
         script = script or ""
         offset = _line_col_to_offset(script, line, column)
-        ctx = self._collect_context(script=script, document_path=document_path, payload=payload, vars=vars)
+        ctx = self._collect_context(
+            script=script,
+            document_path=document_path,
+            payload=payload,
+            vars=vars,
+            attributes=attributes,
+            properties=properties,
+        )
         lambda_symbols = self._infer_lambda_symbols(script, offset, ctx)
 
         # Lambda symbols should shadow regular locals.
@@ -209,6 +222,22 @@ class DataWeaveLanguageEngine:
             field_items = self._complete_object_fields(base_type, prefix)
             return field_items
 
+        property_prefix = _extract_property_key_prefix(script[:offset])
+        if property_prefix is not None:
+            property_values = ctx.properties_value
+            if isinstance(property_values, Mapping):
+                return [
+                    EngineCompletionItem(
+                        label=str(key),
+                        kind="property",
+                        insert_text=str(key),
+                        detail="Configuration property",
+                        sort_text=f"1_{key}",
+                    )
+                    for key in sorted(property_values)
+                    if str(key).startswith(property_prefix)
+                ]
+
         prefix = _extract_current_word(script[:offset])
         return self._complete_global(prefix=prefix, ctx=ctx)
 
@@ -221,10 +250,19 @@ class DataWeaveLanguageEngine:
         document_path: Optional[str] = None,
         payload: Any = _MISSING,
         vars: Any = _MISSING,
+        attributes: Any = _MISSING,
+        properties: Any = _MISSING,
     ) -> Optional[EngineHover]:
         script = script or ""
         offset = _line_col_to_offset(script, line, column)
-        ctx = self._collect_context(script=script, document_path=document_path, payload=payload, vars=vars)
+        ctx = self._collect_context(
+            script=script,
+            document_path=document_path,
+            payload=payload,
+            vars=vars,
+            attributes=attributes,
+            properties=properties,
+        )
 
         chain = _extract_chain_at_offset(script, offset)
         if chain:
@@ -259,10 +297,19 @@ class DataWeaveLanguageEngine:
         document_path: Optional[str] = None,
         payload: Any = _MISSING,
         vars: Any = _MISSING,
+        attributes: Any = _MISSING,
+        properties: Any = _MISSING,
     ) -> Optional[EngineSignatureHelp]:
         script = script or ""
         offset = _line_col_to_offset(script, line, column)
-        ctx = self._collect_context(script=script, document_path=document_path, payload=payload, vars=vars)
+        ctx = self._collect_context(
+            script=script,
+            document_path=document_path,
+            payload=payload,
+            vars=vars,
+            attributes=attributes,
+            properties=properties,
+        )
 
         call_ctx = _find_active_call(script[:offset])
         if call_ctx is None:
@@ -296,8 +343,10 @@ class DataWeaveLanguageEngine:
         document_path: Optional[str],
         payload: Any,
         vars: Any,
+        attributes: Any,
+        properties: Any,
     ) -> _AnalysisContext:
-        sidecar_payload, sidecar_vars = self._load_sidecar_context(document_path)
+        sidecar_payload, sidecar_vars, sidecar_attributes, sidecar_properties = self._load_sidecar_context(document_path)
 
         payload_value = payload
         if payload_value is _MISSING:
@@ -305,9 +354,16 @@ class DataWeaveLanguageEngine:
         vars_value = vars
         if vars_value is _MISSING:
             vars_value = sidecar_vars
+        attributes_value = attributes
+        if attributes_value is _MISSING:
+            attributes_value = sidecar_attributes
+        properties_value = properties
+        if properties_value is _MISSING:
+            properties_value = sidecar_properties
 
         payload_type = self._value_to_type(payload_value)
         vars_type = self._value_to_type(vars_value)
+        attributes_type = self._value_to_type(attributes_value)
 
         parsed_script, parsed_header = self._safe_parse(script)
 
@@ -316,11 +372,16 @@ class DataWeaveLanguageEngine:
         symbol_types: Dict[str, DWType] = {
             "payload": payload_type,
             "vars": vars_type,
+            "attributes": attributes_type,
         }
 
         if parsed_script is not None:
             try:
-                inferencer = TypeInferencer(payload_type=payload_type, vars_type=vars_type)
+                inferencer = TypeInferencer(
+                    payload_type=payload_type,
+                    vars_type=vars_type,
+                    attributes_type=attributes_type,
+                )
                 inferencer.infer_script(parsed_script)
                 if inferencer.context is not None:
                     symbol_types.update(inferencer.context.env)
@@ -351,8 +412,11 @@ class DataWeaveLanguageEngine:
         return _AnalysisContext(
             payload_type=payload_type,
             vars_type=vars_type,
+            attributes_type=attributes_type,
             payload_value=payload_value,
             vars_value=vars_value,
+            attributes_value=attributes_value,
+            properties_value=properties_value,
             symbol_types=symbol_types,
             local_signatures=local_signatures,
             imported_signatures=imported_signatures,
@@ -495,7 +559,7 @@ class DataWeaveLanguageEngine:
         for name in sorted(ctx.symbol_types):
             if not matches(name):
                 continue
-            if name in {"payload", "vars"}:
+            if name in {"payload", "vars", "attributes"}:
                 detail = "Runtime context"
                 rank = "0"
             else:
@@ -617,6 +681,8 @@ class DataWeaveLanguageEngine:
     ) -> Optional[DWType]:
         payload_value = None if ctx.payload_value is _MISSING else ctx.payload_value
         vars_value = None if ctx.vars_value is _MISSING else ctx.vars_value
+        attributes_value = None if ctx.attributes_value is _MISSING else ctx.attributes_value
+        properties_value = None if ctx.properties_value is _MISSING else ctx.properties_value
         try:
             from .._dwpy_rust import RustDataWeaveRuntime
 
@@ -624,6 +690,8 @@ class DataWeaveLanguageEngine:
                 expression,
                 payload=payload_value,
                 vars=vars_value,
+                attributes=attributes_value,
+                properties=properties_value,
             )
         except Exception:
             return None
@@ -684,20 +752,45 @@ class DataWeaveLanguageEngine:
             return ANY
         return _python_value_to_type(value)
 
-    def _load_sidecar_context(self, document_path: Optional[str]) -> Tuple[Any, Any]:
+    def _load_sidecar_context(self, document_path: Optional[str]) -> Tuple[Any, Any, Any, Any]:
         if not document_path:
-            return _MISSING, _MISSING
+            return _MISSING, _MISSING, _MISSING, _MISSING
 
         script_path = Path(document_path)
         payload_value = _load_json_file(script_path.with_name(script_path.name + ".payload.json"))
         vars_value = _load_json_file(script_path.with_name(script_path.name + ".vars.json"))
-        return payload_value, vars_value
+        attributes_value = _load_json_file(
+            script_path.with_name(script_path.name + ".attributes.json")
+        )
+        properties_value = _load_json_file(
+            script_path.with_name(script_path.name + ".properties.json")
+        )
+        return payload_value, vars_value, attributes_value, properties_value
 
     def _build_builtin_catalog(self) -> Dict[str, Tuple[FunctionSignature, ...]]:
         signatures: Dict[str, Tuple[FunctionSignature, ...]] = {}
         for name, func in sorted(builtins.CORE_FUNCTIONS.items()):
             signature = _signature_from_callable(name=name, func=func, origin="builtin")
             signatures[name] = (signature,)
+        signatures["p"] = (
+            FunctionSignature(
+                name="p",
+                parameters=("propertyName",),
+                return_type="String | Null",
+                documentation="Look up a configuration, system, or environment property.",
+                origin="builtin",
+            ),
+        )
+        signatures["Mule::p"] = (
+            FunctionSignature(
+                name="Mule::p",
+                parameters=("propertyName",),
+                return_type="String | Null",
+                documentation="Look up a configuration, system, or environment property.",
+                origin="builtin",
+            ),
+        )
+        signatures["prop"] = signatures["p"]
         for name, parameters in _HOF_FALLBACK_SIGNATURES.items():
             signatures.setdefault(
                 name,
@@ -834,6 +927,14 @@ def _extract_property_chain(prefix_source: str) -> Optional[Tuple[str, str]]:
     chain = match.group(1)
     prefix = match.group(2) or ""
     return chain, prefix
+
+
+def _extract_property_key_prefix(prefix_source: str) -> Optional[str]:
+    match = re.search(
+        r"\b(?:p|prop|Mule::p|Mule::prop)\(\s*['\"]([^'\"]*)$",
+        prefix_source,
+    )
+    return match.group(1) if match else None
 
 
 def _extract_chain_at_offset(source: str, offset: int) -> Optional[str]:

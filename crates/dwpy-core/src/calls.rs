@@ -81,6 +81,17 @@ pub(crate) fn evaluate_function_call(
         "yesterday" if arity == 0 => Ok(Value::String(current_utc_date_string(-1))),
         "uuid" if arity == 0 => Ok(Value::String(generate_uuid_like())),
         "random" if arity == 0 => number_result(pseudo_random_unit()),
+        "p" | "Mule::p" | "prop" | "Mule::prop" | "dw::Runtime::p" | "dw::Runtime::prop"
+            if arity == 1 =>
+        {
+            evaluate_property_lookup(argument_sources[0], payload, locals)
+        }
+        "props" | "Mule::props" | "dw::Runtime::props" | "system::props" if arity == 0 => {
+            Ok(locals
+                .get("__dwpy_properties")
+                .cloned()
+                .unwrap_or_else(|| Value::Object(Map::new())))
+        }
         "version" | "dw::Runtime::version" if arity == 0 => Ok(Value::String("2.5".to_string())),
         "location" | "dw::Runtime::location" if arity == 1 => runtime_location(argument_sources[0]),
         "locationString" | "dw::Runtime::locationString" if arity == 1 => {
@@ -592,6 +603,25 @@ pub(crate) fn evaluate_function_call(
         }
         _ => evaluate_user_function_call(function_name, argument_sources, payload, locals),
     }
+}
+
+fn evaluate_property_lookup(
+    argument_source: &str,
+    payload: &Value,
+    locals: &Map<String, Value>,
+) -> Result<Value, DwError> {
+    let key = evaluate_expression_scoped(argument_source, payload, locals)?;
+    let Value::String(key) = key else {
+        return Err(DwError::InvalidJson(
+            "property name passed to p()/prop() must be a string".to_string(),
+        ));
+    };
+    Ok(locals
+        .get("__dwpy_properties")
+        .and_then(Value::as_object)
+        .and_then(|properties| properties.get(&key))
+        .cloned()
+        .unwrap_or(Value::Null))
 }
 
 fn evaluate_eval_url(argument_sources: &[&str]) -> Result<Value, DwError> {

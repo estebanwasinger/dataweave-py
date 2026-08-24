@@ -2,6 +2,7 @@
 
 use serde_json::Map;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::io::Write;
 
 mod builtins;
@@ -134,6 +135,77 @@ const COLLECTION_OPERATORS: &[&str] = &[
 ];
 
 pub const DEFAULT_MAX_MATERIALIZED_BYTES: usize = 256 * 1024 * 1024;
+const PROPERTIES_LOCAL: &str = "__dwpy_properties";
+
+/// The values made available to a DataWeave execution.
+///
+/// `properties` is intentionally kept separate from the visible DataWeave
+/// locals. It is exposed through `p`, `Mule::p`, `prop`, and `props`, rather
+/// than as a `properties.foo` root value.
+#[derive(Debug, Clone, Default)]
+pub struct ExecutionContext {
+    pub vars: Value,
+    pub attributes: Value,
+    pub properties: BTreeMap<String, String>,
+}
+
+impl ExecutionContext {
+    pub fn new(
+        vars: Option<Value>,
+        attributes: Option<Value>,
+        supplied_properties: Option<BTreeMap<String, String>>,
+    ) -> Result<Self, DwError> {
+        let vars = vars.unwrap_or_else(|| Value::Object(Map::new()));
+        if !vars.is_object() {
+            return Err(DwError::InvalidJson(
+                "vars must be a JSON object".to_string(),
+            ));
+        }
+        let attributes = attributes.unwrap_or_else(|| Value::Object(Map::new()));
+        if !attributes.is_object() {
+            return Err(DwError::InvalidJson(
+                "attributes must be a JSON object".to_string(),
+            ));
+        }
+
+        let mut properties = host_properties();
+        if let Some(supplied_properties) = supplied_properties {
+            properties.extend(supplied_properties);
+        }
+        Ok(Self {
+            vars,
+            attributes,
+            properties,
+        })
+    }
+
+    fn into_locals(self) -> Map<String, Value> {
+        let mut locals = Map::new();
+        locals.insert("vars".to_string(), self.vars);
+        locals.insert("attributes".to_string(), self.attributes);
+        locals.insert(
+            PROPERTIES_LOCAL.to_string(),
+            Value::Object(
+                self.properties
+                    .into_iter()
+                    .map(|(key, value)| (key, Value::String(value)))
+                    .collect(),
+            ),
+        );
+        locals
+    }
+}
+
+fn host_properties() -> BTreeMap<String, String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        return std::env::vars().collect::<BTreeMap<String, String>>();
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        BTreeMap::new()
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExecutionOptions {
@@ -183,11 +255,17 @@ impl CompiledScript {
         vars: Option<Value>,
         options: &ExecutionOptions,
     ) -> Result<Value, DwError> {
-        let mut locals = Map::new();
-        if let Some(vars) = vars {
-            locals.insert("vars".to_string(), vars);
-        }
-        self.execute_scoped(payload, locals, options)
+        let context = ExecutionContext::new(vars, None, None)?;
+        self.execute_with_context(payload, context, options)
+    }
+
+    pub fn execute_with_context(
+        &self,
+        payload: Value,
+        context: ExecutionContext,
+        options: &ExecutionOptions,
+    ) -> Result<Value, DwError> {
+        self.execute_scoped(payload, context.into_locals(), options)
     }
 
     pub fn execute_to_writer<W: Write>(
@@ -197,10 +275,18 @@ impl CompiledScript {
         options: &ExecutionOptions,
         writer: &mut W,
     ) -> Result<(), DwError> {
-        let mut locals = Map::new();
-        if let Some(vars) = vars {
-            locals.insert("vars".to_string(), vars);
-        }
+        let context = ExecutionContext::new(vars, None, None)?;
+        self.execute_to_writer_with_context(payload, context, options, writer)
+    }
+
+    pub fn execute_to_writer_with_context<W: Write>(
+        &self,
+        payload: Value,
+        context: ExecutionContext,
+        options: &ExecutionOptions,
+        writer: &mut W,
+    ) -> Result<(), DwError> {
+        let mut locals = context.into_locals();
         evaluate_header_declarations(&self.parsed.header, &payload, &mut locals)?;
 
         if options.render_output && options.lazy_sequences {
@@ -366,6 +452,15 @@ pub fn infer_type_descriptor(
     payload: Option<Value>,
     vars: Option<Value>,
 ) -> Result<Value, DwError> {
+    infer_type_descriptor_with_context(script, payload, vars, None)
+}
+
+pub fn infer_type_descriptor_with_context(
+    script: &str,
+    payload: Option<Value>,
+    vars: Option<Value>,
+    attributes: Option<Value>,
+) -> Result<Value, DwError> {
     let parsed = split_script(script);
     let payload_type = payload
         .as_ref()
@@ -375,7 +470,16 @@ pub fn infer_type_descriptor(
         .as_ref()
         .map(type_descriptor_from_value)
         .unwrap_or_else(type_any);
-    infer_expression_type(parsed.body.trim(), &payload_type, &vars_type)
+    let attributes_type = attributes
+        .as_ref()
+        .map(type_descriptor_from_value)
+        .unwrap_or_else(type_any);
+    infer_expression_type(
+        parsed.body.trim(),
+        &payload_type,
+        &vars_type,
+        &attributes_type,
+    )
 }
 
 /// Performs the static portion of expression analysis used by embedders.
@@ -388,18 +492,31 @@ pub fn analyze_expression(
     payload: Option<Value>,
     vars: Option<Value>,
 ) -> Result<Value, DwError> {
-    let (inferred_type, diagnostics) =
-        match infer_type_descriptor(expression, payload.clone(), vars) {
-            Ok(inferred_type) => (inferred_type, Vec::new()),
-            Err(DwError::UnsupportedFeature(message)) => (
-                type_any(),
-                vec![serde_json::json!({
-                    "message": message,
-                    "severity": "warning",
-                })],
-            ),
-            Err(error) => return Err(error),
-        };
+    analyze_expression_with_context(expression, payload, vars, None)
+}
+
+pub fn analyze_expression_with_context(
+    expression: &str,
+    payload: Option<Value>,
+    vars: Option<Value>,
+    attributes: Option<Value>,
+) -> Result<Value, DwError> {
+    let (inferred_type, diagnostics) = match infer_type_descriptor_with_context(
+        expression,
+        payload.clone(),
+        vars.clone(),
+        attributes.clone(),
+    ) {
+        Ok(inferred_type) => (inferred_type, Vec::new()),
+        Err(DwError::UnsupportedFeature(message)) => (
+            type_any(),
+            vec![serde_json::json!({
+                "message": message,
+                "severity": "warning",
+            })],
+        ),
+        Err(error) => return Err(error),
+    };
     let reference_paths = extract_reference_paths(expression);
     let wildcard_references = reference_paths
         .iter()
@@ -412,7 +529,18 @@ pub fn analyze_expression(
         .map(|payload| {
             reference_paths
                 .iter()
-                .filter(|path| !reference_path_exists(payload, path))
+                .filter(|path| {
+                    let (root, tail) = path
+                        .split_once('.')
+                        .map_or((path.as_str(), ""), |parts| parts);
+                    let (value, lookup_path) = match root {
+                        "payload" => (Some(payload), tail),
+                        "vars" => (vars.as_ref(), tail),
+                        "attributes" => (attributes.as_ref(), tail),
+                        _ => (Some(payload), path.as_str()),
+                    };
+                    value.is_some_and(|value| !reference_path_exists(value, lookup_path))
+                })
                 .cloned()
                 .map(Value::String)
                 .collect::<Vec<_>>()
@@ -595,9 +723,23 @@ pub fn execute_json_with_vars(
     vars: Value,
     render_output: bool,
 ) -> Result<Value, DwError> {
-    compile(script)?.execute(
+    execute_json_with_context(
+        script,
         payload,
-        Some(vars),
+        ExecutionContext::new(Some(vars), None, None)?,
+        render_output,
+    )
+}
+
+pub fn execute_json_with_context(
+    script: &str,
+    payload: Value,
+    context: ExecutionContext,
+    render_output: bool,
+) -> Result<Value, DwError> {
+    compile(script)?.execute_with_context(
+        payload,
+        context,
         &ExecutionOptions {
             render_output,
             ..ExecutionOptions::default()
@@ -3440,6 +3582,59 @@ output application/python
                 "fallback": "ok"
             })
         );
+    }
+
+    #[test]
+    fn evaluates_full_execution_context_through_scopes() {
+        let script = r#"%dw 2.0
+output application/python
+var headerValue = attributes.headers.x
+---
+{
+  variableData: vars.myVariable,
+  requestHeaders: attributes.headers,
+  queryParams: attributes.queryParams,
+  payloadData: payload,
+  environment: p("env"),
+  canonical: Mule::p("env"),
+  compatibility: prop("env"),
+  dotted: p("app.config.value"),
+  missing: p("missing"),
+  propertyMap: props(),
+  headerValue: headerValue,
+  lambda: payload.items map ((item) -> {value: vars.myVariable, header: attributes.headers.x, prop: p("env")}),
+  doBlock: do { var nested = attributes.queryParams.page --- {nested: nested, prop: p("env")} },
+  matched: payload match { case var item when attributes.headers.x == "yes" -> {item: item, prop: p("env")} else -> {} }
+}
+"#;
+        let mut properties = std::collections::BTreeMap::new();
+        properties.insert("env".to_string(), "test".to_string());
+        properties.insert("app.config.value".to_string(), "flat".to_string());
+        let context = ExecutionContext::new(
+            Some(json!({"myVariable": 7})),
+            Some(json!({
+                "headers": {"x": "yes"},
+                "queryParams": {"page": "2"}
+            })),
+            Some(properties),
+        )
+        .unwrap();
+        let result =
+            execute_json_with_context(script, json!({"items": [{"id": 1}]}), context, false)
+                .unwrap();
+        assert_eq!(result["variableData"], json!(7));
+        assert_eq!(result["requestHeaders"]["x"], json!("yes"));
+        assert_eq!(result["queryParams"]["page"], json!("2"));
+        assert_eq!(result["environment"], json!("test"));
+        assert_eq!(result["canonical"], json!("test"));
+        assert_eq!(result["compatibility"], json!("test"));
+        assert_eq!(result["dotted"], json!("flat"));
+        assert_eq!(result["missing"], Value::Null);
+        assert_eq!(result["headerValue"], json!("yes"));
+        assert_eq!(result["lambda"][0]["prop"], json!("test"));
+        assert_eq!(result["doBlock"]["nested"], json!("2"));
+        assert_eq!(result["matched"]["prop"], json!("test"));
+        assert_eq!(result["propertyMap"]["env"], json!("test"));
     }
 
     #[test]

@@ -5,6 +5,8 @@ type AnalyzeRequest = {
   expression: string;
   payload?: JsonValue;
   vars?: JsonValue;
+  attributes?: JsonValue;
+  properties?: Record<string, string>;
 };
 
 type AnalyzeResult = {
@@ -16,7 +18,9 @@ type AnalyzeResult = {
 };
 
 type ExecuteRequest = {
+  attributes?: JsonValue;
   payload?: JsonValue;
+  properties?: Record<string, string>;
   render_output?: boolean;
   script: string;
   vars?: JsonValue;

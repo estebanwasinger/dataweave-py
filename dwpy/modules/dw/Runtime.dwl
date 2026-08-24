@@ -1499,6 +1499,15 @@ fun props(): Dictionary<String> = native("system::props")
 fun prop(propertyName: String): String | Null = props()[propertyName]
 
 /**
+* Returns a configuration, system, or environment property by name.
+*
+* Supplied execution properties take precedence over host properties in the
+* embedded runtimes.
+*/
+@RuntimePrivilege(requires = "Properties")
+fun p(propertyName: String): String | Null = prop(propertyName)
+
+/**
 *
 * Returns the DataWeave version that is currently running.
 *
