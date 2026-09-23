@@ -23,6 +23,11 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v3
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
       - name: Bump version with uv
         run: uv version --bump "${{ github.event.inputs.bump_type }}"
 
@@ -35,11 +40,17 @@ jobs:
           NEW_VERSION=$(python -c "import tomllib, pathlib; data = tomllib.loads(pathlib.Path('pyproject.toml').read_text()); print(data['project']['version'])")
           echo "value=$NEW_VERSION" >> "$GITHUB_OUTPUT"
 
+      - name: Update WASM npm package version
+        working-directory: packages/dataweave-wasm
+        env:
+          NEW_VERSION: ${{ steps.version.outputs.value }}
+        run: npm version "$NEW_VERSION" --no-git-tag-version --allow-same-version
+
       - name: Commit changes
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add pyproject.toml uv.lock
+          git add pyproject.toml uv.lock packages/dataweave-wasm/package.json
           git commit -m "chore(release): bump version to ${{ steps.version.outputs.value }}"
 
       - name: Push changes

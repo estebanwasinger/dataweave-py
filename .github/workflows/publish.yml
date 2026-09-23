@@ -7,29 +7,61 @@ on:
   workflow_dispatch:
     inputs:
       publish_target:
-        description: "Select PyPI repository"
+        description: "Publish the current Python package to TestPyPI"
         type: choice
-        default: pypi
+        default: testpypi
         options:
-          - pypi
           - testpypi
+
 concurrency:
-  group: publish-${{ github.ref }}
+  group: publish-packages-${{ github.repository }}
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
+  resolve-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      next_version: ${{ steps.resolve.outputs.next_version }}
+      publish_target: ${{ steps.resolve.outputs.publish_target }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'release' && github.event.repository.default_branch || github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate release version
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: >-
+          python scripts/release_version.py resolve
+          --event-name "$EVENT_NAME"
+          --release-tag "$RELEASE_TAG"
+          --pyproject pyproject.toml
+
   build-sdist:
     runs-on: ubuntu-latest
+    needs: resolve-version
     permissions:
       contents: read
     env:
       UV_CACHE_DIR: .uv-cache
       DWPY_DATAWEAVE_DOCS: docs-dataweave/modules/ROOT/pages
     steps:
-      - name: Checkout repository
+      - name: Check out source
         uses: actions/checkout@v4
 
-      - name: Checkout official DataWeave docs examples
+      - name: Check out official DataWeave docs examples
         uses: actions/checkout@v4
         with:
           repository: mulesoft/docs-dataweave
@@ -51,10 +83,20 @@ jobs:
           restore-keys: |
             uv-${{ runner.os }}-
 
+      - name: Set package version from release
+        env:
+          RELEASE_VERSION: ${{ needs.resolve-version.outputs.version }}
+        run: |
+          CURRENT_VERSION="$(uv version --short)"
+          if [ "$CURRENT_VERSION" != "$RELEASE_VERSION" ]; then
+            uv version "$RELEASE_VERSION"
+          fi
+          uv lock
+
       - name: Sync dependencies
         run: uv sync --extra dev
 
-      - name: Run tests
+      - name: Run Python tests
         run: uv run --extra dev python -m pytest
 
       - name: Clean distribution directory
@@ -76,6 +118,7 @@ jobs:
   build-wheels:
     name: Build wheel (${{ matrix.platform.artifact }})
     runs-on: ${{ matrix.platform.os }}
+    needs: resolve-version
     permissions:
       contents: read
     strategy:
@@ -103,7 +146,7 @@ jobs:
             interpreter: python
             artifact: windows-x86_64
     steps:
-      - name: Checkout repository
+      - name: Check out source
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -111,7 +154,20 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: Setup QEMU
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Set package version from release
+        env:
+          RELEASE_VERSION: ${{ needs.resolve-version.outputs.version }}
+        shell: bash
+        run: |
+          CURRENT_VERSION="$(uv version --short)"
+          if [ "$CURRENT_VERSION" != "$RELEASE_VERSION" ]; then
+            uv version "$RELEASE_VERSION"
+          fi
+
+      - name: Set up QEMU
         if: runner.os == 'Linux' && matrix.platform.target != 'x86_64-unknown-linux-gnu'
         uses: docker/setup-qemu-action@v3
 
@@ -130,9 +186,10 @@ jobs:
           path: dist/*.whl
           if-no-files-found: error
 
-  publish:
+  publish-python:
     runs-on: ubuntu-latest
     needs:
+      - resolve-version
       - build-sdist
       - build-wheels
     environment: pypi
@@ -140,15 +197,6 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - name: Determine publish target
-        id: target
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "value=${{ github.event.inputs.publish_target }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "value=pypi" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Download distributions
         uses: actions/download-artifact@v4
         with:
@@ -156,14 +204,177 @@ jobs:
           merge-multiple: true
 
       - name: Publish to TestPyPI
-        if: steps.target.outputs.value == 'testpypi'
+        if: needs.resolve-version.outputs.publish_target == 'testpypi'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
           skip-existing: true
 
       - name: Publish to PyPI
-        if: steps.target.outputs.value == 'pypi'
+        if: needs.resolve-version.outputs.publish_target == 'pypi'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           skip-existing: true
+
+  build-wasm:
+    runs-on: ubuntu-latest
+    needs: resolve-version
+    if: github.event_name == 'release'
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@v0.4.0
+
+      - name: Set npm package version from release
+        working-directory: packages/dataweave-wasm
+        env:
+          RELEASE_VERSION: ${{ needs.resolve-version.outputs.version }}
+        run: npm version "$RELEASE_VERSION" --no-git-tag-version --allow-same-version
+
+      - name: Build Node WASM package
+        run: wasm-pack build crates/dwpy-wasm --release --target nodejs --out-dir ../../packages/dataweave-wasm/dist
+
+      - name: Remove generated ignore file
+        run: rm -f packages/dataweave-wasm/dist/.gitignore
+
+      - name: Run WASM package tests
+        working-directory: packages/dataweave-wasm
+        run: npm test
+
+      - name: Upload WASM package
+        uses: actions/upload-artifact@v4
+        with:
+          name: dataweave-wasm
+          path: packages/dataweave-wasm
+          if-no-files-found: error
+
+  publish-wasm:
+    runs-on: ubuntu-latest
+    needs:
+      - resolve-version
+      - build-wasm
+    if: github.event_name == 'release'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download WASM package
+        uses: actions/download-artifact@v4
+        with:
+          name: dataweave-wasm
+          path: packages/dataweave-wasm
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://npm.pkg.github.com
+          scope: "@estebanwasinger"
+
+      - name: Check whether this version is already published
+        id: existing
+        working-directory: packages/dataweave-wasm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ needs.resolve-version.outputs.version }}
+        run: |
+          if npm view "@estebanwasinger/dataweave-wasm@$RELEASE_VERSION" version --registry=https://npm.pkg.github.com >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish WASM package
+        if: steps.existing.outputs.exists == 'false'
+        working-directory: packages/dataweave-wasm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm publish
+
+      - name: Report existing WASM package version
+        if: steps.existing.outputs.exists == 'true'
+        env:
+          RELEASE_VERSION: ${{ needs.resolve-version.outputs.version }}
+        run: echo "WASM version $RELEASE_VERSION is already published; skipping duplicate publish."
+
+  bump-version:
+    runs-on: ubuntu-latest
+    needs:
+      - resolve-version
+      - publish-python
+      - publish-wasm
+    if: github.event_name == 'release'
+    permissions:
+      contents: write
+    steps:
+      - name: Check out default branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Choose a non-decreasing next version
+        id: version
+        env:
+          RELEASE_NEXT_VERSION: ${{ needs.resolve-version.outputs.next_version }}
+        run: >-
+          python scripts/release_version.py prepare-bump
+          --release-next-version "$RELEASE_NEXT_VERSION"
+          --pyproject pyproject.toml
+          --npm-package packages/dataweave-wasm/package.json
+
+      - name: Update package versions and lockfile
+        env:
+          NEXT_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          uv version "$NEXT_VERSION"
+          uv lock
+
+      - name: Update npm package version
+        working-directory: packages/dataweave-wasm
+        env:
+          NEXT_VERSION: ${{ steps.version.outputs.version }}
+        run: npm version "$NEXT_VERSION" --no-git-tag-version --allow-same-version
+
+      - name: Commit and push version update
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if git diff --quiet -- pyproject.toml uv.lock packages/dataweave-wasm/package.json; then
+            echo "Package manifests already match the next version."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml uv.lock packages/dataweave-wasm/package.json
+          NEXT_VERSION="$(uv version --short)"
+          git commit -m "chore(release): bump version to $NEXT_VERSION"
+          git push origin "HEAD:$DEFAULT_BRANCH"

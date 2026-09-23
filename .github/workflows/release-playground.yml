@@ -4,6 +4,10 @@ on:
   push:
     branches:
       - main
+    paths-ignore:
+      - pyproject.toml
+      - uv.lock
+      - packages/dataweave-wasm/package.json
   workflow_dispatch:
   workflow_run:
     workflows:
