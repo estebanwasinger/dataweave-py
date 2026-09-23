@@ -2,7 +2,7 @@
 
 use serde_json::Map;
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
 mod builtins;
@@ -51,8 +51,8 @@ use evaluator::{
     evaluate_using_expression_scoped,
 };
 use functions::{
-    evaluate_header_declarations, function_reference, is_function_name, lambda_value_from_source,
-    resolve_type_source,
+    evaluate_header_declarations, function_reference, header_reference_sources,
+    is_function_name, lambda_value_from_source, resolve_type_source,
 };
 use json::json_output_options;
 use literals::{
@@ -591,6 +591,56 @@ fn reference_path_exists(payload: &Value, path: &str) -> bool {
 }
 
 fn extract_reference_paths(expression: &str) -> Vec<String> {
+    let mut references = scan_script_reference_paths(expression, &BTreeSet::new());
+    references.sort();
+    references.dedup();
+    references
+}
+
+fn scan_script_reference_paths(
+    expression: &str,
+    inherited_bindings: &BTreeSet<String>,
+) -> Vec<String> {
+    let parsed_script = script::split_script(expression);
+    let mut references = Vec::new();
+    let declaration_sources = header_reference_sources(&parsed_script.header);
+    let mut local_bindings = inherited_bindings.clone();
+    local_bindings.extend(
+        declaration_sources
+            .iter()
+            .map(|declaration| declaration.binding.clone()),
+    );
+    for declaration in declaration_sources {
+        let mut local_scope = local_bindings.clone();
+        local_scope.extend(declaration.parameters);
+        references.extend(scan_reference_paths(&declaration.source, &local_scope));
+    }
+
+    let body_source = if parsed_script.header.is_empty() {
+        parsed_script
+            .output_directive
+            .as_deref()
+            .map(|directive| {
+                parsed_script
+                    .body
+                    .lines()
+                    .filter(|line| {
+                        line.trim()
+                            .strip_prefix("output ")
+                            .is_none_or(|candidate| candidate.trim() != directive)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+    } else {
+        None
+    };
+    let body = body_source.as_deref().unwrap_or(&parsed_script.body);
+    references.extend(scan_reference_paths(body, &local_bindings));
+    references
+}
+
+fn scan_reference_paths(expression: &str, local_bindings: &BTreeSet<String>) -> Vec<String> {
     let mut references = Vec::new();
     let chars = expression.char_indices().collect::<Vec<_>>();
     let mut position = 0;
@@ -674,7 +724,29 @@ fn extract_reference_paths(expression: &str) -> Vec<String> {
         let path = &expression[start..end];
         let following = expression[end..].trim_start();
         let root = path.split('.').next().unwrap_or(path);
-        if path.contains('.') || (!following.starts_with('(') && !is_reference_keyword(root)) {
+        if path == "do" {
+            let opening_brace = end + expression[end..].len() - following.len();
+            if expression[opening_brace..].starts_with('{') {
+                if let Some(close) = find_matching_delimiter(expression, opening_brace, '{', '}') {
+                    references.extend(scan_script_reference_paths(
+                        &expression[opening_brace + 1..close],
+                        local_bindings,
+                    ));
+                    while position < chars.len() && chars[position].0 <= close {
+                        position += 1;
+                    }
+                    continue;
+                }
+            }
+        }
+        let is_object_key = !path.contains('.')
+            && following.starts_with(':')
+            && !following.starts_with("::");
+        if !local_bindings.contains(root)
+            && !follows_type_operator(expression, start)
+            && !is_object_key
+            && (path.contains('.') || (!following.starts_with('(') && !is_reference_keyword(root)))
+        {
             references.push(path.to_string());
         }
     }
@@ -690,6 +762,14 @@ fn is_reference_identifier_start(character: char) -> bool {
 
 fn is_reference_identifier_continue(character: char) -> bool {
     character == '_' || character.is_alphanumeric()
+}
+
+fn follows_type_operator(expression: &str, identifier_start: usize) -> bool {
+    expression[..identifier_start]
+        .trim_end()
+        .rsplit(|character: char| !is_reference_identifier_continue(character))
+        .next()
+        .is_some_and(|identifier| matches!(identifier, "as" | "is"))
 }
 
 fn is_reference_keyword(identifier: &str) -> bool {
@@ -2119,6 +2199,9 @@ fn resolve_update_index(index: i64, len: usize) -> Option<usize> {
 pub(crate) fn as_dataweave_string(value: &Value) -> String {
     if let Some(formatted) = metadata_formatted_string(value) {
         return formatted;
+    }
+    if let Some(text) = periods::special_string_value(value) {
+        return text;
     }
     if let Some(value) = unwrap_metadata_value(value) {
         return as_dataweave_string(&value);

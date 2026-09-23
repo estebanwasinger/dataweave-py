@@ -12,6 +12,12 @@ const LAMBDA_PARAMS: &str = "params";
 const LAMBDA_BODY: &str = "body";
 const LAMBDA_CAPTURES: &str = "captures";
 
+pub(crate) struct HeaderReferenceSource {
+    pub(crate) binding: String,
+    pub(crate) parameters: Vec<String>,
+    pub(crate) source: String,
+}
+
 pub(crate) fn evaluate_header_declarations(
     header: &str,
     payload: &Value,
@@ -123,6 +129,51 @@ fn collect_header_declarations(header: &str) -> Vec<String> {
     }
 
     declarations
+}
+
+pub(crate) fn header_reference_sources(header: &str) -> Vec<HeaderReferenceSource> {
+    collect_header_declarations(header)
+        .into_iter()
+        .filter_map(|declaration| {
+            let declaration = declaration.trim();
+            if let Some(variable) = declaration.strip_prefix("var ") {
+                let (name_source, value_source) = split_top_level_char(variable, '=')
+                    .or_else(|| split_header_var_without_equals(variable))?;
+                let name = name_source.split(':').next()?.trim();
+                return is_identifier(name).then(|| HeaderReferenceSource {
+                    binding: name.to_string(),
+                    parameters: Vec::new(),
+                    source: value_source.trim().to_string(),
+                });
+            }
+
+            let function = declaration.strip_prefix("fun ")?;
+            let open = function.find('(')?;
+            let name = strip_generic_function_type_parameters(function[..open].trim());
+            if !is_identifier(name) {
+                return None;
+            }
+            let close = find_matching_delimiter(function, open, '(', ')')?;
+            let parameters = split_top_level(&function[open + 1..close], ',')
+                .into_iter()
+                .filter(|parameter| !parameter.trim().is_empty())
+                .filter_map(|parameter| {
+                    function_param_value(parameter)
+                        .ok()?
+                        .get("name")?
+                        .as_str()
+                        .map(ToString::to_string)
+                })
+                .collect();
+            let after_parameters = function[close + 1..].trim();
+            let (_, body) = split_top_level_char(after_parameters, '=')?;
+            Some(HeaderReferenceSource {
+                binding: name.to_string(),
+                parameters,
+                source: body.trim().to_string(),
+            })
+        })
+        .collect()
 }
 
 #[derive(Default)]
