@@ -197,9 +197,16 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - name: Download distributions
+      - name: Download source distribution
         uses: actions/download-artifact@v4
         with:
+          name: sdist
+          path: dist
+
+      - name: Download wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
           path: dist
           merge-multiple: true
 
