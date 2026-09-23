@@ -618,6 +618,17 @@ fn extract_reference_paths(expression: &str) -> Vec<String> {
             continue;
         }
 
+        if character == '|' {
+            position += 1;
+            while position < chars.len() && chars[position].1 != '|' {
+                position += 1;
+            }
+            if position < chars.len() {
+                position += 1;
+            }
+            continue;
+        }
+
         if !is_reference_identifier_start(character) {
             position += 1;
             continue;
