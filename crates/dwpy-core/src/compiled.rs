@@ -256,7 +256,10 @@ fn compile_sequence(source: &str, allow_expression_source: bool) -> Option<Compi
 
 fn compile_reducer(source: &str) -> Option<(CompiledReducer, Option<String>)> {
     let source = strip_wrapping_parens(source.trim());
-    let (parameters_source, body) = split_top_level_arrow(source)?;
+    let Some((parameters_source, body)) = split_top_level_arrow(source) else {
+        let expression = compile_fast_expr(source, "$", "$$")?;
+        return Some((CompiledReducer { expression }, None));
+    };
     let parameters_source = strip_wrapping_parens(parameters_source.trim());
     let parameters = crate::syntax::split_top_level(parameters_source, ',');
     let first = parameters.first()?.trim();
@@ -963,6 +966,18 @@ fn fast_number_result(value: f64) -> Result<FastValue, DwError> {
         Ok(FastValue::Number(value))
     } else {
         Err(DwError::InvalidJson(value.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{compile_body, CompiledBody};
+
+    #[test]
+    fn compiles_implicit_reduce_expression() {
+        let body = compile_body("1 to 1000000 reduce $ + $$")
+            .expect("implicit reduce expression should use the compiled path");
+        assert!(matches!(body, CompiledBody::Reduce { .. }));
     }
 }
 

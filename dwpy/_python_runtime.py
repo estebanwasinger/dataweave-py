@@ -2768,6 +2768,11 @@ class DataWeaveRuntime:
         has_default, accumulator = self._reduce_default_accumulator(function)
         if not iterable:
             return accumulator if has_default else None
+        if not has_default and self._is_implicit_integer_sum_reducer(function):
+            if all(type(item) is int for item in iterable):
+                absolute_sum = sum(map(abs, iterable))
+                if absolute_sum <= 2**53:
+                    return sum(iterable)
         start_index = 0
         if not has_default:
             accumulator = iterable[0]
@@ -2775,6 +2780,26 @@ class DataWeaveRuntime:
         for item in iterable[start_index:]:
             accumulator = builtins.invoke_lambda(function, item, accumulator)
         return accumulator
+
+    @staticmethod
+    def _is_implicit_integer_sum_reducer(function: Any) -> bool:
+        if not isinstance(function, ImplicitLambdaCallable):
+            return False
+        body = function.body
+        if not (
+            isinstance(body, parser.FunctionCall)
+            and isinstance(body.function, parser.Identifier)
+            and body.function.name == "_binary_plus"
+            and len(body.arguments) == 2
+        ):
+            return False
+        left, right = body.arguments
+        return (
+            isinstance(left, parser.Placeholder)
+            and left.level == 1
+            and isinstance(right, parser.Placeholder)
+            and right.level == 2
+        )
 
     def _reduce_default_accumulator(self, function: Callable[..., Any]) -> Tuple[bool, Any]:
         parameters = getattr(function, "parameters", None)
