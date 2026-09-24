@@ -3347,6 +3347,13 @@ class DataWeaveRuntime:
             coerced: int | float = 1 if value else 0
         elif isinstance(value, (int, float)) and not isinstance(value, bool):
             coerced = int(value) if float(value).is_integer() else float(value)
+        elif isinstance(value, datetime):
+            if value.utcoffset() is None:
+                raise TypeError(f"Cannot coerce {type(value).__name__} to Number")
+            utc_value = value.astimezone(timezone.utc)
+            epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+            elapsed = utc_value - epoch
+            coerced = elapsed.days * 86_400 + elapsed.seconds
         elif isinstance(value, str):
             text = value.strip()
             if not text:

@@ -743,9 +743,20 @@ fn coerce_number(value: &Value) -> Result<Value, DwError> {
             })?;
             number_result(number)
         }
-        _ => Err(DwError::UnsupportedFeature(format!(
-            "cannot coerce {value:?} to Number"
-        ))),
+        _ => {
+            if let Some(temporal) = temporal_from_value(value) {
+                if temporal.kind == "datetime" {
+                    if let Some((epoch_seconds, _)) =
+                        parse_datetime_epoch_seconds(&temporal.value)
+                    {
+                        return Ok(Value::Number(epoch_seconds.into()));
+                    }
+                }
+            }
+            Err(DwError::UnsupportedFeature(format!(
+                "cannot coerce {value:?} to Number"
+            )))
+        }
     }
 }
 
