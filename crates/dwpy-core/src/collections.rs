@@ -2019,6 +2019,9 @@ fn parse_static_object_key(source: &str) -> Option<&str> {
         .strip_prefix('"')
         .and_then(|inner| inner.strip_suffix('"'))
     {
+        if contains_object_key_interpolation(inner) {
+            return None;
+        }
         if matches!(inner, "$" | "$$" | "$$$") {
             return None;
         }
@@ -2028,6 +2031,9 @@ fn parse_static_object_key(source: &str) -> Option<&str> {
         .strip_prefix('\'')
         .and_then(|inner| inner.strip_suffix('\''))
     {
+        if contains_object_key_interpolation(inner) {
+            return None;
+        }
         if matches!(inner, "$" | "$$" | "$$$") {
             return None;
         }
@@ -2037,6 +2043,25 @@ fn parse_static_object_key(source: &str) -> Option<&str> {
         return None;
     }
     Some(source)
+}
+
+fn contains_object_key_interpolation(source: &str) -> bool {
+    let mut chars = source.char_indices().peekable();
+    while let Some((_, ch)) = chars.next() {
+        if ch == '\\' {
+            chars.next();
+            continue;
+        }
+        if ch != '$' {
+            continue;
+        }
+        match chars.peek().map(|(_, next)| *next) {
+            Some('(' | '$') | None => return true,
+            Some(next) if next.is_ascii_alphabetic() || next == '_' => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 fn parse_simple_path<'a>(

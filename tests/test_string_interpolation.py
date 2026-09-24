@@ -234,6 +234,32 @@ output application/json
     assert result == {"/dev/chat-db/db-api-username": "chat"}
 
 
+@pytest.mark.parametrize("backend", ["python", "rust", "wasm"])
+def test_interpolated_object_key_inside_map(backend, monkeypatch):
+    """Interpolated keys in mapped object literals must evaluate per item."""
+    monkeypatch.delenv("DWPY_TEST_BACKEND", raising=False)
+    monkeypatch.delenv("DWPY_BACKEND", raising=False)
+    try:
+        runtime = PythonResultRuntime(backend=backend)
+    except RuntimeError as error:
+        if backend == "wasm":
+            pytest.skip(str(error))
+        raise
+
+    assert runtime.active_backend == backend
+    result = runtime.execute(
+        '''%dw 2.0
+output application/json
+---
+1 to 2 map {
+    "$($)" : $
+}
+''',
+        {},
+    )
+    assert result == [{"1": 1}, {"2": 2}]
+
+
 def test_interpolation_with_concatenation(runtime):
     """Test interpolation with string concatenation."""
     result = runtime.execute(
@@ -258,4 +284,3 @@ output application/json
         {"price": 19.99},
     )
     assert result == "Price: 19.99"
-
