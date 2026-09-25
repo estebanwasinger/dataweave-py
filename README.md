@@ -1,6 +1,6 @@
-# DataWeave-Py
+# DataWeave OSS
 
-A DataWeave data transformation runtime with a Rust-native engine package and a Python bridge, providing powerful data transformation capabilities without requiring the JVM.
+A DataWeave data transformation runtime with a Rust-native engine package, python and WASM , providing powerful data transformation capabilities without requiring the JVM.
 
 Install from PyPI:
 
