@@ -86,6 +86,14 @@ jobs:
             cargo install wasm-pack --version "$WASM_PACK_VERSION" --locked
           fi
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build Node.js WASM package for Python tests
+        run: wasm-pack build crates/dwpy-wasm --release --target nodejs --out-dir ../../packages/dataweave-wasm/dist
+
       - name: Sync Python dependencies
         run: uv sync --extra dev
 
@@ -168,11 +176,6 @@ jobs:
           output_path = Path("playground/public/wasm/dataweave-build.json")
           output_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
           PY
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
 
       - name: Build playground
         working-directory: playground

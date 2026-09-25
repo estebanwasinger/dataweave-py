@@ -72,6 +72,19 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Set up Rust for WASM tests
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Set up Node.js for WASM tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@v0.4.0
+
       - name: Install uv
         uses: astral-sh/setup-uv@v3
 
@@ -95,6 +108,9 @@ jobs:
 
       - name: Sync dependencies
         run: uv sync --extra dev
+
+      - name: Build Node WASM package for Python tests
+        run: wasm-pack build crates/dwpy-wasm --release --target nodejs --out-dir ../../packages/dataweave-wasm/dist
 
       - name: Run Python tests
         run: uv run --extra dev python -m pytest
