@@ -773,6 +773,8 @@ class DataWeaveRuntime:
             value = self._evaluate(expr.expression, ctx)
             options = self._evaluate(expr.options, ctx) if expr.options else None
             return self._coerce_value(value, expr.target, options, ctx)
+        if isinstance(expr, parser.TypeCheck):
+            return self._evaluate_type_check(self._evaluate(expr.expression, ctx), expr.target, ctx)
         if isinstance(expr, parser.UpdateExpression):
             return self._evaluate_update_expression(expr, ctx)
         raise TypeError(f"Unsupported expression: {expr!r}")
@@ -1500,6 +1502,14 @@ class DataWeaveRuntime:
             return None
 
         size = len(base)
+        if isinstance(base, str):
+            resolved_start = start_index if start_index >= 0 else size + start_index
+            resolved_end = end_index if end_index >= 0 else size + end_index
+            if resolved_end >= resolved_start:
+                indexes = range(max(resolved_start, 0), min(resolved_end, size - 1) + 1)
+            else:
+                indexes = range(min(resolved_start, size - 1), max(resolved_end, 0) - 1, -1)
+            return "".join(base[idx] for idx in indexes)
         resolved_start = self._normalise_sequence_index(start_index, size)
         resolved_end = self._normalise_sequence_index(end_index, size)
         if resolved_start is None or resolved_end is None:
@@ -1507,8 +1517,6 @@ class DataWeaveRuntime:
 
         step = 1 if resolved_end >= resolved_start else -1
         selected = [base[idx] for idx in range(resolved_start, resolved_end + step, step)]
-        if isinstance(base, str):
-            return "".join(selected)
         return selected
 
     @staticmethod
@@ -2977,6 +2985,9 @@ class DataWeaveRuntime:
                 if node.options is not None:
                     visit(node.options)
                 return
+            if isinstance(node, parser.TypeCheck):
+                visit(node.expression)
+                return
 
         visit(expr)
         return placeholders
@@ -3323,6 +3334,41 @@ class DataWeaveRuntime:
         if len(spec) == 1 and spec.isupper():
             return True
         return True
+
+    def _evaluate_type_check(
+        self, value: Any, type_spec: parser.TypeSpec, ctx: EvaluationContext
+    ) -> bool:
+        if isinstance(type_spec, parser.UnionTypeSpec):
+            return any(self._evaluate_type_check(value, option, ctx) for option in type_spec.options)
+        if isinstance(type_spec, parser.IntersectionTypeSpec):
+            return all(self._evaluate_type_check(value, option, ctx) for option in type_spec.options)
+        if not isinstance(type_spec, parser.ReferenceTypeSpec):
+            return False
+        for definition in ctx.header.types:
+            if definition.name == type_spec.name:
+                return self._evaluate_type_check(value, definition.type, ctx)
+        type_name = type_spec.name.lower()
+        if type_name == "number":
+            return isinstance(value, (int, float)) and not isinstance(value, bool)
+        if type_name in {"any", "null", "object", "array", "string", "boolean"}:
+            return self._matches_type_annotation(value, type_spec)
+        if type_name == "nothing":
+            return False
+        if type_name in {"key", "cdata"}:
+            return isinstance(value, str)
+        if type_name == "binary":
+            return isinstance(value, (bytes, bytearray))
+        if type_name == "date":
+            return isinstance(value, date) and not isinstance(value, datetime)
+        if type_name in {"datetime", "localdatetime"}:
+            return isinstance(value, datetime)
+        if type_name in {"time", "localtime"}:
+            return isinstance(value, time)
+        if type_name == "period":
+            return isinstance(value, (timedelta, builtins.DWPeriod))
+        if type_name == "function":
+            return callable(value)
+        return False
 
     def _coerce_value(
         self,

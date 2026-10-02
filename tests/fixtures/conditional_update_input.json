@@ -1,0 +1,24 @@
+[
+  {
+    "id": "1d2bed81-90d1-4e0a-b98e-e502be57baf6",
+    "role": "user",
+    "content": "find me 1 closed deal with a standard CPI field from the portfolio report, with a standard rent bump structure",
+    "tool_calls": null,
+    "tool_call_id": null,
+    "reasoning_summary": null,
+    "timestamp": "2026-10-02T14:08:35.216994",
+    "ended_at": null,
+    "memory_citations": null
+  },
+  {
+    "id": null,
+    "role": "tool",
+    "content": "Asset          |     Address      |    City     | State | Investment Closing Date | Rent Bump Type | Standard Lease | Annual Fixed Bump | CPI Reset Frequency (Years) | First CPI Reset (Year) | CPI Cap |                                   Lease Structure                                   \n------------------------+------------------+-------------+-------+-------------------------+----------------+---------------------+-------------------+-----------------------------+------------------------+---------+-------------------------------------------------------------------------------------\n Tapo Street Apartments | 2267 Tapo Street | Simi Valley | CA    | 2026-06-18              | CPI       | Yes                 |              0.02 |                          10 |                     19 |   0.035 | 2% annually. CPI reset every 10 years starting in year 19 capped at 3.5% compounded\n(1 row)",
+    "tool_calls": null,
+    "tool_call_id": "call_Dg0orJH40H8u1Ph1eRkcSSdj",
+    "reasoning_summary": null,
+    "timestamp": "2026-10-02T14:08:45.121510",
+    "ended_at": "2026-10-02T14:08:45.121510",
+    "memory_citations": null
+  }
+]

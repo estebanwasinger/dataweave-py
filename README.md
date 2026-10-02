@@ -398,6 +398,8 @@ DataWeave-Py currently supports a wide range of DataWeave language features:
 - ✅ Comparison (`==`, `!=`, `>`, `<`, `>=`, `<=`)
 - ✅ Logical (`and`, `or`, `not`)
 - ✅ Range (`to`)
+- ✅ Type checks (`content is String`)
+- ✅ Field updates (`item update { case content at .content -> ... }`), including conditional branches inside map lambdas
 
 ### Control Flow
 - ✅ Conditional expressions (`if-else`)

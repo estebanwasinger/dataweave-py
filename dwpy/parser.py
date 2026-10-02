@@ -112,6 +112,12 @@ class TypeCoercion(Expression):
 
 
 @dataclass
+class TypeCheck(Expression):
+    expression: "Expression"
+    target: TypeSpec
+
+
+@dataclass
 class LambdaExpression(Expression):
     parameters: List[Parameter]
     body: "Expression"
@@ -653,6 +659,12 @@ class Parser:
                 expr = FunctionCall(
                     function=Identifier(name=operator_name),
                     arguments=[expr, right],
+                )
+            elif token_type == "IDENT" and self.current()[1] == "is":
+                self.advance()
+                expr = TypeCheck(
+                    expression=expr,
+                    target=self._parse_type_spec(consume_metadata=False),
                 )
             else:
                 break

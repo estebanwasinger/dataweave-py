@@ -450,6 +450,8 @@ class TypeInferencer:
             )
         if isinstance(expr, parser.TypeCoercion):
             return self._type_from_spec(expr.target)
+        if isinstance(expr, parser.TypeCheck):
+            return BOOLEAN
         return ANY
 
     def _infer_object(self, expr: parser.ObjectLiteral, ctx: TypeInferenceContext) -> DWType:

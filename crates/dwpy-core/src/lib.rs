@@ -1061,7 +1061,9 @@ pub(crate) fn evaluate_expression_scoped(
         return evaluate_object_literal_scoped(&format!("{{{source}}}"), payload, locals);
     }
 
-    if let Some((left, right)) = split_top_level_keyword(source, "update") {
+    // An update after a lambda arrow belongs to the lambda body, even when
+    // its conditional branches are not wrapped in parentheses.
+    if let Some((left, _, right)) = split_top_level_keyword_or_call_operator(source, &["update"]) {
         let input = evaluate_expression_scoped(left, payload, locals)?;
         return evaluate_update_expression(&input, right, payload, locals);
     }
@@ -4878,6 +4880,47 @@ output application/python
             json!({
                 "/dev/chat-db/db-api-username": "chat"
             })
+        );
+    }
+
+    #[test]
+    fn evaluates_conditional_update_inside_unparenthesized_map_lambda() {
+        let script = r#"%dw 2.0
+output application/json
+---
+payload map (item) ->
+    if (item.role == "tool")
+        item update {
+            case content at .content ->
+                if (content is String)
+                    content[0 to 50]
+                else
+                    content
+        }
+    else
+        item
+"#;
+        let payload = json!([
+            {"role": "user", "content": "unchanged", "tool_calls": null},
+            {
+                "role": "tool",
+                "content": "Asset          |     Address      |    City     | State | Investment Closing Date",
+                "tool_call_id": "call-1"
+            },
+            {"role": "tool", "content": {"text": "unchanged"}},
+            {"role": "tool", "content": null}
+        ]);
+        let mut expected = payload.clone();
+        expected[1]["content"] = json!("Asset          |     Address      |    City     | S");
+
+        assert_eq!(
+            execute_json(script, payload.clone(), false).unwrap(),
+            expected
+        );
+        let rendered = execute_json(script, payload, true).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(rendered.as_str().unwrap()).unwrap(),
+            expected
         );
     }
 
