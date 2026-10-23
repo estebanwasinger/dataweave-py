@@ -467,7 +467,7 @@ fn rendered_text_output(directive: Option<&str>, render_output: bool) -> bool {
         || is_xml_mime(mime)
         || is_yaml_mime(mime)
         || is_markdown_mime(mime)
-        || matches!(mime, "text/plain" | "plain")
+        || matches!(mime, "text/plain" | "plain" | "text")
 }
 
 pub fn engine_capabilities() -> Vec<&'static str> {
@@ -4659,6 +4659,25 @@ fun advance(value) = value as Date + |P3D|
                 "multiline": "2026-10-29"
             })
         );
+    }
+
+    #[test]
+    fn renders_temporal_text_output_without_internal_markers() {
+        for mime in ["text", "text/plain", "plain"] {
+            for (expression, expected) in [
+                (r#""2026-10-26" as Date + |P3D|"#, "2026-10-29"),
+                ("|2026-10-26T12:34:56Z| + |P3D|", "2026-10-29T12:34:56Z"),
+                ("|12:34:56|", "12:34:56"),
+                ("|P3D|", "P3D"),
+                (r#""hello\nworld""#, "hello\nworld"),
+            ] {
+                let script = format!("%dw 2.0\noutput {mime}\n---\n{expression}");
+                assert_eq!(
+                    execute_json(&script, Value::Null, true).unwrap(),
+                    json!(expected)
+                );
+            }
+        }
     }
 
     #[test]

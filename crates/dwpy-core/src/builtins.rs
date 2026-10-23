@@ -323,7 +323,7 @@ pub(crate) fn read_format_with_options(
             }
             read_simple_csv(&text, separator, quote, header)
         }
-        "text/plain" | "plain" => Ok(Value::String(text)),
+        "text/plain" | "plain" | "text" => Ok(Value::String(text)),
         "application/octet-stream" | "octet-stream" => Ok(binary_value(text.into_bytes())),
         "multipart/form-data" => read_multipart_form_data(&text, content_type, options),
         "application/yaml" | "application/x-yaml" | "text/yaml" | "text/x-yaml" | "yaml"
@@ -515,12 +515,9 @@ pub(crate) fn write_format_with_options(
         "application/x-ndjson" | "application/x-ldjson" | "ndjson" => {
             crate::ndjson::render_ndjson_value(value, options).map(Value::String)
         }
-        "text/plain" | "plain" => match value {
-            Value::String(value) => Ok(Value::String(value.clone())),
-            _ => Err(DwError::UnsupportedFeature(
-                "Plain text writer expects a string value".to_string(),
-            )),
-        },
+        "text/plain" | "plain" | "text" => {
+            crate::output::render_plain_output(value).map(Value::String)
+        }
         "application/yaml" | "application/x-yaml" | "text/yaml" | "text/x-yaml" | "yaml"
         | "yml" => write_simple_yaml(value).map(Value::String),
         mime if crate::mime::is_markdown_mime(mime) => {

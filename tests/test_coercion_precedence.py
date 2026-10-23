@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 
 import pytest
 
@@ -77,3 +78,37 @@ fun advance(value) = value as Date + |P3D|
 def test_invalid_coercion_before_arithmetic_reports_error(runtime):
     with pytest.raises((TypeError, DataWeaveEvaluationError), match="(?i)number"):
         runtime.execute('"invalid" as Number + 3', {})
+
+
+@pytest.mark.parametrize("output_format", ["text", "text/plain", "plain"])
+@pytest.mark.parametrize(
+    ("expression", "expected"),
+    [
+        ('"2026-10-26" as Date + |P3D|', "2026-10-29"),
+        ('|2026-10-26T12:34:56Z| + |P3D|', "2026-10-29T12:34:56Z"),
+        ('|12:34:56|', "12:34:56"),
+        ('|P3D|', "P3D"),
+        ('"hello\\nworld"', "hello\nworld"),
+    ],
+)
+def test_text_output_renders_temporals(runtime, output_format, expression, expected):
+    script = f"%dw 2.0\noutput {output_format}\n---\n{expression}"
+    assert runtime.execute(script, {}) == expected
+
+
+def test_text_output_can_bypass_serialization(runtime):
+    script = '%dw 2.0\noutput text\n---\n"2026-10-26" as Date + |P3D|'
+    assert runtime.execute(script, {}, render_output=False) == date(2026, 10, 29)
+
+
+@pytest.mark.parametrize("output_format", ["text", "text/plain", "plain"])
+def test_write_temporal_text(runtime, output_format):
+    script = f'write("2026-10-26" as Date + |P3D|, "{output_format}")'
+    assert runtime.execute(script, {}) == "2026-10-29"
+
+
+@pytest.mark.parametrize("expression", ["{}", "[1, 2]", "42"])
+def test_text_output_rejects_non_text_values(runtime, expression):
+    script = f"%dw 2.0\noutput text\n---\n{expression}"
+    with pytest.raises(DataWeaveEvaluationError, match="Plain text writer expects"):
+        runtime.execute(script, {})

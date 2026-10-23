@@ -6,13 +6,14 @@ use crate::literals::evaluate_object_key;
 use crate::markdown::render_markdown_output;
 use crate::mime::{is_json_mime, is_markdown_mime, is_ndjson_mime, is_yaml_mime, output_mime};
 use crate::ndjson::render_ndjson_output;
+use crate::periods::special_string_value;
 use crate::selectors::unwrap_metadata_value;
 use crate::syntax::{
     find_matching_delimiter, split_top_level, split_top_level_char, strip_wrapping_parens,
 };
 use crate::xml::render_xml_output;
 use crate::yaml::render_yaml_output;
-use crate::{evaluate_expression_scoped, DwError};
+use crate::{as_dataweave_string, evaluate_expression_scoped, DwError};
 
 pub(crate) fn render_output_value(
     output_directive: Option<&str>,
@@ -51,16 +52,22 @@ pub(crate) fn render_output_value(
         if output_mime(directive).is_some_and(is_markdown_mime) {
             return render_markdown_output(&evaluated, directive).map(Value::String);
         }
-        if matches!(output_mime(directive), Some("text/plain" | "plain")) {
-            return match evaluated {
-                Value::String(text) => Ok(Value::String(text)),
-                other => Err(DwError::UnsupportedFeature(format!(
-                    "Plain text writer expects a string value, got {other:?}"
-                ))),
-            };
+        if matches!(output_mime(directive), Some("text/plain" | "plain" | "text")) {
+            return render_plain_output(&evaluated).map(Value::String);
         }
     }
     Ok(evaluated)
+}
+
+pub(crate) fn render_plain_output(value: &Value) -> Result<String, DwError> {
+    let unwrapped = unwrap_metadata_value(value);
+    let base = unwrapped.as_ref().unwrap_or(value);
+    if base.is_string() || special_string_value(base).is_some() {
+        return Ok(as_dataweave_string(value));
+    }
+    Err(DwError::UnsupportedFeature(format!(
+        "Plain text writer expects a string value or temporal value, got {base:?}"
+    )))
 }
 
 fn directive_contains_binary_writer(directive: &str) -> bool {

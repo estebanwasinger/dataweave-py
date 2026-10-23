@@ -653,7 +653,7 @@ fn is_core_candidate(script_source: &str) -> bool {
             };
             is_supported_yaml_output_line(line)
         }
-        Some("text/plain") | Some("plain") => true,
+        Some("text/plain") | Some("plain") | Some("text") => true,
         Some("markdown") | Some("md") | Some("text/markdown") | Some("text/x-markdown") => {
             let Some(line) = output_line else {
                 return false;

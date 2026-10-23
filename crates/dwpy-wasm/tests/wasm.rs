@@ -70,6 +70,19 @@ output application/json
 }
 
 #[wasm_bindgen_test]
+fn text_output_renders_date_as_text_instead_of_a_tagged_object() {
+    for mime in ["text", "text/plain", "plain"] {
+        assert_eq!(
+            execute(json!({
+                "script": format!("%dw 2.0\noutput {mime}\n---\n\"2026-10-26\" as Date + |P3D|"),
+                "payload": null
+            })),
+            json!("2026-10-29")
+        );
+    }
+}
+
+#[wasm_bindgen_test]
 fn object_selector_preserves_markdown_newlines_and_unicode() {
     assert_eq!(
         execute(json!({
