@@ -13,7 +13,8 @@
   ],
   "scripts": {
     "build": "wasm-pack build ../../crates/dwpy-wasm --target nodejs --out-dir ../../packages/dataweave-wasm/dist --release",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "test:rust": "bash ../../scripts/test_wasm_rust.sh"
   },
   "publishConfig": {
     "access": "restricted",

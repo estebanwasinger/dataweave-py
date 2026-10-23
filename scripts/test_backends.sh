@@ -22,6 +22,9 @@ run_python_suite() {
 
 overall_status=0
 
+echo "=== Rust tests inside WASM (Node.js) ==="
+bash scripts/test_wasm_rust.sh || overall_status=1
+
 run_python_suite python || overall_status=1
 run_python_suite rust || overall_status=1
 
@@ -30,6 +33,7 @@ echo "=== Building WASM package ==="
 PATH="$rust_bin:$PATH" \
   npm --prefix packages/dataweave-wasm run build
 
+npm --prefix packages/dataweave-wasm test || overall_status=1
 run_python_suite wasm || overall_status=1
 
 exit "$overall_status"

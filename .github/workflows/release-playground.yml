@@ -94,6 +94,12 @@ jobs:
       - name: Build Node.js WASM package for Python tests
         run: wasm-pack build crates/dwpy-wasm --release --target nodejs --out-dir ../../packages/dataweave-wasm/dist
 
+      - name: Run Rust tests inside WASM
+        run: bash scripts/test_wasm_rust.sh
+
+      - name: Run WASM package tests
+        run: npm --prefix packages/dataweave-wasm test
+
       - name: Sync Python dependencies
         run: uv sync --extra dev
 

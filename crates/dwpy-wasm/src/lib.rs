@@ -436,7 +436,8 @@ fn find_top_level_operator(source: &str, operators: &[&'static str]) -> Option<&
 mod tests {
     use super::{normalized_script_error_message, numeric_operator_from_script};
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn hides_rust_backend_prefix_for_numeric_type_errors() {
         let message = normalized_script_error_message(
             "expected number, got Array [Number(1), Number(2)]",
@@ -447,7 +448,8 @@ mod tests {
         assert!(message.contains("You called the function '*'"));
     }
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn finds_numeric_operator_from_script_body() {
         assert_eq!(
             numeric_operator_from_script("%dw 2.0\noutput application/json\n---\n(1 to 10) * 2"),
@@ -459,7 +461,8 @@ mod tests {
         );
     }
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn hides_rust_backend_prefix_for_unresolved_infix_errors() {
         let message = normalized_script_error_message(
             "some internal unresolved expression",
@@ -472,7 +475,8 @@ mod tests {
         );
     }
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn formats_missing_expression_for_dangling_collection_operator() {
         let message = normalized_script_error_message(
             "(1 to 10) reduce",
@@ -485,7 +489,8 @@ mod tests {
         );
     }
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn formats_unresolved_identifier_with_source_location() {
         let message = normalized_script_error_message(
             "b",

@@ -183,6 +183,20 @@ Run the Rust workspace tests:
 cargo test --workspace
 ```
 
+Run the WASM crate's Rust tests inside WebAssembly on Node.js:
+
+```bash
+bash scripts/test_wasm_rust.sh
+```
+
+This requires Node.js, `wasm-pack`, and the `wasm32-unknown-unknown` Rust
+target. It runs the WASM crate's unit tests and integration tests through
+`wasm-bindgen-test`, including execution, dependency analysis before execution,
+NDJSON errors, Unicode text output, and JWT signing. It does not run every
+core Rust unit test in WASM or validate Deno/browser host integration.
+Pass a test-name filter after `--` to focus a run, for example
+`bash scripts/test_wasm_rust.sh -- infix`.
+
 Run the Python suite against the Rust backend:
 
 ```bash
@@ -202,8 +216,9 @@ and Rust compiled to WASM:
 bash scripts/test_backends.sh
 ```
 
-The script rebuilds the WASM package before its test pass and preserves the
-individual pytest results. It accepts normal pytest arguments for focused
+The script also runs the Rust tests inside WASM and the Node.js package tests,
+rebuilds the WASM package before its test pass, and preserves the individual
+pytest results. It accepts normal pytest arguments for focused
 runs, for example:
 
 ```bash
