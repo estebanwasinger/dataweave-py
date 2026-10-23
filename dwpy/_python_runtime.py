@@ -1126,7 +1126,10 @@ class DataWeaveRuntime:
             if multi_value:
                 results: List[Any] = []
                 for _, value in matches:
-                    self._append_selector_value(results, value, expand_xml_list=True, expand_list=True)
+                    self._append_selector_value(
+                        results, value, expand_xml_list=True,
+                        expand_list=not isinstance(base, DWObject),
+                    )
                 return results or None
             value = matches[0][1]
             if isinstance(value, XMLNodeList):
@@ -1199,6 +1202,8 @@ class DataWeaveRuntime:
         return key
 
     def _matching_mapping_items(self, node: Mapping[str, Any], attribute: str) -> List[Tuple[str, Any]]:
+        if isinstance(node, DWObject):
+            return [(key, value) for key, value in node.items() if key == attribute]
         if isinstance(node, XMLNodeDict):
             matches: List[Tuple[str, Any]] = []
             for key, value in node.items():

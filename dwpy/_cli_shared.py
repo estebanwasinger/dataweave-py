@@ -6,7 +6,10 @@ from pathlib import Path
 from typing import Any, Optional
 
 from . import parser
-from .formats import DWObject, FormatRegistry, XMLNodeDict, XMLNodeList, _JSONEncoder
+from .formats import (
+    DWObject, FormatRegistry, XMLNodeDict, XMLNodeList, _JSONEncoder,
+    _json_object_from_pairs,
+)
 
 
 def infer_payload_format_from_path(path: str) -> Optional[str]:
@@ -26,7 +29,7 @@ def infer_payload_format_from_path(path: str) -> Optional[str]:
 
 def parse_inline_payload(value: str) -> Any:
     try:
-        return json.loads(value)
+        return json.loads(value, object_pairs_hook=_json_object_from_pairs)
     except json.JSONDecodeError:
         return value
 

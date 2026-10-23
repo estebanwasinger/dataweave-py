@@ -1,4 +1,5 @@
-use serde::Serialize;
+use serde::de::{MapAccess, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Map;
 use serde_json::Value;
 
@@ -6,10 +7,95 @@ use crate::builtins::{binary_bytes, DW_BINARY_MARKER, DW_NONFINITE_MARKER};
 use crate::mime::{is_json_mime, output_mime};
 use crate::periods::special_string_value;
 use crate::selectors::{
-    collapse_xml_like_value, duplicate_object_pairs, unwrap_metadata_value, DW_METADATA_MARKER,
-    DW_METADATA_VALUE_MARKER,
+    collapse_xml_like_value, duplicate_object_pairs, duplicate_object_value, unwrap_metadata_value,
+    DW_METADATA_MARKER, DW_METADATA_VALUE_MARKER,
 };
 use crate::{xml_list_items, DwError};
+
+/// Decode JSON objects before a map can discard repeated keys. Use the same
+/// ordered-pair representation as DataWeave object literals, including nested objects.
+pub(crate) fn read_json_value(text: &str) -> Result<Value, serde_json::Error> {
+    serde_json::from_str::<JsonInput>(text).map(|input| input.0)
+}
+
+struct JsonInput(Value);
+
+impl<'de> Deserialize<'de> for JsonInput {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct JsonVisitor;
+
+        impl<'de> Visitor<'de> for JsonVisitor {
+            type Value = JsonInput;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a JSON value")
+            }
+
+            fn visit_unit<E: serde::de::Error>(self) -> Result<JsonInput, E> {
+                Ok(JsonInput(Value::Null))
+            }
+
+            fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<JsonInput, E> {
+                Ok(JsonInput(Value::Bool(value)))
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<JsonInput, E> {
+                Ok(JsonInput(Value::Number(value.into())))
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<JsonInput, E> {
+                Ok(JsonInput(Value::Number(value.into())))
+            }
+
+            fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<JsonInput, E> {
+                serde_json::Number::from_f64(value)
+                    .map(|number| JsonInput(Value::Number(number)))
+                    .ok_or_else(|| E::custom("number out of range"))
+            }
+
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<JsonInput, E> {
+                Ok(JsonInput(Value::String(value.to_string())))
+            }
+
+            fn visit_string<E: serde::de::Error>(self, value: String) -> Result<JsonInput, E> {
+                Ok(JsonInput(Value::String(value)))
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<JsonInput, A::Error> {
+                let mut items = Vec::new();
+                while let Some(JsonInput(value)) = sequence.next_element()? {
+                    items.push(value);
+                }
+                Ok(JsonInput(Value::Array(items)))
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut object: A) -> Result<JsonInput, A::Error> {
+                let mut pairs = Vec::new();
+                let mut keys = std::collections::HashSet::new();
+                let mut has_duplicates = false;
+                while let Some(key) = object.next_key::<String>()? {
+                    // With arbitrary_precision, serde_json sends numbers through
+                    // MapAccess using this token instead of rounding through f64.
+                    if pairs.is_empty() && key == "$serde_json::private::Number" {
+                        let text = object.next_value::<String>()?;
+                        let number = text.parse().map_err(serde::de::Error::custom)?;
+                        return Ok(JsonInput(Value::Number(number)));
+                    }
+                    let JsonInput(value) = object.next_value::<JsonInput>()?;
+                    has_duplicates |= !keys.insert(key.clone());
+                    pairs.push((key, value));
+                }
+                Ok(JsonInput(if has_duplicates {
+                    duplicate_object_value(pairs)
+                } else {
+                    Value::Object(pairs.into_iter().collect())
+                }))
+            }
+        }
+
+        deserializer.deserialize_any(JsonVisitor)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct JsonOutputOptions {
@@ -366,5 +452,43 @@ fn parse_bool_option(value: &str, name: &str) -> Result<bool, DwError> {
         _ => Err(DwError::UnsupportedFeature(format!(
             "Boolean output option {name}={value}"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn json_reader_preserves_repeated_keys_at_every_depth() {
+        let payload = read_json_value(
+            r#"{"test":{"test2":{"array":1},"test2":{"array":2},"test2":{"array":3}}}"#,
+        )
+        .unwrap();
+        let result = crate::execute_json("payload.test.*test2", payload, false).unwrap();
+        assert_eq!(result, serde_json::json!([
+            {"array": 1}, {"array": 2}, {"array": 3}
+        ]));
+    }
+
+    #[test]
+    fn json_reader_matches_standard_decoder_for_unique_keys_and_scalars() {
+        for input in [
+            r#"{"values":[null,true,false,-1,18446744073709551615,1.25,1e30,"caf\u00e9"],"empty":{}}"#,
+            "[]", "null", "42", "-1.5", "true", r#""hello""#,
+            "1.234567890123456789", "18446744073709551616",
+        ] {
+            assert_eq!(
+                read_json_value(input).unwrap(),
+                serde_json::from_str::<serde_json::Value>(input).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn json_reader_rejects_invalid_syntax_and_trailing_content() {
+        for input in [r#"{"a":1,"a":}"#, r#"{"a":1,"a":2} trailing"#, "[1,]"] {
+            assert!(read_json_value(input).is_err());
+        }
     }
 }

@@ -216,7 +216,12 @@ def _json_reader(value: Any, options: Dict[str, Any]) -> Any:
     if isinstance(value, (dict, list)):
         return value
     text = _ensure_text(value, options)
-    return json.loads(text)
+    return json.loads(text, object_pairs_hook=_json_object_from_pairs)
+
+
+def _json_object_from_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result = dict(pairs)
+    return DWObject(pairs) if len(result) != len(pairs) else result
 
 
 def _json_writer(value: Any, options: Dict[str, Any]) -> str:
@@ -246,7 +251,7 @@ def _ndjson_reader(value: Any, options: Dict[str, Any]) -> Any:
         if not line.strip() and ignore_empty_line:
             continue
         try:
-            records.append(json.loads(line))
+            records.append(json.loads(line, object_pairs_hook=_json_object_from_pairs))
         except json.JSONDecodeError as err:
             if skip_invalid:
                 continue

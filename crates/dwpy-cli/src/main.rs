@@ -208,5 +208,6 @@ fn infer_payload_format_from_path(path: &str) -> Option<String> {
 }
 
 fn parse_inline_json_payload(payload: String) -> Value {
-    serde_json::from_str(&payload).unwrap_or(Value::String(payload))
+    dwpy_core::parse_payload_format(Value::String(payload.clone()), Some("application/json"))
+        .unwrap_or(Value::String(payload))
 }

@@ -9,6 +9,22 @@ import pytest
 from dwpy import cli
 
 
+@pytest.mark.parametrize("payload_source", ["inline", "file"])
+def test_cli_preserves_duplicate_json_keys(payload_source, tmp_path, capsys):
+    payload = '{"test":{"test2":{"array":1},"test2":{"array":2},"test2":{"array":3}}}'
+    args = ["run", "%dw 2.0\noutput application/json\n---\npayload.test.*test2"]
+    if payload_source == "inline":
+        args.extend(["--payload", payload])
+    else:
+        payload_path = tmp_path / "duplicates.json"
+        payload_path.write_text(payload)
+        args.extend(["--payload-file", str(payload_path)])
+    assert cli.main(args) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert json.loads(captured.out) == [{"array": 1}, {"array": 2}, {"array": 3}]
+
+
 def test_cli_runs_inline_script_and_renders_native_values_as_pretty_json(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

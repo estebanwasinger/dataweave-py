@@ -299,7 +299,7 @@ pub(crate) fn read_format_with_options(
     let text = as_dataweave_string(content);
     match mime.as_str() {
         "application/json" | "json" | "text/json" => {
-            serde_json::from_str(&text).map_err(|err| DwError::InvalidJson(err.to_string()))
+            crate::json::read_json_value(&text).map_err(|err| DwError::InvalidJson(err.to_string()))
         }
         "application/x-ndjson" | "application/x-ldjson" | "ndjson" => {
             crate::ndjson::read_ndjson(&text, options)

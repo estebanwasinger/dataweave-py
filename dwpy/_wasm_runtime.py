@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional
 
 from . import parser
 from ._python_runtime import DataWeaveEvaluationError
-from ._rust_bridge import json_default
+from ._rust_bridge import encode_bridge_value, json_default
 from .formats import DWObject
 
 
@@ -175,7 +175,7 @@ class WasmDataWeaveRuntime:
 
 
 def _encode_wasm_value(value: Any) -> Any:
-    encoded = json.dumps(value, default=json_default, allow_nan=False)
+    encoded = json.dumps(encode_bridge_value(value), default=json_default, allow_nan=False)
     return json.loads(encoded)
 
 

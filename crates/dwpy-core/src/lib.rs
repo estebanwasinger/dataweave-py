@@ -952,7 +952,7 @@ pub fn parse_payload_format_with_options(
             Value::String(text) => text,
             other => as_dataweave_string(&other),
         };
-        return serde_json::from_str(&text).map_err(|err| DwError::InvalidJson(err.to_string()));
+        return crate::json::read_json_value(&text).map_err(|err| DwError::InvalidJson(err.to_string()));
     }
     if is_ndjson_mime(payload_format) {
         let text = match payload {
