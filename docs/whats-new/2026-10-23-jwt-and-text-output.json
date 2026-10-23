@@ -1,0 +1,9 @@
+{
+  "title": "JWT signing and more reliable text output",
+  "body": "Sign JSON Web Tokens directly in your DataWeave scripts with the HMAC and RSA modules. Choose SHA-256, SHA-384, or SHA-512, and add your own headers and claims.\n\nPlain text output now correctly selects fields from inline objects, so expressions like {content: \"hello\"}.content return just the selected value. Markdown, line breaks, and Unicode characters are preserved. Use output text/plain for text output.",
+  "cta_label": "Open the playground",
+  "cta_url": "https://dataweavelang.org/",
+  "image_url": null,
+  "is_published": false,
+  "sort_order": 0
+}

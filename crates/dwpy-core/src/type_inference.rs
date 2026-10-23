@@ -68,6 +68,9 @@ pub(crate) fn infer_expression_type(
     }
 
     if let Some((function_name, _arguments)) = parse_call_args(source) {
+        if function_name == "JWT" || function_name.ends_with("::JWT") {
+            return Ok(type_string());
+        }
         if matches!(
             function_name,
             "p" | "Mule::p" | "prop" | "Mule::prop" | "dw::Runtime::p" | "dw::Runtime::prop"

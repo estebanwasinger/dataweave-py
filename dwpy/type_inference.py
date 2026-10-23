@@ -594,6 +594,8 @@ class TypeInferencer:
     def _infer_function_call(self, expr: parser.FunctionCall, ctx: TypeInferenceContext) -> DWType:
         if isinstance(expr.function, parser.Identifier):
             name = expr.function.name
+            if name == "JWT" or name.endswith("::JWT"):
+                return STRING
             if name in {
                 "p",
                 "Mule::p",

@@ -34,6 +34,29 @@ pub(crate) fn evaluate_header_declarations(
             continue;
         }
 
+        if let Some(declaration) = line.strip_prefix("input ") {
+            let parts = declaration.split_whitespace().collect::<Vec<_>>();
+            if parts.len() < 2 || !is_identifier(parts[0]) {
+                return Err(DwError::Parse("expected input <name> <format>".to_string()));
+            }
+            let name = parts[0];
+            let value = if name == "payload" {
+                payload.clone()
+            } else {
+                locals
+                    .get("vars")
+                    .and_then(|vars| vars.get(name))
+                    .cloned()
+                    .ok_or_else(|| {
+                        DwError::InvalidJson(format!(
+                            "Missing named input '{name}'; supply it through vars"
+                        ))
+                    })?
+            };
+            locals.insert(name.to_string(), value);
+            continue;
+        }
+
         if let Some(declaration) = line.strip_prefix("type ") {
             register_type_alias(declaration, locals)?;
             continue;
@@ -219,6 +242,7 @@ fn is_header_declaration_start(line: &str) -> bool {
     trimmed.starts_with("%dw")
         || trimmed.starts_with("output ")
         || trimmed.starts_with("import ")
+        || trimmed.starts_with("input ")
         || trimmed.starts_with("type ")
         || trimmed.starts_with("ns ")
         || trimmed.starts_with("var ")
@@ -448,6 +472,48 @@ fn register_import_aliases(line: &str, locals: &mut Map<String, Value>) -> Resul
         .strip_prefix("import ")
         .ok_or_else(|| DwError::UnsupportedFeature(format!("import line {line}")))?;
     let declaration = declaration.trim();
+    for module in ["HMAC", "RSA"] {
+        let module_path = format!("dw::util::jwt::{module}");
+        let canonical = format!("{module_path}::JWT");
+        let mut bindings = Vec::new();
+        if declaration == module_path {
+            bindings.push(format!("{module}::JWT"));
+        } else if let Some(alias) = declaration.strip_prefix(&format!("{module_path} as ")) {
+            if !is_identifier(alias.trim()) {
+                return Err(DwError::Parse("invalid JWT module alias".to_string()));
+            }
+            bindings.push(format!("{}::JWT", alias.trim()));
+        } else if let Some((items, source)) = declaration.rsplit_once(" from ") {
+            if source.trim() != module_path {
+                continue;
+            }
+            for item in split_top_level(items, ',') {
+                let (name, alias) = item
+                    .trim()
+                    .split_once(" as ")
+                    .unwrap_or((item.trim(), item.trim()));
+                if name == "*" || name == "JWT" {
+                    let alias = if name == "*" { "JWT" } else { alias.trim() };
+                    if !is_identifier(alias) {
+                        return Err(DwError::Parse("invalid JWT function alias".to_string()));
+                    }
+                    bindings.push(alias.to_string());
+                }
+            }
+        }
+        if !bindings.is_empty() {
+            let aliases = locals
+                .entry("__aliases".to_string())
+                .or_insert_with(|| Value::Object(Map::new()));
+            let Value::Object(aliases) = aliases else {
+                return Err(DwError::Parse("invalid alias registry".to_string()));
+            };
+            for binding in bindings {
+                aliases.insert(binding, Value::String(canonical.clone()));
+            }
+            return Ok(());
+        }
+    }
     if declaration.starts_with("dw::")
         || declaration == "modules::MyModule"
         || declaration == "modules::MyMapping"
@@ -606,10 +672,11 @@ pub(crate) fn is_function_name(source: &str, locals: &Map<String, Value>) -> boo
     if !is_identifier(source) {
         return false;
     }
-    matches!(
-        locals.get("__functions"),
-        Some(Value::Object(functions)) if functions.contains_key(source)
-    )
+    matches!(locals.get("__aliases"), Some(Value::Object(aliases)) if aliases.contains_key(source))
+        || matches!(
+            locals.get("__functions"),
+            Some(Value::Object(functions)) if functions.contains_key(source)
+        )
 }
 
 pub(crate) fn function_reference(name: &str) -> Value {

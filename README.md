@@ -381,6 +381,32 @@ Format-specific notes:
 
 ## Supported Features
 
+### JWT signing (Rust and WASM)
+
+Import `JWT` from `dw::util::jwt::HMAC` or `dw::util::jwt::RSA` to sign tokens:
+
+```dataweave
+%dw 2.0
+import * from dw::util::jwt::HMAC
+output application/json
+---
+JWT({sub: "example"}, vars.signingKey)
+```
+
+HMAC supports `HmacSHA256` (default), `HmacSHA384`, and `HmacSHA512`; RSA supports
+`Sha256withRSA` (default), `Sha384withRSA`, and `Sha512withRSA`. Use
+`JWT(header, payload, signingKey, algorithm)` to set a header and algorithm.
+HMAC keys must contain at least 32, 48, or 64 UTF-8 bytes respectively. RSA keys
+must be unencrypted PKCS#1 or PKCS#8 PEM private keys of at least 2048 bits.
+The signing algorithm determines the token's `alg` header; `typ` is `JWT`.
+
+Named `input` declarations accept already parsed values supplied through `vars`:
+for example, `input key application/json` binds `vars={"key": pem_string}` as
+`key` in the script. Input format declarations describe these native values;
+parse serialized values explicitly with `read` when needed. JWT modules are
+currently available in the native Rust and WASM engines, not the legacy Python
+interpreter.
+
 DataWeave-Py currently supports a wide range of DataWeave language features:
 
 ### Core Language Features

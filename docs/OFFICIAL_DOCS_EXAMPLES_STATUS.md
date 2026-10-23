@@ -8,21 +8,37 @@ The examples are implemented in:
 
 `tests/test_official_docs_examples.py`
 
+## Latest upstream documentation
+
+Both CI workflows intentionally fetch the current default branch of
+`mulesoft/docs-dataweave`, without pinning a revision. To reproduce CI locally,
+clone the latest docs and set `DWPY_DATAWEAVE_DOCS` to its `modules/ROOT/pages`
+directory before running `UV_CACHE_DIR=.uv-cache uv run --extra dev pytest`.
+
+On October 23, 2026, the v2.13 corpus added five HMAC/RSA JWT examples.
+The Rust and WASM engines now implement those signing functions. HMAC tokens
+are compared exactly with the documented outputs. RSA examples require a
+caller-supplied key and show placeholder signatures, so the harness supplies a
+public test-only key fixture and independently verifies the resulting PKCS#1
+v1.5 signatures, headers, and claims. These examples remain normal passing tests.
+
 ## Latest Status
 
-Updated: 2026-06-01
+Updated: 2026-10-23, using the latest upstream v2.13 docs at
+`2b0019032118a19d2c141c653674e0c19a704078`.
 
 | Area | Status |
 | --- | ---: |
-| Extracted JSON-output examples | 527 |
-| Normal/runnable official examples | 522 |
+| Extracted JSON-output examples | 532 |
+| Normal/runnable official examples | 527 |
 | Expected-fail official examples | 5 |
 | Excluded by current goal directive | 5 |
 | Active expected-fail examples | 0 |
 | Active progress | 100.00% |
-| Official docs test result | 523 passed, 5 xfailed |
-| Rust workspace test result | 95 passed |
-| Full Python test result | 836 passed, 5 xfailed |
+| Official docs test result | 528 passed, 5 xfailed |
+| Rust workspace test result | 139 passed |
+| Full Python test result | 979 passed, 5 xfailed |
+| JWT and official docs on WASM | 558 passed, 5 xfailed |
 
 The official docs test has one inventory test, so its passed count is one greater than the normal/runnable official example count.
 
@@ -30,18 +46,25 @@ The official docs test has one inventory test, so its passed count is one greate
 
 ```bash
 UV_CACHE_DIR=.uv-cache uv run maturin develop
+export DWPY_DATAWEAVE_DOCS="/path/to/docs-dataweave/modules/ROOT/pages"
 UV_CACHE_DIR=.uv-cache uv run --extra dev pytest tests/test_official_docs_examples.py -q -rX --tb=short
-cargo fmt --all -- --check && cargo test --workspace
+cargo test --workspace
 UV_CACHE_DIR=.uv-cache uv run --extra dev pytest
 ```
 
 Result:
 
 ```text
-official docs: 523 passed, 5 xfailed
-rust workspace: 95 passed
-full python: 836 passed, 5 xfailed
+official docs: 528 passed, 5 xfailed
+rust workspace: 139 passed
+full python: 979 passed, 5 xfailed
 ```
+
+The broader forced-WASM Python matrix reports 971 passed, 7 skipped, 5 xfailed,
+and one separate NDJSON error-classification failure:
+`test_python_backend_ndjson_reader_options_control_invalid_lines` receives a
+`ParseError` instead of `DataWeaveEvaluationError` from the WASM adapter. The
+JWT and official-documentation tests pass under both Rust and WASM.
 
 ## Current Xfail Buckets
 

@@ -50,6 +50,20 @@ pub(crate) fn evaluate_function_call(
     let function_name = resolved_function_name.as_deref().unwrap_or(function_name);
     let arity = argument_sources.len();
     match function_name {
+        "dw::util::jwt::HMAC::JWT" | "dw::util::jwt::RSA::JWT" | "HMAC::JWT" | "RSA::JWT" => {
+            let arguments = argument_sources
+                .iter()
+                .map(|source| evaluate_expression_scoped(source, payload, locals))
+                .collect::<Result<Vec<_>, _>>()?;
+            crate::jwt::sign(
+                if function_name.contains("HMAC::") {
+                    "HMAC"
+                } else {
+                    "RSA"
+                },
+                &arguments,
+            )
+        }
         "upper" if arity == 1 => {
             let argument = evaluate_expression_scoped(argument_sources[0], payload, locals)?;
             Ok(Value::String(as_string(&argument)?.to_uppercase()))

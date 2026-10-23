@@ -13,6 +13,7 @@ mod csv;
 mod evaluator;
 mod functions;
 mod json;
+mod jwt;
 mod literals;
 mod markdown;
 mod matches;

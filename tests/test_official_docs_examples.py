@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from dwpy.runtime import DataWeaveRuntime
+from jwt_support import RSA_PRIVATE_KEY, verify_rsa_token
 
 
 DOCS_ROOT = Path(
@@ -460,6 +461,8 @@ EXCLUDED_BY_DIRECTIVE_IDS = {
 
 
 MANUAL_INLINE_INPUTS: dict[str, dict[str, Any]] = {
+    "inline::dw-rsa-functions-jwt.adoc::0": {"vars": {"key": RSA_PRIVATE_KEY}},
+    "inline::dw-rsa-functions-jwt.adoc::2": {"vars": {"key": RSA_PRIVATE_KEY}},
     "inline::dataweave-cookbook-csv-lookup.adoc::2": {
         "payload": ["54-112724555", "1-6298765432"],
         "vars": {
@@ -773,6 +776,10 @@ def _normalize_text_whitespace(value: Any) -> Any:
 
 
 def _matches_dynamic_expected(example_id: str, result: Any, expected: Any) -> bool | None:
+    if example_id == "inline::dw-rsa-functions-jwt.adoc::0":
+        return verify_rsa_token(result, "RS384", {"kid": "example"}, {"sub": "test"})
+    if example_id == "inline::dw-rsa-functions-jwt.adoc::2":
+        return verify_rsa_token(result, "RS256", {}, {"sub": "test"})
     if example_id == "inline::dw-core-functions-random.adoc::0":
         if not isinstance(result, dict) or set(result) != {"price"}:
             return False

@@ -216,7 +216,7 @@ fn to_base64(value: &Value) -> Result<Value, DwError> {
     Ok(Value::String(base64_encode(&binary_bytes(value)?)))
 }
 
-fn base64_encode(bytes: &[u8]) -> String {
+pub(crate) fn base64_encode(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
@@ -1914,7 +1914,7 @@ fn hash_bytes(content: &Value, algorithm: &Value) -> Result<Vec<u8>, DwError> {
     })
 }
 
-fn hmac_bytes(key: &Value, content: &Value, algorithm: &Value) -> Result<Vec<u8>, DwError> {
+pub(crate) fn hmac_bytes(key: &Value, content: &Value, algorithm: &Value) -> Result<Vec<u8>, DwError> {
     let key = binary_bytes(key)?;
     let payload = binary_bytes(content)?;
     let algorithm = as_dataweave_string(algorithm)
@@ -1924,6 +1924,9 @@ fn hmac_bytes(key: &Value, content: &Value, algorithm: &Value) -> Result<Vec<u8>
     match algorithm.as_str() {
         "HMACSHA256" | "HMAC-SHA256" => Ok(hmac_digest(&key, &payload, 64, |bytes| {
             sha2::Sha256::digest(bytes).to_vec()
+        })),
+        "HMACSHA384" | "HMAC-SHA384" => Ok(hmac_digest(&key, &payload, 128, |bytes| {
+            sha2::Sha384::digest(bytes).to_vec()
         })),
         "HMACSHA512" | "HMAC-SHA512" => Ok(hmac_digest(&key, &payload, 128, |bytes| {
             sha2::Sha512::digest(bytes).to_vec()
