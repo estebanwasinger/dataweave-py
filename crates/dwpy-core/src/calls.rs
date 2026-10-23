@@ -1,4 +1,4 @@
-use serde_json::{Map, Value};
+use crate::value::{DwMap as Map, DwValue as Value};
 
 use crate::builtins::{
     current_utc_date_string, current_utc_datetime_string, evaluate_binary_builtin,
@@ -89,10 +89,10 @@ pub(crate) fn evaluate_function_call(
             let argument = evaluate_expression_scoped(argument_sources[0], payload, locals)?;
             Ok(Value::Number(serde_json::Number::from(size_of(&argument)?)))
         }
-        "now" if arity == 0 => Ok(Value::String(current_utc_datetime_string())),
-        "today" if arity == 0 => Ok(Value::String(current_utc_date_string(0))),
-        "tomorrow" if arity == 0 => Ok(Value::String(current_utc_date_string(1))),
-        "yesterday" if arity == 0 => Ok(Value::String(current_utc_date_string(-1))),
+        "now" if arity == 0 => Value::parse_temporal(&current_utc_datetime_string()),
+        "today" if arity == 0 => Value::parse_temporal(&current_utc_date_string(0)),
+        "tomorrow" if arity == 0 => Value::parse_temporal(&current_utc_date_string(1)),
+        "yesterday" if arity == 0 => Value::parse_temporal(&current_utc_date_string(-1)),
         "uuid" if arity == 0 => Ok(Value::String(generate_uuid_like())),
         "random" if arity == 0 => number_result(pseudo_random_unit()),
         "p" | "Mule::p" | "prop" | "Mule::prop" | "dw::Runtime::p" | "dw::Runtime::prop"
@@ -1524,6 +1524,13 @@ fn as_string(value: &Value) -> Result<String, DwError> {
         Value::Number(value) => Ok(value.to_string()),
         Value::Bool(value) => Ok(value.to_string()),
         Value::Null => Ok("null".to_string()),
+        Value::TimeZone(_)
+        | Value::Date(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::LocalTime(_)
+        | Value::Time(_)
+        | Value::Period(_) => Ok(crate::as_dataweave_string(value)),
         Value::Array(_) | Value::Object(_) => {
             let collapsed = collapse_xml_like_value(value);
             if collapsed != *value {

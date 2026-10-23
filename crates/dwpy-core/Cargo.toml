@@ -7,7 +7,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 digest = "0.10"
+indexmap = { version = "2.14.2", features = ["serde"] }
 md-5 = "0.10"
 md2 = "0.10"
 num-bigint = "0.4"

@@ -170,7 +170,7 @@ def _register_builtin_formats() -> None:
             reader=None,
             writer=_plain_writer,
         ),
-        aliases=["plain"],
+        aliases=["plain", "text"],
     )
     FormatRegistry.register(
         FormatDefinition(
@@ -745,8 +745,14 @@ def _csv_writer(value: Any, options: Dict[str, Any]) -> str:
 
 def _plain_writer(value: Any, options: Dict[str, Any]) -> str:
     del options
+    if isinstance(value, (date, datetime, time)):
+        return value.isoformat().replace("+00:00", "Z")
+    if isinstance(value, timedelta):
+        return _format_timedelta_iso(value)
+    if hasattr(value, "to_iso8601") and callable(value.to_iso8601):
+        return value.to_iso8601()
     if not isinstance(value, str):
-        raise FormatError("Plain text writer expects a string value")
+        raise FormatError("Plain text writer expects a string value or temporal value")
     return value
 
 

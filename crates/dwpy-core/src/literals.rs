@@ -1,4 +1,4 @@
-use serde_json::{Map, Value};
+use crate::value::{DwMap as Map, DwValue as Value};
 
 use crate::periods::period_literal;
 use crate::syntax::{is_identifier, split_top_level};
@@ -16,7 +16,7 @@ pub(crate) fn parse_literal(source: &str) -> Result<Option<Value>, DwError> {
         if let Some(period) = period_literal(&source[1..source.len() - 1]) {
             return Ok(Some(period));
         }
-        return Ok(Some(Value::String(source[1..source.len() - 1].to_string())));
+        return Value::parse_temporal(&source[1..source.len() - 1]).map(Some);
     }
     if source == "null" {
         return Ok(Some(Value::Null));

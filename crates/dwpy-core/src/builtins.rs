@@ -1,5 +1,5 @@
+use crate::value::{DwMap as Map, DwValue as Value};
 use num_bigint::BigInt;
-use serde_json::{Map, Value};
 
 use digest::Digest;
 use regex::Regex;
@@ -54,7 +54,12 @@ pub(crate) fn evaluate_unary_builtin(function_name: &str, value: &Value) -> Resu
         "isEven" => Ok(Value::Bool((numeric_value(value)? as i64) % 2 == 0)),
         "isOdd" => Ok(Value::Bool((numeric_value(value)? as i64) % 2 != 0)),
         "isInteger" => Ok(Value::Bool(is_integer_value(value)?)),
-        "typeOf" => Ok(Value::String(type_of_value(value).to_string())),
+        "typeOf" => {
+            let unwrapped = crate::selectors::unwrap_metadata_value(value);
+            Ok(Value::String(
+                type_of_value(unwrapped.as_ref().unwrap_or(value)).to_string(),
+            ))
+        }
         "camelize" => camelize(value),
         "capitalize" => capitalize(value),
         "charCode" => char_code(value),
@@ -323,7 +328,7 @@ pub(crate) fn read_format_with_options(
             }
             read_simple_csv(&text, separator, quote, header)
         }
-        "text/plain" | "plain" => Ok(Value::String(text)),
+        "text/plain" | "plain" | "text" => Ok(Value::String(text)),
         "application/octet-stream" | "octet-stream" => Ok(binary_value(text.into_bytes())),
         "multipart/form-data" => read_multipart_form_data(&text, content_type, options),
         "application/yaml" | "application/x-yaml" | "text/yaml" | "text/x-yaml" | "yaml"
@@ -515,12 +520,9 @@ pub(crate) fn write_format_with_options(
         "application/x-ndjson" | "application/x-ldjson" | "ndjson" => {
             crate::ndjson::render_ndjson_value(value, options).map(Value::String)
         }
-        "text/plain" | "plain" => match value {
-            Value::String(value) => Ok(Value::String(value.clone())),
-            _ => Err(DwError::UnsupportedFeature(
-                "Plain text writer expects a string value".to_string(),
-            )),
-        },
+        "text/plain" | "plain" | "text" => {
+            crate::output::render_plain_output(value).map(Value::String)
+        }
         "application/yaml" | "application/x-yaml" | "text/yaml" | "text/x-yaml" | "yaml"
         | "yml" => write_simple_yaml(value).map(Value::String),
         mime if crate::mime::is_markdown_mime(mime) => {
@@ -1017,7 +1019,7 @@ fn merge_with(source: &Value, target: &Value) -> Result<Value, DwError> {
     };
     let mut output = source.clone();
     for key in target.keys() {
-        output.remove(key);
+        output.shift_remove(key);
     }
     output.extend(target.clone());
     Ok(Value::Object(output))
@@ -1914,7 +1916,11 @@ fn hash_bytes(content: &Value, algorithm: &Value) -> Result<Vec<u8>, DwError> {
     })
 }
 
-pub(crate) fn hmac_bytes(key: &Value, content: &Value, algorithm: &Value) -> Result<Vec<u8>, DwError> {
+pub(crate) fn hmac_bytes(
+    key: &Value,
+    content: &Value,
+    algorithm: &Value,
+) -> Result<Vec<u8>, DwError> {
     let key = binary_bytes(key)?;
     let payload = binary_bytes(content)?;
     let algorithm = as_dataweave_string(algorithm)
@@ -2107,33 +2113,18 @@ fn type_of_value(value: &Value) -> &'static str {
         Value::Null => "Null",
         Value::Bool(_) => "Boolean",
         Value::Number(_) => "Number",
-        Value::String(value) if is_time_literal_text(value) => "Time",
-        Value::String(value) if is_date_time_literal_text(value) => "DateTime",
-        Value::String(value) if is_date_literal_text(value) => "Date",
         Value::String(_) => "String",
         Value::Array(_) => "Array",
         Value::Object(value) if value.contains_key(DW_BINARY_MARKER) => "Binary",
         Value::Object(_) => "Object",
+        Value::TimeZone(_) => "TimeZone",
+        Value::Date(_) => "Date",
+        Value::LocalDateTime(_) => "LocalDateTime",
+        Value::DateTime(_) => "DateTime",
+        Value::LocalTime(_) => "LocalTime",
+        Value::Time(_) => "Time",
+        Value::Period(_) => "Period",
     }
-}
-
-fn is_time_literal_text(value: &str) -> bool {
-    let value = value.trim_end_matches('Z');
-    value.len() >= 8
-        && value.as_bytes().get(2) == Some(&b':')
-        && value.as_bytes().get(5) == Some(&b':')
-        && parse_time_parts(value).is_some()
-}
-
-fn is_date_time_literal_text(value: &str) -> bool {
-    value.len() >= 19
-        && value.as_bytes().get(10) == Some(&b'T')
-        && parse_date_parts(&value[..10]).is_some()
-        && parse_time_parts(&value[11..19]).is_some()
-}
-
-fn is_date_literal_text(value: &str) -> bool {
-    value.len() == 10 && parse_date_parts(value).is_some()
 }
 
 fn contains_value(items: &Value, element: &Value) -> Result<bool, DwError> {

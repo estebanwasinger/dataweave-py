@@ -121,6 +121,31 @@ The native CLI uses the sink API for streaming JSON, NDJSON, and CSV output.
 Expressions outside the compiled lazy subset continue through the compatible
 legacy Rust evaluator.
 
+The evaluator uses `DwValue` throughout execution. Dates, local and zoned
+date-times, local and zoned times, time zones, and periods have native variants.
+Use `execute_value` or `CompiledScript::execute_value_with_context` to retain
+these types in a Rust embedding:
+
+```rust
+use dwpy_core::{execute_value, DwValue};
+
+let value = execute_value(
+    r#""2026-10-26" as Date + |P3D|"#,
+    DwValue::Null,
+    false,
+)?;
+assert!(matches!(value, DwValue::Date(_)));
+assert_eq!(value.temporal_text().as_deref(), Some("2026-10-29"));
+```
+
+The JSON-facing APIs serialize temporal scalars as ISO strings. Only the explicit
+Python/WASM typed transport uses tagged JSON to preserve host types. Ordinary
+objects with marker-like keys remain objects. With the Rust or WASM Python
+backend, `render_output=False` returns temporal results as Python `date`,
+`datetime`, or `time` values, including literals, coercions, and `now()`.
+Rendered JSON/text output remains text. See [native temporal values](docs/native-temporal-values.md)
+for migration notes and bridge details.
+
 ## Homebrew
 
 The Rust-native CLI is distributed through a separate Homebrew tap repository:
@@ -389,8 +414,8 @@ The runtime supports these output directives:
 Format-specific notes:
 - JSON readers preserve repeated object keys in source order, so `payload.test.*test2` returns every matching value. Pass the original JSON text with `payload_format="application/json"` (or use `read(text, "application/json")`); a Python `dict` or JavaScript object already parsed by a standard JSON decoder has lost repeated entries.
 - `application/x-ndjson` maps newline-delimited JSON records to an array. Empty lines are ignored by default; use `skipInvalid=true` to skip malformed records. Writers emit one compact JSON record per line and support `skipNullOn` and `writeAttributes`.
-- `output text/plain` only works when the final script result is a string.
-- To return a string field verbatim, including Markdown and newlines, use `output text/plain --- {content: "hello\nworld"}.content`. The plain text directive is `text/plain`, not `text`.
+- `output text/plain` accepts strings and temporal values, rendering dates, times, date-times, and periods as ISO text. `text` and `plain` are aliases for `text/plain`.
+- To return a string field verbatim, including Markdown and newlines, use `output text/plain --- {content: "hello\nworld"}.content`.
 - `output text/markdown` expects a tabular value (`list` or `dict`) and renders a Markdown table.
 - `output text/markdown header=false` is rejected because Markdown table rendering requires headers.
 - `payload_format="text/markdown"` parses Markdown pipe tables into structured rows (`Array<Object>` by default, or `Array<Array<String>>` with `payload_format_options={"header": False}`).

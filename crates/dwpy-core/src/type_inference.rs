@@ -1,4 +1,4 @@
-use serde_json::{Map, Value};
+use crate::value::{DwMap as Map, DwValue as Value};
 
 use crate::literals::{parse_call_args, parse_string_literal, string_literal_inner};
 use crate::selectors::{parse_path_segments, PathSegment};
@@ -34,10 +34,52 @@ pub(crate) fn infer_expression_type(
         ]));
     }
 
-    if let Some((left, _operator, right)) = split_top_level_operator(source, &["++", "+"]) {
+    if let Some((left, operator, right)) = split_top_level_operator(source, &["++", "+", "-"]) {
         let left_type = infer_expression_type(left, payload_type, vars_type, attributes_type)?;
         let right_type = infer_expression_type(right, payload_type, vars_type, attributes_type)?;
+        if matches!(operator, "+" | "-") {
+            if type_kind(&right_type) == Some("Period")
+                && matches!(
+                    type_kind(&left_type),
+                    Some("Date" | "DateTime" | "LocalDateTime" | "Time" | "LocalTime")
+                )
+            {
+                return Ok(left_type);
+            }
+            if operator == "+"
+                && type_kind(&left_type) == Some("Period")
+                && matches!(
+                    type_kind(&right_type),
+                    Some("Date" | "DateTime" | "LocalDateTime" | "Time" | "LocalTime")
+                )
+            {
+                return Ok(right_type);
+            }
+        }
+        if operator == "-" {
+            return Err(DwError::UnsupportedFeature(format!(
+                "type inference {source}"
+            )));
+        }
         return Ok(infer_concat_type(&left_type, &right_type));
+    }
+
+    if let Some((_, target)) = split_top_level_keyword(source, "as") {
+        let name = target.split_whitespace().next().unwrap_or_default();
+        if matches!(
+            name,
+            "Date" | "DateTime" | "LocalDateTime" | "Time" | "LocalTime" | "Period"
+        ) {
+            return Ok(Value::Object(Map::from_iter([(
+                "kind".into(),
+                Value::String(name.into()),
+            )])));
+        }
+    }
+    if let Some(value) = crate::literals::parse_literal(source)? {
+        if value.temporal_type_name().is_some() {
+            return Ok(crate::types::type_descriptor_from_value(&value));
+        }
     }
 
     if source.starts_with('{') && source.ends_with('}') {

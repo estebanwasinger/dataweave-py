@@ -1,10 +1,11 @@
 #![recursion_limit = "256"]
 
-use serde_json::Map;
-use serde_json::Value;
+use crate::value::DwMap as Map;
+use crate::value::DwValue as Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
+mod api;
 mod builtins;
 mod calls;
 mod collections;
@@ -26,12 +27,14 @@ mod script;
 mod selectors;
 mod strings;
 mod syntax;
+mod temporal;
 mod type_inference;
 mod types;
 mod value;
 mod xml;
 mod yaml;
 
+pub use api::*;
 use builtins::{evaluate_binary_builtin, index_of, last_index_of};
 use calls::evaluate_function_call;
 use collections::{
@@ -52,8 +55,8 @@ use evaluator::{
     evaluate_using_expression_scoped,
 };
 use functions::{
-    evaluate_header_declarations, function_reference, header_reference_sources,
-    is_function_name, lambda_value_from_source, resolve_type_source,
+    evaluate_header_declarations, function_reference, header_reference_sources, is_function_name,
+    lambda_value_from_source, resolve_type_source,
 };
 use json::json_output_options;
 use literals::{
@@ -86,9 +89,10 @@ use syntax::{
     split_top_level_keyword, split_top_level_keyword_operator,
     split_top_level_keyword_or_call_operator, split_top_level_operator, strip_wrapping_parens,
 };
+pub use temporal::{DwDateTime, DwLocalDateTime, DwLocalTime, DwTime};
 use type_inference::infer_expression_type;
 use types::{type_any, type_descriptor_from_value};
-pub use value::{DwError, DwValue};
+pub use value::{DwError, DwMap, DwPeriod, DwValue};
 use xml::{parse_xml_document, xml_list_items};
 use yaml::read_simple_yaml;
 
@@ -191,6 +195,18 @@ pub struct ExecutionContext {
 
 impl ExecutionContext {
     pub fn new(
+        vars: Option<serde_json::Value>,
+        attributes: Option<serde_json::Value>,
+        supplied_properties: Option<BTreeMap<String, String>>,
+    ) -> Result<Self, DwError> {
+        Self::from_values(
+            vars.map(Value::from),
+            attributes.map(Value::from),
+            supplied_properties,
+        )
+    }
+
+    pub fn from_values(
         vars: Option<Value>,
         attributes: Option<Value>,
         supplied_properties: Option<BTreeMap<String, String>>,
@@ -289,17 +305,17 @@ impl CompiledScript {
         &self.source
     }
 
-    pub fn execute(
+    pub fn execute_value(
         &self,
         payload: Value,
         vars: Option<Value>,
         options: &ExecutionOptions,
     ) -> Result<Value, DwError> {
-        let context = ExecutionContext::new(vars, None, None)?;
-        self.execute_with_context(payload, context, options)
+        let context = ExecutionContext::from_values(vars, None, None)?;
+        self.execute_value_with_context(payload, context, options)
     }
 
-    pub fn execute_with_context(
+    pub fn execute_value_with_context(
         &self,
         payload: Value,
         context: ExecutionContext,
@@ -308,18 +324,18 @@ impl CompiledScript {
         self.execute_scoped(payload, context.into_locals(), options)
     }
 
-    pub fn execute_to_writer<W: Write>(
+    pub fn execute_value_to_writer<W: Write>(
         &self,
         payload: Value,
         vars: Option<Value>,
         options: &ExecutionOptions,
         writer: &mut W,
     ) -> Result<(), DwError> {
-        let context = ExecutionContext::new(vars, None, None)?;
-        self.execute_to_writer_with_context(payload, context, options, writer)
+        let context = ExecutionContext::from_values(vars, None, None)?;
+        self.execute_value_to_writer_with_context(payload, context, options, writer)
     }
 
-    pub fn execute_to_writer_with_context<W: Write>(
+    pub fn execute_value_to_writer_with_context<W: Write>(
         &self,
         payload: Value,
         context: ExecutionContext,
@@ -467,7 +483,7 @@ fn rendered_text_output(directive: Option<&str>, render_output: bool) -> bool {
         || is_xml_mime(mime)
         || is_yaml_mime(mime)
         || is_markdown_mime(mime)
-        || matches!(mime, "text/plain" | "plain")
+        || matches!(mime, "text/plain" | "plain" | "text")
 }
 
 pub fn engine_capabilities() -> Vec<&'static str> {
@@ -483,19 +499,19 @@ pub fn engine_capabilities() -> Vec<&'static str> {
     ]
 }
 
-pub fn execute_smoke(script: &str, payload: Value) -> Result<Value, DwError> {
-    execute_json(script, payload, false)
+pub fn execute_native_smoke(script: &str, payload: Value) -> Result<Value, DwError> {
+    execute_value(script, payload, false)
 }
 
-pub fn infer_type_descriptor(
+pub fn infer_native_type_descriptor(
     script: &str,
     payload: Option<Value>,
     vars: Option<Value>,
 ) -> Result<Value, DwError> {
-    infer_type_descriptor_with_context(script, payload, vars, None)
+    infer_native_type_descriptor_with_context(script, payload, vars, None)
 }
 
-pub fn infer_type_descriptor_with_context(
+pub fn infer_native_type_descriptor_with_context(
     script: &str,
     payload: Option<Value>,
     vars: Option<Value>,
@@ -527,21 +543,21 @@ pub fn infer_type_descriptor_with_context(
 /// The returned descriptor deliberately contains syntax-level reference paths
 /// rather than application-specific field ids. Embedders such as Deal API own
 /// the symbol table and resolve these paths to their durable schema ids.
-pub fn analyze_expression(
+pub fn analyze_native_expression(
     expression: &str,
     payload: Option<Value>,
     vars: Option<Value>,
 ) -> Result<Value, DwError> {
-    analyze_expression_with_context(expression, payload, vars, None)
+    analyze_native_expression_with_context(expression, payload, vars, None)
 }
 
-pub fn analyze_expression_with_context(
+pub fn analyze_native_expression_with_context(
     expression: &str,
     payload: Option<Value>,
     vars: Option<Value>,
     attributes: Option<Value>,
 ) -> Result<Value, DwError> {
-    let (inferred_type, diagnostics) = match infer_type_descriptor_with_context(
+    let (inferred_type, diagnostics) = match infer_native_type_descriptor_with_context(
         expression,
         payload.clone(),
         vars.clone(),
@@ -550,10 +566,10 @@ pub fn analyze_expression_with_context(
         Ok(inferred_type) => (inferred_type, Vec::new()),
         Err(DwError::UnsupportedFeature(message)) => (
             type_any(),
-            vec![serde_json::json!({
+            vec![Value::from(serde_json::json!({
                 "message": message,
                 "severity": "warning",
-            })],
+            }))],
         ),
         Err(error) => return Err(error),
     };
@@ -591,13 +607,13 @@ pub fn analyze_expression_with_context(
         .map(Value::String)
         .collect::<Vec<_>>();
 
-    Ok(serde_json::json!({
+    Ok(Value::from(serde_json::json!({
         "diagnostics": diagnostics,
         "inferredType": inferred_type,
         "references": references,
         "unresolvedReferences": unresolved_references,
         "wildcardReferences": wildcard_references,
-    }))
+    })))
 }
 
 fn has_dynamic_selector(expression: &str, path: &str) -> bool {
@@ -657,21 +673,18 @@ fn scan_script_reference_paths(
     }
 
     let body_source = if parsed_script.header.is_empty() {
-        parsed_script
-            .output_directive
-            .as_deref()
-            .map(|directive| {
-                parsed_script
-                    .body
-                    .lines()
-                    .filter(|line| {
-                        line.trim()
-                            .strip_prefix("output ")
-                            .is_none_or(|candidate| candidate.trim() != directive)
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })
+        parsed_script.output_directive.as_deref().map(|directive| {
+            parsed_script
+                .body
+                .lines()
+                .filter(|line| {
+                    line.trim()
+                        .strip_prefix("output ")
+                        .is_none_or(|candidate| candidate.trim() != directive)
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
     } else {
         None
     };
@@ -779,9 +792,8 @@ fn scan_reference_paths(expression: &str, local_bindings: &BTreeSet<String>) -> 
                 }
             }
         }
-        let is_object_key = !path.contains('.')
-            && following.starts_with(':')
-            && !following.starts_with("::");
+        let is_object_key =
+            !path.contains('.') && following.starts_with(':') && !following.starts_with("::");
         if !local_bindings.contains(root)
             && !follows_type_operator(expression, start)
             && !is_object_key
@@ -891,8 +903,8 @@ fn is_reference_keyword(identifier: &str) -> bool {
     )
 }
 
-pub fn execute_json(script: &str, payload: Value, render_output: bool) -> Result<Value, DwError> {
-    compile(script)?.execute(
+pub fn execute_value(script: &str, payload: Value, render_output: bool) -> Result<Value, DwError> {
+    compile(script)?.execute_value(
         payload,
         None,
         &ExecutionOptions {
@@ -902,27 +914,27 @@ pub fn execute_json(script: &str, payload: Value, render_output: bool) -> Result
     )
 }
 
-pub fn execute_json_with_vars(
+pub fn execute_value_with_vars(
     script: &str,
     payload: Value,
     vars: Value,
     render_output: bool,
 ) -> Result<Value, DwError> {
-    execute_json_with_context(
+    execute_value_with_context(
         script,
         payload,
-        ExecutionContext::new(Some(vars), None, None)?,
+        ExecutionContext::from_values(Some(vars), None, None)?,
         render_output,
     )
 }
 
-pub fn execute_json_with_context(
+pub fn execute_value_with_context(
     script: &str,
     payload: Value,
     context: ExecutionContext,
     render_output: bool,
 ) -> Result<Value, DwError> {
-    compile(script)?.execute_with_context(
+    compile(script)?.execute_value_with_context(
         payload,
         context,
         &ExecutionOptions {
@@ -932,14 +944,14 @@ pub fn execute_json_with_context(
     )
 }
 
-pub fn parse_payload_format(
+pub fn parse_native_payload_format(
     payload: Value,
     payload_format: Option<&str>,
 ) -> Result<Value, DwError> {
-    parse_payload_format_with_options(payload, payload_format, None)
+    parse_native_payload_format_with_options(payload, payload_format, None)
 }
 
-pub fn parse_payload_format_with_options(
+pub fn parse_native_payload_format_with_options(
     payload: Value,
     payload_format: Option<&str>,
     options: Option<&Value>,
@@ -952,7 +964,7 @@ pub fn parse_payload_format_with_options(
             Value::String(text) => text,
             other => as_dataweave_string(&other),
         };
-        return crate::json::read_json_value(&text).map_err(|err| DwError::InvalidJson(err.to_string()));
+        return json::read_json_value(&text).map_err(|err| DwError::InvalidJson(err.to_string()));
     }
     if is_ndjson_mime(payload_format) {
         let text = match payload {
@@ -1632,7 +1644,9 @@ fn evaluate_simple_type_check(value: &Value, type_source: &str) -> bool {
         "Array" => value.is_array(),
         "Boolean" => value.is_boolean(),
         "CDATA" | "String" | "Key" => value.is_string(),
-        "Date" => value.as_str().is_some_and(is_iso_date),
+        "Date" | "DateTime" | "LocalDateTime" | "Time" | "LocalTime" | "Period" => {
+            value.temporal_type_name() == Some(type_name)
+        }
         "Null" => value.is_null(),
         "Number" => value.is_number(),
         "Object" => value.is_object(),
@@ -1670,15 +1684,6 @@ fn value_metadata(value: &Value) -> Option<Map<String, Value>> {
         return None;
     };
     Some(metadata.clone())
-}
-
-fn is_iso_date(value: &str) -> bool {
-    value.len() == 10
-        && value.as_bytes().get(4) == Some(&b'-')
-        && value.as_bytes().get(7) == Some(&b'-')
-        && value[..4].chars().all(|ch| ch.is_ascii_digit())
-        && value[5..7].chars().all(|ch| ch.is_ascii_digit())
-        && value[8..10].chars().all(|ch| ch.is_ascii_digit())
 }
 
 fn evaluate_or_else(
@@ -2276,6 +2281,26 @@ pub(crate) fn group_key(value: &Value) -> String {
 }
 
 pub(crate) fn stable_marker(value: &Value) -> String {
+    if let Some(kind) = value.temporal_type_name() {
+        use chrono::Timelike;
+        let key = match value {
+            Value::DateTime(value) => format!(
+                "{}:{}",
+                value.value.timestamp(),
+                value.value.timestamp_subsec_nanos()
+            ),
+            Value::LocalDateTime(value) => value.value.to_string(),
+            Value::LocalTime(value) => value.value.to_string(),
+            Value::Time(value) => format!(
+                "{}:{}",
+                value.value.num_seconds_from_midnight() as i64
+                    - value.offset.local_minus_utc() as i64,
+                value.value.nanosecond()
+            ),
+            _ => as_dataweave_string(value),
+        };
+        return format!("{kind}:{key}");
+    }
     match value {
         Value::Object(map) => {
             let mut entries = map.iter().collect::<Vec<_>>();
@@ -2310,6 +2335,11 @@ pub(crate) fn compare_sort_keys(left: &Value, right: &Value) -> std::cmp::Orderi
         (Value::String(left), Value::String(right)) => left.cmp(right),
         (Value::Bool(left), Value::Bool(right)) => left.cmp(right),
         (Value::Null, Value::Null) => Ordering::Equal,
+        _ if left.temporal_type_name().is_some() && right.temporal_type_name().is_some() => {
+            operators::compare_values(left, right)
+                .map(|value| value.cmp(&0))
+                .unwrap_or_else(|_| stable_marker(left).cmp(&stable_marker(right)))
+        }
         _ => stable_marker(left).cmp(&stable_marker(right)),
     }
 }
@@ -2323,7 +2353,7 @@ pub(crate) fn char_slice(source: &str, start: usize, end: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{json, Value};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn utc_date_with_offset(offset_days: i64) -> String {
@@ -4662,6 +4692,25 @@ fun advance(value) = value as Date + |P3D|
     }
 
     #[test]
+    fn renders_temporal_text_output_without_internal_markers() {
+        for mime in ["text", "text/plain", "plain"] {
+            for (expression, expected) in [
+                (r#""2026-10-26" as Date + |P3D|"#, "2026-10-29"),
+                ("|2026-10-26T12:34:56Z| + |P3D|", "2026-10-29T12:34:56Z"),
+                ("|12:34:56|", "12:34:56"),
+                ("|P3D|", "P3D"),
+                (r#""hello\nworld""#, "hello\nworld"),
+            ] {
+                let script = format!("%dw 2.0\noutput {mime}\n---\n{expression}");
+                assert_eq!(
+                    execute_json(&script, Value::Null, true).unwrap(),
+                    json!(expected)
+                );
+            }
+        }
+    }
+
+    #[test]
     fn evaluates_temporal_formatting_and_day_period_arithmetic() {
         let formatted = execute_json(
             r#"%dw 2.0
@@ -4795,8 +4844,8 @@ var base = |2024-02-27| as Date
         assert_eq!(
             shifted,
             json!({
-                "tomorrow": {"__dwpy_temporal": "date", "value": "2024-02-28"},
-                "nextWeek": {"__dwpy_temporal": "date", "value": "2024-03-05"}
+                "tomorrow": "2024-02-28",
+                "nextWeek": "2024-03-05"
             })
         );
 
@@ -5962,58 +6011,46 @@ output application/python
         assert_eq!(result["taken"], json!({"a": 1, "b": 2}));
         assert_eq!(result["every"], json!(true));
         assert_eq!(result["some"], json!(true));
-        assert_eq!(result["periodValue"]["text"], json!("P4Y"));
-        assert_eq!(
-            result["nextHour"],
-            json!({"__dwpy_temporal": "datetime", "value": "2020-10-05T21:22:34.385Z"})
-        );
-        assert_eq!(result["betweenValue"]["text"], json!("P1Y1M1D"));
+        assert_eq!(result["periodValue"], json!("P4Y"));
+        assert_eq!(result["nextHour"], json!("2020-10-05T21:22:34.385Z"));
+        assert_eq!(result["betweenValue"], json!("P1Y1M1D"));
         assert_eq!(result["daysBetweenValue"], json!(365));
         assert_eq!(result["leapYears"], json!([true, false, true, false]));
         assert_eq!(result["zonedLeapYears"], json!([true, true]));
+        assert_eq!(result["beginningOfDay"], json!("2020-10-06T00:00:00-03:00"));
+        assert_eq!(result["beginningOfLocalDay"], json!("2020-10-06T00:00:00"));
         assert_eq!(
-            result["beginningOfDay"]["value"],
-            json!("2020-10-06T00:00:00-03:00")
-        );
-        assert_eq!(
-            result["beginningOfLocalDay"]["value"],
-            json!("2020-10-06T00:00:00")
-        );
-        assert_eq!(
-            result["beginningOfHour"]["value"],
+            result["beginningOfHour"],
             json!("2020-10-06T18:00:00-03:00")
         );
-        assert_eq!(result["beginningOfLocalHour"]["value"], json!("18:00:00"));
+        assert_eq!(result["beginningOfLocalHour"], json!("18:00:00"));
         assert_eq!(
-            result["beginningOfMonth"]["value"],
+            result["beginningOfMonth"],
             json!("2020-10-01T00:00:00-03:00")
         );
-        assert_eq!(result["beginningOfDateMonth"]["value"], json!("2020-10-01"));
+        assert_eq!(result["beginningOfDateMonth"], json!("2020-10-01"));
         assert_eq!(
-            result["beginningOfWeek"]["value"],
+            result["beginningOfWeek"],
             json!("2020-10-04T00:00:00-03:00")
         );
-        assert_eq!(result["beginningOfDateWeek"]["value"], json!("2020-10-04"));
+        assert_eq!(result["beginningOfDateWeek"], json!("2020-10-04"));
         assert_eq!(
-            result["beginningOfYear"]["value"],
+            result["beginningOfYear"],
             json!("2020-01-01T00:00:00.000-03:00")
         );
+        assert_eq!(result["beginningOfLocalYear"], json!("2020-01-01T00:00:00"));
+        assert_eq!(result["beginningOfDateYear"], json!("2020-01-01"));
+        assert_eq!(result["constructedDate"], json!("2012-10-11"));
         assert_eq!(
-            result["beginningOfLocalYear"]["value"],
-            json!("2020-01-01T00:00:00")
-        );
-        assert_eq!(result["beginningOfDateYear"]["value"], json!("2020-01-01"));
-        assert_eq!(result["constructedDate"]["value"], json!("2012-10-11"));
-        assert_eq!(
-            result["constructedDateTime"]["value"],
+            result["constructedDateTime"],
             json!("2012-10-11T12:30:40-03:00")
         );
         assert_eq!(
-            result["constructedLocalDateTime"]["value"],
+            result["constructedLocalDateTime"],
             json!("2012-10-11T12:30:40")
         );
-        assert_eq!(result["constructedLocalTime"]["value"], json!("12:30:40"));
-        assert_eq!(result["constructedTime"]["value"], json!("12:30:40-03:00"));
+        assert_eq!(result["constructedLocalTime"], json!("12:30:40"));
+        assert_eq!(result["constructedTime"], json!("12:30:40-03:00"));
     }
 
     #[test]

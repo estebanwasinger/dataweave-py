@@ -99,6 +99,9 @@ impl RustDataWeaveRuntime {
                     payload_format,
                     payload_format_options_json.as_ref(),
                 ) {
+                    Ok(value) if payload_format.is_some() => {
+                        dwpy_core::DwValue::from(value).to_transport_json()
+                    }
                     Ok(value) => value,
                     Err(err) => {
                         return self.unsupported_or_legacy(
@@ -120,19 +123,14 @@ impl RustDataWeaveRuntime {
                     .map(|value| py_to_json(py, value.bind(py)))
                     .transpose();
                 let rust_result = vars_json.and_then(|vars_json| {
-                    dwpy_core::ExecutionContext::new(
+                    dwpy_core::execute_transport_with_context(
+                        script_source,
+                        payload_json,
                         vars_json,
                         attributes_json.clone(),
                         properties_map.clone(),
+                        render_output,
                     )
-                    .and_then(|context| {
-                        dwpy_core::execute_json_with_context(
-                            script_source,
-                            payload_json,
-                            context,
-                            render_output,
-                        )
-                    })
                     .map_err(|err| rust_core_error(py, err, script_source))
                 });
 
@@ -221,14 +219,18 @@ impl RustDataWeaveRuntime {
             .transpose()?
             .map(properties_to_map)
             .transpose()?;
-        let result = dwpy_core::infer_type_descriptor_with_context(
+        let decode = |value| {
+            dwpy_core::DwValue::from_transport_json(value)
+                .map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))
+        };
+        let result = dwpy_core::infer_native_type_descriptor_with_context(
             script_source,
-            payload_json,
-            vars_json,
-            attributes_json,
+            payload_json.map(decode).transpose()?,
+            vars_json.map(decode).transpose()?,
+            attributes_json.map(decode).transpose()?,
         )
         .map_err(|err| pyo3::exceptions::PyNotImplementedError::new_err(err.to_string()))?;
-        json_to_py(py, result)
+        json_to_py(py, result.to_json())
     }
 }
 
@@ -376,6 +378,7 @@ fn contains_special_marker(value: &serde_json::Value) -> bool {
                 || map.contains_key("__dwpy_nonfinite")
                 || map.contains_key("__dwpy_temporal")
                 || map.contains_key("__dwpy_period")
+                || map.contains_key("__dwpy_object")
                 || map.values().any(contains_special_marker)
         }
         _ => false,
@@ -391,6 +394,20 @@ fn json_to_py_preserving_dw_objects(
             let output = PyList::empty(py);
             for item in items {
                 output.append(json_to_py_preserving_dw_objects(py, item)?)?;
+            }
+            Ok(output.unbind().into())
+        }
+        serde_json::Value::Object(mut map)
+            if map.len() == 1 && map.contains_key("__dwpy_object") =>
+        {
+            let serde_json::Value::Object(values) = map.remove("__dwpy_object").unwrap() else {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "invalid escaped bridge object",
+                ));
+            };
+            let output = PyDict::new(py);
+            for (key, value) in values {
+                output.set_item(key, json_to_py_preserving_dw_objects(py, value)?)?;
             }
             Ok(output.unbind().into())
         }
@@ -653,7 +670,7 @@ fn is_core_candidate(script_source: &str) -> bool {
             };
             is_supported_yaml_output_line(line)
         }
-        Some("text/plain") | Some("plain") => true,
+        Some("text/plain") | Some("plain") | Some("text") => true,
         Some("markdown") | Some("md") | Some("text/markdown") | Some("text/x-markdown") => {
             let Some(line) = output_line else {
                 return false;

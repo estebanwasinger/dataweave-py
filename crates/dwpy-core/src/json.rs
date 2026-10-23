@@ -1,7 +1,7 @@
+use crate::value::DwMap as Map;
+use crate::value::DwValue as Value;
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
-use serde_json::Map;
-use serde_json::Value;
 
 use crate::builtins::{binary_bytes, DW_BINARY_MARKER, DW_NONFINITE_MARKER};
 use crate::mime::{is_json_mime, output_mime};
@@ -465,21 +465,30 @@ mod tests {
             r#"{"test":{"test2":{"array":1},"test2":{"array":2},"test2":{"array":3}}}"#,
         )
         .unwrap();
-        let result = crate::execute_json("payload.test.*test2", payload, false).unwrap();
-        assert_eq!(result, serde_json::json!([
-            {"array": 1}, {"array": 2}, {"array": 3}
-        ]));
+        let result = crate::execute_value("payload.test.*test2", payload, false).unwrap();
+        assert_eq!(
+            result.to_json(),
+            serde_json::json!([
+                {"array": 1}, {"array": 2}, {"array": 3}
+            ])
+        );
     }
 
     #[test]
     fn json_reader_matches_standard_decoder_for_unique_keys_and_scalars() {
         for input in [
             r#"{"values":[null,true,false,-1,18446744073709551615,1.25,1e30,"caf\u00e9"],"empty":{}}"#,
-            "[]", "null", "42", "-1.5", "true", r#""hello""#,
-            "1.234567890123456789", "18446744073709551616",
+            "[]",
+            "null",
+            "42",
+            "-1.5",
+            "true",
+            r#""hello""#,
+            "1.234567890123456789",
+            "18446744073709551616",
         ] {
             assert_eq!(
-                read_json_value(input).unwrap(),
+                read_json_value(input).unwrap().to_json(),
                 serde_json::from_str::<serde_json::Value>(input).unwrap()
             );
         }

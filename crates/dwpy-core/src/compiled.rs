@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::io::Write;
 
-use serde_json::{Map, Value};
+use crate::value::{DwMap as Map, DwValue as Value};
 
 use crate::json::{render_json_value, JsonOutputOptions};
 use crate::literals::{parse_literal, parse_string_literal};

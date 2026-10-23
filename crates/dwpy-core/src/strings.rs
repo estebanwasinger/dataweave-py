@@ -1,4 +1,4 @@
-use serde_json::Value;
+use crate::value::DwValue as Value;
 
 use regex::Regex;
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime, time, timedelta
 from typing import Dict, List, Optional, Tuple, Any, Union, get_origin, get_args
 
 from . import parser
@@ -17,6 +18,8 @@ from .typesystem import (
     BooleanType,
     NullType,
     BinaryType,
+    TemporalType,
+    DATE, DATETIME, LOCAL_DATETIME, TIME, LOCAL_TIME, PERIOD, TIMEZONE, TEMPORAL_TYPES,
     ArrayType,
     ObjectType,
     FunctionType,
@@ -152,6 +155,8 @@ def _dw_type_from_rust_descriptor(descriptor: Any) -> Optional[DWType]:
     if not isinstance(descriptor, dict):
         return None
     kind = descriptor.get("kind")
+    if kind in TEMPORAL_TYPES:
+        return TEMPORAL_TYPES[kind]
     if kind == "Any":
         return ANY
     if kind == "String":
@@ -202,6 +207,14 @@ def _python_value_to_type(value: Any) -> DWType:
         return NULL
     if isinstance(value, bool):
         return BOOLEAN
+    if isinstance(value, datetime):
+        return DATETIME if value.tzinfo is not None else LOCAL_DATETIME
+    if isinstance(value, date):
+        return DATE
+    if isinstance(value, time):
+        return TIME if value.tzinfo is not None else LOCAL_TIME
+    if isinstance(value, timedelta):
+        return PERIOD
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return NUMBER
     if isinstance(value, str):
@@ -267,6 +280,8 @@ def infer_script_pydantic_model(
             return type(None)
         if isinstance(dw_type, BinaryType):
             return bytes
+        if isinstance(dw_type, TemporalType):
+            return {"Date": date, "DateTime": datetime, "LocalDateTime": datetime, "Time": time, "LocalTime": time}.get(dw_type.name, str)
         if isinstance(dw_type, LiteralType):
             return type(dw_type.value)
         if isinstance(dw_type, ArrayType):
@@ -381,6 +396,19 @@ class TypeInferencer:
             return BOOLEAN
         if isinstance(expr, parser.NullLiteral):
             return NULL
+        if isinstance(expr, parser.TemporalLiteral):
+            text = expr.value
+            if text.startswith("P"):
+                return PERIOD
+            if text == "Z" or (text.startswith(("+", "-")) and len(text) == 6):
+                return TIMEZONE
+            if "T" in text:
+                value = datetime.fromisoformat(text.replace("Z", "+00:00"))
+                return DATETIME if value.tzinfo is not None else LOCAL_DATETIME
+            if ":" in text:
+                value = time.fromisoformat(text.replace("Z", "+00:00"))
+                return TIME if value.tzinfo is not None else LOCAL_TIME
+            return DATE
         if isinstance(expr, parser.Placeholder):
             return ANY
         if isinstance(expr, parser.Identifier):
@@ -670,6 +698,10 @@ class TypeInferencer:
         return ANY
 
     def _infer_binary_plus(self, left: DWType, right: DWType) -> DWType:
+        if isinstance(left, TemporalType) and right == PERIOD:
+            return left
+        if left == PERIOD and isinstance(right, TemporalType):
+            return right
         if is_number(left) and is_number(right):
             return NUMBER
         if is_string(left) and is_string(right):
@@ -696,6 +728,8 @@ class TypeInferencer:
         return ANY
 
     def _infer_binary_minus(self, left: DWType, right: DWType, right_expr: Optional[parser.Expression]) -> DWType:
+        if isinstance(left, TemporalType) and right == PERIOD:
+            return left
         # Numeric subtraction
         if is_number(left) and is_number(right):
             return NUMBER
@@ -856,6 +890,8 @@ class TypeInferencer:
                 return BOOLEAN
             if name == "binary":
                 return BINARY
+            if name in {key.lower() for key in TEMPORAL_TYPES}:
+                return next(value for key, value in TEMPORAL_TYPES.items() if key.lower() == name)
             if name == "null":
                 return NULL
             if name == "any":

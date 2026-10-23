@@ -1,4 +1,4 @@
-use serde_json::{Map, Value};
+use crate::value::{DwMap as Map, DwValue as Value};
 
 use crate::syntax::{
     find_matching_delimiter, is_identifier, split_top_level, split_top_level_arrow,

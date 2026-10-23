@@ -1,4 +1,4 @@
-use serde_json::{Map, Value};
+use crate::value::{DwMap as Map, DwValue as Value};
 
 use crate::functions::evaluate_header_declarations;
 use crate::literals::{evaluate_object_key, parse_literal, parse_string_literal};
@@ -111,7 +111,7 @@ pub(crate) fn evaluate_object_literal_scoped(
             return Ok(value);
         }
     }
-    let mut map = serde_json::Map::new();
+    let mut map = crate::value::DwMap::new();
     let mut pairs = Vec::new();
     let mut has_duplicate_key = false;
     let entries = split_object_entries(inner);

@@ -1,5 +1,5 @@
-use serde_json::Map;
-use serde_json::Value;
+use crate::value::DwMap as Map;
+use crate::value::DwValue as Value;
 use yaml_serde::{Mapping as YamlMapping, Value as YamlValue};
 
 use crate::{number_result, output_bool_option, output_option, DwError};
@@ -181,6 +181,13 @@ pub(crate) fn render_yaml_output(value: &Value, directive: &str) -> Result<Strin
 
 fn to_yaml_value(value: &Value) -> YamlValue {
     match value {
+        Value::TimeZone(_)
+        | Value::Date(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::LocalTime(_)
+        | Value::Time(_)
+        | Value::Period(_) => YamlValue::String(crate::as_dataweave_string(value)),
         Value::Null => YamlValue::Null,
         Value::Bool(value) => YamlValue::Bool(*value),
         Value::Number(value) => {

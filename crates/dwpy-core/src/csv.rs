@@ -1,5 +1,5 @@
-use serde_json::Map;
-use serde_json::Value;
+use crate::value::DwMap as Map;
+use crate::value::DwValue as Value;
 use std::io::Write;
 
 use crate::{as_dataweave_string, output_bool_option, output_option, DwError};
