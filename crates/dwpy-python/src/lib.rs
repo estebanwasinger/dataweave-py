@@ -183,8 +183,11 @@ impl RustDataWeaveRuntime {
     }
 
     fn execute_smoke_json(&self, script_source: &str, payload_json: &str) -> PyResult<String> {
-        let payload: serde_json::Value = serde_json::from_str(payload_json)
-            .map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))?;
+        let payload = dwpy_core::parse_payload_format(
+            serde_json::Value::String(payload_json.to_string()),
+            Some("application/json"),
+        )
+        .map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))?;
         let result = dwpy_core::execute_smoke(script_source, payload)
             .map_err(|err| pyo3::exceptions::PyNotImplementedError::new_err(err.to_string()))?;
         serde_json::to_string(&result)

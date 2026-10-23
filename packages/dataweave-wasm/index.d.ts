@@ -20,14 +20,18 @@ type AnalyzeResult = {
 type ExecuteRequest = {
   attributes?: JsonValue;
   payload?: JsonValue;
+  payload_format?: string;
+  payload_format_options?: {[key: string]: JsonValue};
   properties?: Record<string, string>;
   render_output?: boolean;
   script: string;
   vars?: JsonValue;
 };
 
-declare const analyze: (request: AnalyzeRequest) => AnalyzeResult;
-declare const execute: (request: ExecuteRequest) => JsonValue;
+/** Serialized JSON requests preserve duplicate keys in execution data. */
+declare const analyze: (request: AnalyzeRequest | string) => AnalyzeResult;
+/** Pass raw request JSON, or JSON payload text with payload_format, to retain duplicate keys. */
+declare const execute: (request: ExecuteRequest | string) => JsonValue;
 
 export {analyze, execute};
 export type {AnalyzeRequest, AnalyzeResult, ExecuteRequest, JsonValue};

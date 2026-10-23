@@ -170,7 +170,8 @@ class WasmDataWeaveRuntime:
     def execute_smoke_json(self, script_source: str, payload_json: str) -> str:
         result = self.execute(
             script_source,
-            json.loads(payload_json),
+            payload_json,
+            payload_format="application/json",
             render_output=False,
         )
         return json.dumps(result, default=json_default, separators=(",", ":"))
