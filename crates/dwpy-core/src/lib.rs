@@ -1240,39 +1240,6 @@ pub(crate) fn evaluate_expression_scoped(
         return Ok(Value::Bool(!is_truthy(&value)));
     }
 
-    if let Some((left, type_source)) = split_top_level_keyword(source, "as") {
-        let value = evaluate_expression_scoped(left, payload, locals)?;
-        if let Some((coercion_type, operator, right)) =
-            split_top_level_operator(type_source, &["++"])
-        {
-            let coerced = evaluate_coercion(&value, &resolve_type_source(coercion_type, locals))?;
-            let right_value = evaluate_expression_scoped(right, payload, locals)?;
-            return evaluate_additive(&coerced, operator, &right_value);
-        }
-        if let Some((coercion_type, operator, right)) =
-            split_top_level_operator(type_source, &["==", "!=", ">=", "<=", ">", "<"])
-        {
-            let coerced = evaluate_coercion(&value, &resolve_type_source(coercion_type, locals))?;
-            let right_value = evaluate_expression_scoped(right, payload, locals)?;
-            return evaluate_comparison(&coerced, operator, &right_value);
-        }
-        if let Some((coercion_type, next_type)) = split_top_level_keyword(type_source, "as") {
-            let coerced = evaluate_coercion(&value, &resolve_type_source(coercion_type, locals))?;
-            return evaluate_coercion(&coerced, &resolve_type_source(next_type, locals));
-        }
-        if let Some((coercion_type, operator, right)) =
-            split_top_level_keyword_or_call_operator(type_source, &["match", "matches"])
-        {
-            let coerced = evaluate_coercion(&value, &resolve_type_source(coercion_type, locals))?;
-            let right_value = evaluate_expression_scoped(right, payload, locals)?;
-            if operator == "matches" {
-                return evaluate_matches(&coerced, &right_value);
-            }
-            return evaluate_binary_builtin(operator, &coerced, &right_value);
-        }
-        return evaluate_coercion(&value, &resolve_type_source(type_source, locals));
-    }
-
     if let Some((left, right)) = split_top_level_keyword(source, "to") {
         let left_value = evaluate_expression_scoped(left, payload, locals)?;
         let right_value = evaluate_expression_scoped(right, payload, locals)?;
@@ -1346,6 +1313,13 @@ pub(crate) fn evaluate_expression_scoped(
                 _ => evaluate_binary_builtin(function_name, &left_value, &right_value),
             };
         }
+    }
+
+    // Split lower-precedence operators first so coercion applies only to its
+    // operand. The rightmost `as` makes consecutive coercions left-associative.
+    if let Some((left, _, type_source)) = split_top_level_keyword_operator(source, &["as"]) {
+        let value = evaluate_expression_scoped(left, payload, locals)?;
+        return evaluate_coercion(&value, &resolve_type_source(type_source, locals));
     }
 
     if source.starts_with('{')
@@ -4635,6 +4609,56 @@ output application/python
         assert!(stamp.ends_with('Z'));
         assert_eq!(stamp.get(..10), Some(date));
         assert_eq!(date.len(), 10);
+    }
+
+    #[test]
+    fn evaluates_coercion_before_arithmetic() {
+        let script = r#"%dw 2.0
+output application/json
+type Day = Date
+var start = "2026-10-26" as Day + |P1D|
+fun advance(value) = value as Date + |P3D|
+---
+{
+  date: "2026-10-26" as Date + |P3D|,
+  subtract: "2026-10-26" as Date - |P3D|,
+  chain: "2026-10-26" as Date + |P3D| - |P1D|,
+  bothCoerced: "2026-10-26" as Date + "P3D" as Period,
+  options: "2026-10-26" as Date {} + |P3D|,
+  number: "2" as Number + 3 * 4,
+  divide: "12" as Number / "3" as Number,
+  compare: "2" as Number + 3 > "4" as Number,
+  range: "2" as Number to "4" as Number,
+  casts: "2" as Number as String as Number + 3,
+  concat: 2 as String ++ 3 as String ++ "!",
+  header: start,
+  call: advance("2026-10-26"),
+  mapped: ["2026-10-26"] map ($ as Date + |P3D|),
+  multiline: "2026-10-26" as Date /* + |P99D| --- */
+    + // as String
+    |P3D|
+}"#;
+        let rendered = execute_json(script, Value::Null, true).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(rendered.as_str().unwrap()).unwrap(),
+            json!({
+                "date": "2026-10-29",
+                "subtract": "2026-10-23",
+                "chain": "2026-10-28",
+                "bothCoerced": "2026-10-29",
+                "options": "2026-10-29",
+                "number": 14,
+                "divide": 4,
+                "compare": true,
+                "range": [2, 3, 4],
+                "casts": 5,
+                "concat": "23!",
+                "header": "2026-10-27",
+                "call": "2026-10-29",
+                "mapped": ["2026-10-29"],
+                "multiline": "2026-10-29"
+            })
+        );
     }
 
     #[test]

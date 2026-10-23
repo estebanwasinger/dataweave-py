@@ -52,6 +52,24 @@ fn rendered_output_is_distinct_from_native_values() {
 }
 
 #[wasm_bindgen_test]
+fn coercion_binds_before_date_and_number_arithmetic() {
+    assert_eq!(
+        execute(json!({
+            "script": r#"%dw 2.0
+output application/json
+---
+{
+  date: "2026-10-26" as Date + |P3D|,
+  number: "2" as Number + 3 * 4,
+  casts: "2" as Number as String as Number + 3
+}"#,
+            "payload": null
+        })),
+        json!(r#"{"date":"2026-10-29","number":14,"casts":5}"#)
+    );
+}
+
+#[wasm_bindgen_test]
 fn object_selector_preserves_markdown_newlines_and_unicode() {
     assert_eq!(
         execute(json!({

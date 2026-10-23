@@ -760,7 +760,7 @@ class Parser:
                 target_type = self._parse_type_spec(consume_metadata=False)
                 options_expr: Optional[Expression] = None
                 if self.current()[0] == "LBRACE":
-                    options_expr = self.parse_expression()
+                    options_expr = self.parse_object()
                 expr = TypeCoercion(expression=expr, target=target_type, options=options_expr)
                 continue
             if token_type == "DOT":
