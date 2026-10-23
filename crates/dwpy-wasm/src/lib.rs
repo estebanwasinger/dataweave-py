@@ -3,8 +3,7 @@ use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
 pub fn run_dataweave_smoke(script_source: &str, payload_json: &str) -> Result<String, JsValue> {
-    let payload: serde_json::Value =
-        serde_json::from_str(payload_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let payload = decode_json_input(payload_json)?;
     let result = dwpy_core::execute_smoke(script_source, payload)
         .map_err(|err| JsValue::from_str(&err.to_string()))?;
     serde_json::to_string(&result).map_err(|err| JsValue::from_str(&err.to_string()))
@@ -12,8 +11,7 @@ pub fn run_dataweave_smoke(script_source: &str, payload_json: &str) -> Result<St
 
 #[wasm_bindgen]
 pub fn run_dataweave_request(request_json: &str) -> Result<String, JsValue> {
-    let request: serde_json::Value =
-        serde_json::from_str(request_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let request = decode_request_context(request_json)?;
     let request = request
         .as_object()
         .ok_or_else(|| JsValue::from_str("DataWeave request must be a JSON object"))?;
@@ -93,8 +91,7 @@ pub fn run_dataweave_request(request_json: &str) -> Result<String, JsValue> {
 
 #[wasm_bindgen]
 pub fn analyze_dataweave_request(request_json: &str) -> Result<String, JsValue> {
-    let request: serde_json::Value =
-        serde_json::from_str(request_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let request = decode_request_context(request_json)?;
     let request = request
         .as_object()
         .ok_or_else(|| JsValue::from_str("DataWeave analysis request must be a JSON object"))?;
@@ -117,6 +114,31 @@ pub fn analyze_dataweave_request(request_json: &str) -> Result<String, JsValue> 
     }
     .map_err(|err| JsValue::from_str(&wasm_error_message(err, expression)))?;
     serde_json::to_string(&result).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+fn decode_json_input(text: &str) -> Result<serde_json::Value, JsValue> {
+    dwpy_core::parse_payload_format(
+        serde_json::Value::String(text.to_string()),
+        Some("application/json"),
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+fn decode_request_context(text: &str) -> Result<serde_json::Value, JsValue> {
+    let mut request: serde_json::Value =
+        serde_json::from_str(text).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    if let Some(fields) = request.as_object_mut() {
+        // Keep the envelope's existing validation and last-key behavior, but
+        // decode execution data from its original text before keys can be lost.
+        let raw_fields: BTreeMap<String, Box<serde_json::value::RawValue>> =
+            serde_json::from_str(text).map_err(|err| JsValue::from_str(&err.to_string()))?;
+        for name in ["payload", "vars", "attributes"] {
+            if let Some(raw) = raw_fields.get(name) {
+                fields.insert(name.to_string(), decode_json_input(raw.get())?);
+            }
+        }
+    }
+    Ok(request)
 }
 
 fn properties_to_map(value: &serde_json::Value) -> Result<BTreeMap<String, String>, String> {

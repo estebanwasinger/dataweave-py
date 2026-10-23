@@ -1229,6 +1229,13 @@ output application/json
     assert runtime._rust_runtime.last_execution_engine() == "rust-core"
 
 
+def test_raw_smoke_json_preserves_duplicate_payload_keys() -> None:
+    runtime = DataWeaveRuntime()
+    payload = '{"test":{"test2":{"array":1},"test2":{"array":2},"test2":{"array":3}}}'
+    result = runtime._rust_runtime.execute_smoke_json("payload.test.*test2", payload)
+    assert json.loads(result) == [{"array": 1}, {"array": 2}, {"array": 3}]
+
+
 def test_rust_bridge_renders_duplicate_key_json_in_core() -> None:
     runtime = DataWeaveRuntime()
     script = """%dw 2.0

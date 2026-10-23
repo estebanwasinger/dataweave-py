@@ -14,7 +14,7 @@ input.on("line", (line) => {
   try {
     const request = JSON.parse(line);
     const handler = request.operation === "analyze" ? analyze : execute;
-    process.stdout.write(JSON.stringify({ ok: true, result: handler(request) }) + "\n");
+    process.stdout.write(JSON.stringify({ ok: true, result: handler(line) }) + "\n");
   } catch (error) {
     process.stdout.write(
       JSON.stringify({

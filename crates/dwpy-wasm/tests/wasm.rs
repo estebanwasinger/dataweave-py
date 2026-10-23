@@ -29,6 +29,31 @@ fn smoke_entry_point_evaluates_rust_core_inside_wasm() {
 }
 
 #[wasm_bindgen_test]
+fn smoke_entry_point_preserves_duplicate_json_payload_keys() {
+    let payload = r#"{"test":{"test2":{"array":1},"test2":{"array":2},"test2":{"array":3}}}"#;
+    let output = run_dataweave_smoke("payload.test.*test2", payload).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&output).unwrap(),
+        json!([{"array": 1}, {"array": 2}, {"array": 3}])
+    );
+}
+
+#[wasm_bindgen_test]
+fn request_entry_point_preserves_duplicates_before_decoding_context() {
+    // Construct raw JSON: json! or a host JSON.parse would already lose duplicates.
+    let request = r#"{"script":"{items: payload.test.*test2, values: vars.*a, headers: attributes.*h}","payload":{"test":{"test2":{"array":1},"test2":{"array":2},"test2":{"array":3}}},"vars":{"a":1,"a":2},"attributes":{"h":"first","h":"last"}}"#;
+    let output = run_dataweave_request(request).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&output).unwrap(),
+        json!({
+            "items": [{"array": 1}, {"array": 2}, {"array": 3}],
+            "values": [1, 2],
+            "headers": ["first", "last"]
+        })
+    );
+}
+
+#[wasm_bindgen_test]
 fn request_entry_point_preserves_execution_context() {
     assert_eq!(
         execute(json!({
