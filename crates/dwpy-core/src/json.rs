@@ -262,7 +262,7 @@ fn render_json_value_pretty(value: &Value, options: JsonOutputOptions) -> Result
     let formatter = serde_json::ser::PrettyFormatter::with_indent(&indent_bytes);
     let mut output = Vec::new();
     let mut serializer = serde_json::Serializer::with_formatter(&mut output, formatter);
-    value
+    JsonOutputValue(&value)
         .serialize(&mut serializer)
         .map_err(|err| DwError::InvalidJson(err.to_string()))?;
     let rendered =
@@ -275,6 +275,15 @@ fn render_json_value_pretty(value: &Value, options: JsonOutputOptions) -> Result
 }
 
 fn sort_json_object_keys(value: &Value) -> Value {
+    if let Some(mut pairs) = duplicate_object_pairs(value) {
+        pairs.sort_by(|left, right| left.0.cmp(&right.0));
+        return duplicate_object_value(
+            pairs
+                .into_iter()
+                .map(|(key, value)| (key, sort_json_object_keys(&value)))
+                .collect(),
+        );
+    }
     match value {
         Value::Object(map) => {
             let mut entries = map.iter().collect::<Vec<_>>();
@@ -310,11 +319,12 @@ fn normalize_special_json_values(value: &Value) -> Value {
             let Some(pairs) = duplicate_object_pairs(value) else {
                 return value.clone();
             };
-            Value::Object(Map::from_iter(
+            duplicate_object_value(
                 pairs
                     .into_iter()
-                    .map(|(key, value)| (key, normalize_special_json_values(&value))),
-            ))
+                    .map(|(key, value)| (key, normalize_special_json_values(&value)))
+                    .collect(),
+            )
         }
         Value::Array(items) => {
             Value::Array(items.iter().map(normalize_special_json_values).collect())
@@ -327,6 +337,29 @@ fn normalize_special_json_values(value: &Value) -> Value {
                 .map(|(key, value)| (key.clone(), normalize_special_json_values(value))),
         )),
         _ => value.clone(),
+    }
+}
+
+/// Serialize DataWeave object pairs directly into the formatter rather than
+/// collecting them into a unique-key JSON map first.
+struct JsonOutputValue<'a>(&'a Value);
+
+impl Serialize for JsonOutputValue<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if let Some(pairs) = duplicate_object_pairs(self.0) {
+            return serializer.collect_map(
+                pairs
+                    .iter()
+                    .map(|(key, value)| (key, JsonOutputValue(value))),
+            );
+        }
+        match self.0 {
+            Value::Array(items) => serializer.collect_seq(items.iter().map(JsonOutputValue)),
+            Value::Object(map) => {
+                serializer.collect_map(map.iter().map(|(key, value)| (key, JsonOutputValue(value))))
+            }
+            value => value.serialize(serializer),
+        }
     }
 }
 
@@ -458,6 +491,48 @@ fn parse_bool_option(value: &str, name: &str) -> Result<bool, DwError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pretty_writer_preserves_nested_duplicate_object_entries() {
+        let value = read_json_value(r#"[{"a":null,"a":[1,2],"a":{"x":"café","x":3}}]"#).unwrap();
+        for indent in [0, 2, 4] {
+            let rendered = render_json_value(
+                &value,
+                JsonOutputOptions {
+                    indent: Some(indent),
+                    ensure_ascii: true,
+                    sort_keys: false,
+                    duplicate_key_as_array: false,
+                },
+            )
+            .unwrap();
+            assert_eq!(read_json_value(&rendered).unwrap(), value);
+            assert!(rendered.contains("caf\\u00e9"));
+        }
+    }
+
+    #[test]
+    fn pretty_writer_sorts_keys_without_reordering_equal_key_entries() {
+        let value = read_json_value(r#"{"z":0,"a":1,"z":2,"a":3}"#).unwrap();
+        let rendered = render_json_value(
+            &value,
+            JsonOutputOptions {
+                indent: Some(2),
+                ensure_ascii: false,
+                sort_keys: true,
+                duplicate_key_as_array: false,
+            },
+        )
+        .unwrap();
+        let pairs = duplicate_object_pairs(&read_json_value(&rendered).unwrap()).unwrap();
+        let keys = pairs
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(keys, vec!["a", "a", "z", "z"]);
+        assert_eq!(pairs[0].1.as_i64(), Some(1));
+        assert_eq!(pairs[1].1.as_i64(), Some(3));
+    }
 
     #[test]
     fn json_reader_preserves_repeated_keys_at_every_depth() {

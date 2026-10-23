@@ -19,3 +19,15 @@ test("read JSON preserves duplicate keys in composed expressions", () => {
     payload,
   }), [1, 2, 3]);
 });
+
+for (const expression of ["payload.test", "[payload.test]"]) {
+  test(`pretty JSON output retains duplicate fields for ${expression}`, () => {
+    const result = execute({
+      script: "%dw 2.0\noutput application/json indent=2\n---\n" + expression,
+      payload, payload_format: "application/json",
+    });
+    assert.equal((result.match(/"test2":/g) || []).length, 3);
+    for (const value of [1, 2, 3]) assert.ok(result.includes(`"array": ${value}`));
+    assert.equal(result.startsWith("["), expression.startsWith("["));
+  });
+}
