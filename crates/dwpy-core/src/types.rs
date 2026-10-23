@@ -1,8 +1,21 @@
-use serde_json::Map;
-use serde_json::Value;
+use crate::value::DwMap as Map;
+use crate::value::DwValue as Value;
 
 pub(crate) fn type_descriptor_from_value(value: &Value) -> Value {
+    if let Some(value) = crate::selectors::unwrap_metadata_value(value) {
+        return type_descriptor_from_value(&value);
+    }
     match value {
+        Value::TimeZone(_)
+        | Value::Date(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::LocalTime(_)
+        | Value::Time(_)
+        | Value::Period(_) => Value::Object(Map::from_iter([(
+            "kind".into(),
+            Value::String(value.temporal_type_name().unwrap().into()),
+        )])),
         Value::Null => type_null(),
         Value::Bool(_) => type_boolean(),
         Value::Number(_) => type_number(),

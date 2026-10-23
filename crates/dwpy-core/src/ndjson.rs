@@ -1,4 +1,4 @@
-use serde_json::{Map, Value};
+use crate::value::{DwMap as Map, DwValue as Value};
 
 use crate::builtins::json_write_value_with_options;
 use crate::json::{render_json_value, JsonOutputOptions};
@@ -143,7 +143,9 @@ fn parse_bool(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    macro_rules! json {
+        ($($tokens:tt)*) => { Value::from(serde_json::json!($($tokens)*)) };
+    }
 
     #[test]
     fn invalid_records_are_data_errors_and_can_be_skipped() {

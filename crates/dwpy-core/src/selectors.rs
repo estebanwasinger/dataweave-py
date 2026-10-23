@@ -1,5 +1,5 @@
-use serde_json::Map;
-use serde_json::Value;
+use crate::value::DwMap as Map;
+use crate::value::DwValue as Value;
 
 use crate::periods::temporal_field_value;
 use crate::syntax::{is_identifier, is_top_level_index};
@@ -409,7 +409,8 @@ pub(crate) fn parse_postfix_path_access(source: &str) -> Option<(&str, &str)> {
             continue;
         }
         let base = source[..index].trim();
-        if base.ends_with(')') || base.ends_with(']') || base.ends_with('}') {
+        if base.ends_with(')') || base.ends_with(']') || base.ends_with('}') || base.ends_with('|')
+        {
             return Some((base, &source[index..]));
         }
     }

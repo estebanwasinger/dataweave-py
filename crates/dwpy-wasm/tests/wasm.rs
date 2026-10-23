@@ -83,6 +83,29 @@ fn text_output_renders_date_as_text_instead_of_a_tagged_object() {
 }
 
 #[wasm_bindgen_test]
+fn native_temporals_are_encoded_only_for_explicit_typed_transport() {
+    let script = r#"{date: "2026-10-26" as Date + |P3D|, nanos: |12:34:56.123456789|.nanoseconds}"#;
+    let mut request = json!({"script": script, "payload": null, "render_output": false});
+    assert_eq!(
+        execute(request.clone()),
+        json!({"date":"2026-10-29","nanos":123456789})
+    );
+    request["typed_transport"] = json!(true);
+    let encoded = execute(request);
+    assert_eq!(
+        encoded["date"],
+        json!({"__dwpy_temporal":"date","value":"2026-10-29"})
+    );
+    assert_eq!(encoded["nanos"], json!(123456789));
+
+    let object = json!({"__dwpy_temporal":"date","value":"ordinary user data"});
+    assert_eq!(
+        execute(json!({"script":"payload", "payload":object, "render_output":false})),
+        object
+    );
+}
+
+#[wasm_bindgen_test]
 fn object_selector_preserves_markdown_newlines_and_unicode() {
     assert_eq!(
         execute(json!({

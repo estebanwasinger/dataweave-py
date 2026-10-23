@@ -120,6 +120,7 @@ class WasmDataWeaveRuntime:
     ) -> Any:
         _validate_properties(properties)
         request: Dict[str, Any] = {
+            "typed_transport": True,
             "script": script_source,
             "payload": _encode_wasm_value(payload),
             "vars": _encode_wasm_value(vars or {}),
@@ -157,6 +158,7 @@ class WasmDataWeaveRuntime:
         return self._bridge.execute(
             {
                 "operation": "analyze",
+                "typed_transport": True,
                 "expression": script_source,
                 "payload": _encode_wasm_value(payload),
                 "vars": _encode_wasm_value(vars or {}),
@@ -185,6 +187,8 @@ def _decode_wasm_value(value: Any) -> Any:
     if not isinstance(value, dict):
         return value
 
+    if set(value) == {"__dwpy_object"}:
+        return {key: _decode_wasm_value(item) for key, item in value["__dwpy_object"].items()}
     if set(value) == {"__dwpy_binary"}:
         return bytes(value["__dwpy_binary"])
     if set(value) == {"__dwpy_nonfinite"}:

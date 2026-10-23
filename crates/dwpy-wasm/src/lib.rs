@@ -42,6 +42,17 @@ pub fn run_dataweave_request(request_json: &str) -> Result<String, JsValue> {
     )
     .map_err(|err| JsValue::from_str(&wasm_error_message(err, script_source)))?;
 
+    let payload = if payload_format.is_some()
+        && request
+            .get("typed_transport")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+    {
+        dwpy_core::DwValue::from(payload).to_transport_json()
+    } else {
+        payload
+    };
+
     let vars = request
         .get("vars")
         .cloned()
@@ -55,11 +66,27 @@ pub fn run_dataweave_request(request_json: &str) -> Result<String, JsValue> {
         .map(properties_to_map)
         .transpose()
         .map_err(|err| JsValue::from_str(&err))?;
-    let context = dwpy_core::ExecutionContext::new(Some(vars), Some(attributes), properties)
-        .map_err(|err| JsValue::from_str(&wasm_error_message(err, script_source)))?;
-    let result =
-        dwpy_core::execute_json_with_context(script_source, payload, context, render_output)
-            .map_err(|err| JsValue::from_str(&wasm_error_message(err, script_source)))?;
+    let result = if request
+        .get("typed_transport")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
+        dwpy_core::execute_transport_with_context(
+            script_source,
+            payload,
+            Some(vars),
+            Some(attributes),
+            properties,
+            render_output,
+        )
+    } else {
+        dwpy_core::ExecutionContext::new(Some(vars), Some(attributes), properties).and_then(
+            |context| {
+                dwpy_core::execute_json_with_context(script_source, payload, context, render_output)
+            },
+        )
+    }
+    .map_err(|err| JsValue::from_str(&wasm_error_message(err, script_source)))?;
 
     serde_json::to_string(&result).map_err(|err| JsValue::from_str(&err.to_string()))
 }
@@ -79,8 +106,16 @@ pub fn analyze_dataweave_request(request_json: &str) -> Result<String, JsValue> 
     let vars = request.get("vars").cloned();
     let attributes = request.get("attributes").cloned();
 
-    let result = dwpy_core::analyze_expression_with_context(expression, payload, vars, attributes)
-        .map_err(|err| JsValue::from_str(&wasm_error_message(err, expression)))?;
+    let result = if request
+        .get("typed_transport")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
+        dwpy_core::analyze_transport_expression_with_context(expression, payload, vars, attributes)
+    } else {
+        dwpy_core::analyze_expression_with_context(expression, payload, vars, attributes)
+    }
+    .map_err(|err| JsValue::from_str(&wasm_error_message(err, expression)))?;
     serde_json::to_string(&result).map_err(|err| JsValue::from_str(&err.to_string()))
 }
 

@@ -392,7 +392,11 @@ var captured = (vars.requestTime default now())
     assert result["generatedAt"] == "2024-05-05T12:00:00Z"
 
     fallback = runtime.execute(script, payload=payload, vars={}, render_output=False)
-    assert fallback["generatedAt"].endswith("Z")
+    if runtime.active_backend == "python":
+        assert fallback["generatedAt"].endswith("Z")
+    else:
+        assert isinstance(fallback["generatedAt"], datetime)
+        assert fallback["generatedAt"].utcoffset() == timedelta(0)
 
 
 def test_now_coerced_as_date_renders_date_only():

@@ -121,6 +121,31 @@ The native CLI uses the sink API for streaming JSON, NDJSON, and CSV output.
 Expressions outside the compiled lazy subset continue through the compatible
 legacy Rust evaluator.
 
+The evaluator uses `DwValue` throughout execution. Dates, local and zoned
+date-times, local and zoned times, time zones, and periods have native variants.
+Use `execute_value` or `CompiledScript::execute_value_with_context` to retain
+these types in a Rust embedding:
+
+```rust
+use dwpy_core::{execute_value, DwValue};
+
+let value = execute_value(
+    r#""2026-10-26" as Date + |P3D|"#,
+    DwValue::Null,
+    false,
+)?;
+assert!(matches!(value, DwValue::Date(_)));
+assert_eq!(value.temporal_text().as_deref(), Some("2026-10-29"));
+```
+
+The JSON-facing APIs serialize temporal scalars as ISO strings. Only the explicit
+Python/WASM typed transport uses tagged JSON to preserve host types. Ordinary
+objects with marker-like keys remain objects. With the Rust or WASM Python
+backend, `render_output=False` returns temporal results as Python `date`,
+`datetime`, or `time` values, including literals, coercions, and `now()`.
+Rendered JSON/text output remains text. See [native temporal values](docs/native-temporal-values.md)
+for migration notes and bridge details.
+
 ## Homebrew
 
 The Rust-native CLI is distributed through a separate Homebrew tap repository:

@@ -1,5 +1,6 @@
 use std::io::{self, Write};
 
+use crate::value::{DwMap as Map, DwValue as Value};
 use digest::Digest;
 use rsa::pkcs1::DecodeRsaPrivateKey;
 use rsa::pkcs8::DecodePrivateKey;
@@ -7,7 +8,6 @@ use rsa::rand_core::OsRng;
 use rsa::traits::PublicKeyParts;
 use rsa::{Pkcs1v15Sign, RsaPrivateKey};
 use serde::Serialize;
-use serde_json::{Map, Value};
 
 use crate::builtins::{base64_encode, binary_value, hmac_bytes};
 use crate::DwError;
@@ -145,7 +145,9 @@ fn encode_json(value: &Value) -> Result<String, DwError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    macro_rules! json {
+        ($($tokens:tt)*) => { Value::from(serde_json::json!($($tokens)*)) };
+    }
 
     #[test]
     fn matches_documented_hmac_token() {

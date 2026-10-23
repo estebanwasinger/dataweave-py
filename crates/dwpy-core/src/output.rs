@@ -1,4 +1,4 @@
-use serde_json::{Map, Value};
+use crate::value::{DwMap as Map, DwValue as Value};
 
 use crate::csv::render_csv_output;
 use crate::json::{json_output_options, render_json_string, render_json_value, JsonOutputOptions};
@@ -52,7 +52,10 @@ pub(crate) fn render_output_value(
         if output_mime(directive).is_some_and(is_markdown_mime) {
             return render_markdown_output(&evaluated, directive).map(Value::String);
         }
-        if matches!(output_mime(directive), Some("text/plain" | "plain" | "text")) {
+        if matches!(
+            output_mime(directive),
+            Some("text/plain" | "plain" | "text")
+        ) {
             return render_plain_output(&evaluated).map(Value::String);
         }
     }

@@ -1,26 +1,9 @@
-use serde_json::{Map, Value};
+use crate::value::{DwMap as Map, DwValue as Value};
 
 use crate::{as_dataweave_string, numeric_value, DwError};
 
-pub const DW_PERIOD_MARKER: &str = "__dwpy_period";
-pub const DW_TEMPORAL_MARKER: &str = "__dwpy_temporal";
-
-#[derive(Debug, Clone, Copy)]
-struct Period {
-    years: i64,
-    months: i64,
-    days: f64,
-    hours: f64,
-    minutes: f64,
-    seconds: f64,
-    date_based: bool,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct Temporal {
-    pub(crate) kind: String,
-    pub(crate) value: String,
-}
+use crate::value::DwPeriod as Period;
+use chrono::{Datelike, Months, NaiveDate, TimeDelta, Timelike};
 
 pub(crate) fn period_function(function_name: &str, value: &Value) -> Result<Value, DwError> {
     let number = numeric_value(value)?;
@@ -171,7 +154,7 @@ pub(crate) fn at_beginning_of(function_name: &str, value: &Value) -> Result<Valu
         }
         _ => return Err(DwError::UnsupportedFeature(function_name.to_string())),
     };
-    Ok(temporal_value(temporal.kind(), rendered))
+    temporal_value(temporal.kind(), rendered)
 }
 
 pub(crate) fn temporal_constructor(function_name: &str, value: &Value) -> Result<Value, DwError> {
@@ -189,26 +172,20 @@ pub(crate) fn temporal_constructor(function_name: &str, value: &Value) -> Result
         .map(|value| special_string_value(value).unwrap_or_else(|| as_dataweave_string(value)))
         .unwrap_or_default();
     match function_name {
-        "date" => Ok(temporal_value(
-            "date",
-            format!("{year:04}-{month:02}-{day:02}"),
-        )),
-        "dateTime" => Ok(temporal_value(
+        "date" => temporal_value("date", format!("{year:04}-{month:02}-{day:02}")),
+        "dateTime" => temporal_value(
             "datetime",
             format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minutes:02}:{seconds:02}{timezone}"),
-        )),
-        "localDateTime" => Ok(temporal_value(
+        ),
+        "localDateTime" => temporal_value(
             "datetime",
             format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minutes:02}:{seconds:02}"),
-        )),
-        "localTime" => Ok(temporal_value(
-            "time",
-            format!("{hour:02}:{minutes:02}:{seconds:02}"),
-        )),
-        "time" => Ok(temporal_value(
+        ),
+        "localTime" => temporal_value("time", format!("{hour:02}:{minutes:02}:{seconds:02}")),
+        "time" => temporal_value(
             "time",
             format!("{hour:02}:{minutes:02}:{seconds:02}{timezone}"),
-        )),
+        ),
         _ => Err(DwError::UnsupportedFeature(function_name.to_string())),
     }
 }
@@ -261,31 +238,41 @@ pub(crate) fn special_string_value(value: &Value) -> Option<String> {
     if let Some(period) = period_from_value(value) {
         return Some(period_to_string(period));
     }
-    if let Some(temporal) = temporal_from_value(value) {
-        return Some(temporal.value);
-    }
-    None
+    value.temporal_text()
 }
 
 pub(crate) fn temporal_field_value(value: &Value, field: &str) -> Option<Value> {
+    if let Some(value) = crate::selectors::unwrap_metadata_value(value) {
+        return temporal_field_value(&value, field);
+    }
     if let Some(period) = period_from_value(value) {
         return period_field_value(period, field);
     }
-    let text = special_string_value(value).unwrap_or_else(|| as_dataweave_string(value));
-    let parsed = ParsedTemporal::parse(&text)?;
+    let (date, time, offset) = match value {
+        Value::Date(value) => (Some(*value), None, 0),
+        Value::LocalDateTime(value) => (Some(value.value.date()), Some(value.value.time()), 0),
+        Value::DateTime(value) => (
+            Some(value.value.date_naive()),
+            Some(value.value.time()),
+            value.value.offset().local_minus_utc(),
+        ),
+        Value::LocalTime(value) => (None, Some(value.value), 0),
+        Value::Time(value) => (None, Some(value.value), value.offset.local_minus_utc()),
+        _ => return None,
+    };
     let number = match field {
-        "year" => parsed.year,
-        "month" => parsed.month,
-        "day" => parsed.day,
-        "hour" => parsed.hour?,
-        "minutes" => parsed.minute?,
-        "seconds" => parsed.second?,
-        "milliseconds" => parsed.millisecond,
-        "nanoseconds" => parsed.millisecond * 1_000_000,
-        "quarter" => (parsed.month - 1) / 3 + 1,
-        "dayOfWeek" => day_of_week(parsed.year, parsed.month, parsed.day),
-        "dayOfYear" => day_of_year(parsed.year, parsed.month, parsed.day),
-        "offsetSeconds" => parsed.offset_seconds.unwrap_or(0),
+        "year" => date?.year() as i64,
+        "month" => date?.month() as i64,
+        "day" => date?.day() as i64,
+        "hour" => time?.hour() as i64,
+        "minutes" => time?.minute() as i64,
+        "seconds" => time?.second() as i64,
+        "milliseconds" => time?.nanosecond() as i64 / 1_000_000,
+        "nanoseconds" => time?.nanosecond() as i64,
+        "quarter" => (date?.month() as i64 - 1) / 3 + 1,
+        "dayOfWeek" => date?.weekday().number_from_monday() as i64,
+        "dayOfYear" => date?.ordinal() as i64,
+        "offsetSeconds" => offset as i64,
         _ => return None,
     };
     Some(Value::Number(number.into()))
@@ -293,6 +280,8 @@ pub(crate) fn temporal_field_value(value: &Value, field: &str) -> Option<Value> 
 
 fn period_field_value(period: Period, field: &str) -> Option<Value> {
     let number = match field {
+        "years" => return Some(Value::Number(period.years.into())),
+        "months" => return Some(Value::Number(period.months.into())),
         "days" => period.days,
         "hours" => period.hours,
         "minutes" => period.minutes,
@@ -324,17 +313,22 @@ pub(crate) fn period_or_temporal_to_number(value: &Value, unit: &str) -> Option<
             }
         };
     }
-    let temporal = temporal_from_value(value)?;
-    let millis = temporal_epoch_millis(&temporal)?;
-    match unit {
-        "nanos" | "nanoseconds" => Some(Value::Number((millis * 1_000_000).into())),
-        "millis" | "milliseconds" => Some(Value::Number(millis.into())),
-        "seconds" => Some(Value::Number((millis / 1_000).into())),
-        "minutes" => Some(Value::Number((millis / 60_000).into())),
-        "hours" => Some(Value::Number((millis / 3_600_000).into())),
-        "days" => Some(Value::Number((millis / 86_400_000).into())),
-        _ => None,
-    }
+    let native = temporal_from_value(value)?;
+    let nanos = temporal_epoch_nanos(&native)?;
+    let divisor = match unit {
+        "nanos" | "nanoseconds" => 1,
+        "millis" | "milliseconds" => 1_000_000,
+        "seconds" => 1_000_000_000,
+        "minutes" => 60_000_000_000,
+        "hours" => 3_600_000_000_000,
+        "days" => 86_400_000_000_000,
+        _ => return None,
+    };
+    (nanos / divisor)
+        .to_string()
+        .parse::<serde_json::Number>()
+        .ok()
+        .map(Value::Number)
 }
 
 fn parse_period_literal(source: &str) -> Option<Period> {
@@ -376,6 +370,9 @@ fn parse_period_component(source: &str, designator: char) -> Option<Option<f64>>
 }
 
 pub(crate) fn concatenate_temporals(left: &Value, right: &Value) -> Option<Value> {
+    if left.temporal_type_name().is_none() || right.temporal_type_name().is_none() {
+        return None;
+    }
     let left = TemporalPart::parse_value(left)?;
     let right = TemporalPart::parse_value(right)?;
     let combined = match (&left, &right) {
@@ -399,7 +396,7 @@ pub(crate) fn concatenate_temporals(left: &Value, right: &Value) -> Option<Value
         }
         _ => return None,
     };
-    Some(Value::String(combined))
+    Value::parse_temporal(&combined).ok()
 }
 
 enum TemporalPart {
@@ -503,17 +500,6 @@ fn split_time_zone(time: &str) -> (&str, &str) {
     (time, "")
 }
 
-struct ParsedTemporal {
-    year: i64,
-    month: i64,
-    day: i64,
-    hour: Option<i64>,
-    minute: Option<i64>,
-    second: Option<i64>,
-    millisecond: i64,
-    offset_seconds: Option<i64>,
-}
-
 #[derive(Clone, Copy)]
 enum ParsedTemporalKind {
     Date,
@@ -608,75 +594,6 @@ fn object_i64(map: &Map<String, Value>, name: &str) -> Result<i64, DwError> {
         .map(|value| value.unwrap_or(0.0) as i64)
 }
 
-impl ParsedTemporal {
-    fn parse(value: &str) -> Option<Self> {
-        let (year, month, day) = parse_date(value.get(..10)?)?;
-        let Some(time_source) = value.split_once('T').map(|(_, time)| time) else {
-            return Some(Self {
-                year,
-                month,
-                day,
-                hour: None,
-                minute: None,
-                second: None,
-                millisecond: 0,
-                offset_seconds: None,
-            });
-        };
-        let (time_source, offset_seconds) = split_time_offset(time_source);
-        let mut parts = time_source.split(':');
-        let hour = parts.next()?.parse::<i64>().ok()?;
-        let minute = parts.next()?.parse::<i64>().ok()?;
-        let second_source = parts.next().unwrap_or("0");
-        let (second_text, fraction_text) = second_source
-            .split_once('.')
-            .map_or((second_source, ""), |(second, fraction)| (second, fraction));
-        let second = second_text.parse::<i64>().ok()?;
-        let millisecond = fraction_text
-            .chars()
-            .take(3)
-            .chain(std::iter::repeat('0'))
-            .take(3)
-            .collect::<String>()
-            .parse::<i64>()
-            .ok()
-            .unwrap_or(0);
-        Some(Self {
-            year,
-            month,
-            day,
-            hour: Some(hour),
-            minute: Some(minute),
-            second: Some(second),
-            millisecond,
-            offset_seconds,
-        })
-    }
-}
-
-fn split_time_offset(value: &str) -> (&str, Option<i64>) {
-    if let Some(time) = value.strip_suffix('Z') {
-        return (time, Some(0));
-    }
-    for sign in ['+', '-'] {
-        if let Some(index) = value.rfind(sign) {
-            let offset = &value[index..];
-            if offset.len() == 6 && offset.as_bytes().get(3) == Some(&b':') {
-                let multiplier = if sign == '-' { -1 } else { 1 };
-                let hours = offset[1..3].parse::<i64>().ok();
-                let minutes = offset[4..6].parse::<i64>().ok();
-                if let (Some(hours), Some(minutes)) = (hours, minutes) {
-                    return (
-                        &value[..index],
-                        Some(multiplier * (hours * 3600 + minutes * 60)),
-                    );
-                }
-            }
-        }
-    }
-    (value, None)
-}
-
 fn split_time_suffix(value: &str) -> (&str, &str) {
     if let Some(time) = value.strip_suffix('Z') {
         return (time, "Z");
@@ -700,82 +617,36 @@ fn day_of_week(year: i64, month: i64, day: i64) -> i64 {
     (unix_days_from_civil(year, month, day) + 3).rem_euclid(7) + 1
 }
 
-fn day_of_year(year: i64, month: i64, day: i64) -> i64 {
-    (1..month)
-        .map(|current| days_in_month(year, current))
-        .sum::<i64>()
-        + day
-}
-
 fn period_value(period: Period) -> Value {
-    Value::Object(Map::from_iter([
-        (DW_PERIOD_MARKER.to_string(), Value::Bool(true)),
-        ("years".to_string(), Value::Number(period.years.into())),
-        ("months".to_string(), Value::Number(period.months.into())),
-        ("days".to_string(), number_value(period.days)),
-        ("hours".to_string(), number_value(period.hours)),
-        ("minutes".to_string(), number_value(period.minutes)),
-        ("seconds".to_string(), number_value(period.seconds)),
-        ("dateBased".to_string(), Value::Bool(period.date_based)),
-        ("text".to_string(), Value::String(period_to_string(period))),
-    ]))
+    Value::Period(period)
 }
 
-fn temporal_value(kind: &str, value: String) -> Value {
-    Value::Object(Map::from_iter([
-        (
-            DW_TEMPORAL_MARKER.to_string(),
-            Value::String(kind.to_string()),
-        ),
-        ("value".to_string(), Value::String(value)),
-    ]))
+fn temporal_value(_kind: &str, value: String) -> Result<Value, DwError> {
+    Value::parse_temporal(&value)
 }
 
 fn period_from_value(value: &Value) -> Option<Period> {
-    let map = value.as_object()?;
-    if !map.contains_key(DW_PERIOD_MARKER) {
-        return None;
+    if let Some(value) = crate::selectors::unwrap_metadata_value(value) {
+        return period_from_value(&value);
     }
-    Some(Period {
-        years: map.get("years").and_then(Value::as_i64).unwrap_or(0),
-        months: map.get("months").and_then(Value::as_i64).unwrap_or(0),
-        days: map.get("days").and_then(Value::as_f64).unwrap_or(0.0),
-        hours: map.get("hours").and_then(Value::as_f64).unwrap_or(0.0),
-        minutes: map.get("minutes").and_then(Value::as_f64).unwrap_or(0.0),
-        seconds: map.get("seconds").and_then(Value::as_f64).unwrap_or(0.0),
-        date_based: map
-            .get("dateBased")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
-    })
+    match value {
+        Value::Period(period) => Some(*period),
+        _ => None,
+    }
 }
 
-pub(crate) fn temporal_from_value(value: &Value) -> Option<Temporal> {
-    if let Value::Object(map) = value {
-        let kind = map.get(DW_TEMPORAL_MARKER)?.as_str()?.to_string();
-        let value = map.get("value")?.as_str()?.to_string();
-        return Some(Temporal { kind, value });
+pub(crate) fn temporal_from_value(value: &Value) -> Option<Value> {
+    if let Some(value) = crate::selectors::unwrap_metadata_value(value) {
+        return temporal_from_value(&value);
     }
-    let text = value.as_str()?;
-    if text.contains('T') && parse_datetime_parts(text).is_some() {
-        return Some(Temporal {
-            kind: "datetime".to_string(),
-            value: text.to_string(),
-        });
+    match value {
+        Value::Date(_)
+        | Value::LocalDateTime(_)
+        | Value::DateTime(_)
+        | Value::LocalTime(_)
+        | Value::Time(_) => Some(value.clone()),
+        _ => None,
     }
-    if parse_date(text).is_some() {
-        return Some(Temporal {
-            kind: "date".to_string(),
-            value: text.to_string(),
-        });
-    }
-    if parse_time(text).is_some() {
-        return Some(Temporal {
-            kind: "time".to_string(),
-            value: text.to_string(),
-        });
-    }
-    None
 }
 
 fn combine_periods(left: Period, right: Period, operator: &str) -> Value {
@@ -792,21 +663,19 @@ fn combine_periods(left: Period, right: Period, operator: &str) -> Value {
     number_value(total_seconds(left) + total_seconds(right))
 }
 
-fn period_between_temporals(end: &Temporal, start: &Temporal) -> Result<Period, DwError> {
-    let end_millis = temporal_epoch_millis(end)
-        .ok_or_else(|| DwError::UnsupportedFeature(format!("datetime {}", end.value)))?;
-    let start_millis = temporal_epoch_millis(start)
-        .ok_or_else(|| DwError::UnsupportedFeature(format!("datetime {}", start.value)))?;
-    let mut millis = end_millis - start_millis;
-    let sign = if millis < 0 { -1.0 } else { 1.0 };
-    millis = millis.abs();
-    let total_seconds = millis as f64 / 1_000.0;
-    let days = (total_seconds / 86_400.0).floor();
-    let remainder = total_seconds - days * 86_400.0;
-    let hours = (remainder / 3600.0).floor();
-    let remainder = remainder - hours * 3600.0;
-    let minutes = (remainder / 60.0).floor();
-    let seconds = remainder - minutes * 60.0;
+fn period_between_temporals(end: &Value, start: &Value) -> Result<Period, DwError> {
+    let end_nanos = temporal_epoch_nanos(end)
+        .ok_or_else(|| DwError::UnsupportedFeature(format!("datetime {end}")))?;
+    let start_nanos = temporal_epoch_nanos(start)
+        .ok_or_else(|| DwError::UnsupportedFeature(format!("datetime {start}")))?;
+    let delta = end_nanos - start_nanos;
+    let sign = if delta < 0 { -1.0 } else { 1.0 };
+    let nanos = delta.abs();
+    let whole_seconds = nanos / 1_000_000_000;
+    let days = (whole_seconds / 86_400) as f64;
+    let hours = ((whole_seconds % 86_400) / 3600) as f64;
+    let minutes = ((whole_seconds % 3600) / 60) as f64;
+    let seconds = (whole_seconds % 60) as f64 + (nanos % 1_000_000_000) as f64 / 1_000_000_000.0;
     Ok(Period {
         years: 0,
         months: 0,
@@ -818,21 +687,31 @@ fn period_between_temporals(end: &Temporal, start: &Temporal) -> Result<Period, 
     })
 }
 
-fn temporal_epoch_millis(temporal: &Temporal) -> Option<i64> {
-    if let Some((date, time, _suffix)) = parse_datetime_parts(&temporal.value) {
-        let days = unix_days_from_civil(date.0, date.1, date.2);
-        let millis = ((time.0 * 3600.0 + time.1 * 60.0 + time.2) * 1_000.0).round() as i64;
-        return Some(days * 86_400_000 + millis);
-    }
-    if let Some(date) = parse_date(&temporal.value) {
-        return Some(unix_days_from_civil(date.0, date.1, date.2) * 86_400_000);
-    }
-    if let Some((hour, minute, second, suffix)) = parse_time(&temporal.value) {
-        let millis = ((hour * 3600.0 + minute * 60.0 + second) * 1_000.0).round() as i64;
-        let offset_millis = timezone_offset_seconds(&suffix).unwrap_or(0) * 1_000;
-        return Some(millis - offset_millis);
-    }
-    None
+fn temporal_epoch_nanos(value: &Value) -> Option<i128> {
+    Some(match value {
+        Value::Date(value) => {
+            value.and_hms_opt(0, 0, 0)?.and_utc().timestamp() as i128 * 1_000_000_000
+        }
+        Value::DateTime(value) => {
+            value.value.timestamp() as i128 * 1_000_000_000
+                + value.value.timestamp_subsec_nanos() as i128
+        }
+        Value::LocalDateTime(value) => {
+            let value = value.value.and_utc();
+            value.timestamp() as i128 * 1_000_000_000 + value.timestamp_subsec_nanos() as i128
+        }
+        Value::LocalTime(value) => {
+            value.value.num_seconds_from_midnight() as i128 * 1_000_000_000
+                + value.value.nanosecond() as i128
+        }
+        Value::Time(value) => {
+            (value.value.num_seconds_from_midnight() as i128
+                - value.offset.local_minus_utc() as i128)
+                * 1_000_000_000
+                + value.value.nanosecond() as i128
+        }
+        _ => return None,
+    })
 }
 
 fn negate_period(period: Period) -> Period {
@@ -847,49 +726,97 @@ fn negate_period(period: Period) -> Period {
     }
 }
 
-fn add_period_to_temporal(temporal: &Temporal, period: Period) -> Result<Value, DwError> {
-    match temporal.kind.as_str() {
-        "datetime" => {
-            let parsed = parse_datetime_parts(&temporal.value).ok_or_else(|| {
-                DwError::UnsupportedFeature(format!("datetime {}", temporal.value))
-            })?;
-            let (date, time, suffix) = parsed;
-            let date = add_date_parts(date, period);
-            let total_seconds = time.0 * 3600.0 + time.1 * 60.0 + time.2 + total_seconds(period);
-            let day_delta = total_seconds.div_euclid(86_400.0).floor() as i64;
-            let seconds_of_day = total_seconds.rem_euclid(86_400.0);
-            let shifted_date = add_days(date, day_delta);
-            let rendered_time = render_time(seconds_of_day, &suffix);
-            Ok(temporal_value(
-                "datetime",
-                format!(
-                    "{:04}-{:02}-{:02}T{}",
-                    shifted_date.0, shifted_date.1, shifted_date.2, rendered_time
-                ),
-            ))
+fn add_period_to_temporal(temporal: &Value, period: Period) -> Result<Value, DwError> {
+    let overflow =
+        || DwError::UnsupportedFeature("temporal arithmetic exceeds the supported range".into());
+    let months = period
+        .years
+        .checked_mul(12)
+        .and_then(|years| years.checked_add(period.months))
+        .ok_or_else(overflow)?;
+    let calendar = |date: NaiveDate| -> Result<NaiveDate, DwError> {
+        let amount = u32::try_from(months.unsigned_abs()).map_err(|_| overflow())?;
+        if months < 0 {
+            date.checked_sub_months(Months::new(amount))
+        } else {
+            date.checked_add_months(Months::new(amount))
         }
-        "date" => {
-            let date = parse_date(&temporal.value)
-                .ok_or_else(|| DwError::UnsupportedFeature(format!("date {}", temporal.value)))?;
-            let date = add_days(add_date_parts(date, period), period.days as i64);
-            Ok(temporal_value(
-                "date",
-                format!("{:04}-{:02}-{:02}", date.0, date.1, date.2),
+        .ok_or_else(overflow)
+    };
+    let seconds = total_seconds(period);
+    if !seconds.is_finite() || seconds < i64::MIN as f64 || seconds >= i64::MAX as f64 {
+        return Err(overflow());
+    }
+    let delta = TimeDelta::try_seconds(seconds.trunc() as i64)
+        .and_then(|whole| {
+            whole.checked_add(&TimeDelta::nanoseconds(
+                (seconds.fract() * 1_000_000_000.0).round() as i64,
             ))
+        })
+        .ok_or_else(overflow)?;
+    let precision = |time: chrono::NaiveTime| {
+        if time.nanosecond() == 0 {
+            0
+        } else {
+            format!("{:09}", time.nanosecond())
+                .trim_end_matches('0')
+                .len()
         }
-        "time" => {
-            let (hour, minute, second, suffix) = parse_time(&temporal.value)
-                .ok_or_else(|| DwError::UnsupportedFeature(format!("time {}", temporal.value)))?;
-            let total = hour * 3600.0 + minute * 60.0 + second + total_seconds(period);
-            Ok(temporal_value(
-                "time",
-                render_time(total.rem_euclid(86_400.0), &suffix),
-            ))
+    };
+    match temporal {
+        Value::Date(value) => {
+            let date = calendar(*value)?
+                .checked_add_signed(TimeDelta::try_days(period.days as i64).ok_or_else(overflow)?)
+                .ok_or_else(overflow)?;
+            Ok(Value::Date(date))
         }
-        _ => Err(DwError::UnsupportedFeature(format!(
-            "temporal kind {}",
-            temporal.kind
-        ))),
+        Value::LocalDateTime(value) => {
+            let next = calendar(value.value.date())?
+                .and_time(value.value.time())
+                .checked_add_signed(delta)
+                .ok_or_else(overflow)?;
+            Ok(Value::LocalDateTime(crate::DwLocalDateTime {
+                value: next,
+                fractional_digits: precision(next.time()),
+            }))
+        }
+        Value::DateTime(value) => {
+            use chrono::TimeZone;
+            let local = calendar(value.value.date_naive())?
+                .and_time(value.value.time())
+                .checked_add_signed(delta)
+                .ok_or_else(overflow)?;
+            let next = value
+                .value
+                .offset()
+                .from_local_datetime(&local)
+                .single()
+                .ok_or_else(overflow)?;
+            Ok(Value::DateTime(crate::DwDateTime {
+                value: next,
+                fractional_digits: precision(next.time()),
+                use_z: value.use_z,
+            }))
+        }
+        Value::LocalTime(value) => {
+            let next = value.value.overflowing_add_signed(delta).0;
+            Ok(Value::LocalTime(crate::DwLocalTime {
+                value: next,
+                fractional_digits: precision(next),
+            }))
+        }
+        Value::Time(value) => {
+            let next = value.value.overflowing_add_signed(delta).0;
+            Ok(Value::Time(crate::DwTime {
+                value: next,
+                fractional_digits: precision(next),
+                offset: value.offset,
+                use_z: value.use_z,
+            }))
+        }
+        _ => Err(DwError::UnsupportedFeature(
+            "expected a native temporal value".into(),
+        )),
     }
 }
 
@@ -956,12 +883,11 @@ fn period_between(end: (i64, i64, i64), start: (i64, i64, i64)) -> Period {
 }
 
 fn date_parts(value: &Value) -> Result<(i64, i64, i64), DwError> {
-    temporal_from_value(value)
-        .and_then(|temporal| parse_date(&temporal.value))
+    parse_date(&as_dataweave_string(value))
         .ok_or_else(|| DwError::UnsupportedFeature(format!("date {}", as_dataweave_string(value))))
 }
 
-fn period_to_string(period: Period) -> String {
+pub(crate) fn period_to_string(period: Period) -> String {
     if period.date_based {
         let mut output = "P".to_string();
         if period.years != 0 {
@@ -1075,40 +1001,6 @@ fn is_timezone_offset(source: &str) -> bool {
         && source.as_bytes().get(3) == Some(&b':')
         && source[1..3].chars().all(|ch| ch.is_ascii_digit())
         && source[4..6].chars().all(|ch| ch.is_ascii_digit())
-}
-
-fn timezone_offset_seconds(source: &str) -> Option<i64> {
-    if source.is_empty() || source == "Z" {
-        return Some(0);
-    }
-    if !is_timezone_offset(source) {
-        return None;
-    }
-    let sign = if source.starts_with('-') { -1 } else { 1 };
-    let hours = source[1..3].parse::<i64>().ok()?;
-    let minutes = source[4..6].parse::<i64>().ok()?;
-    Some(sign * (hours * 3600 + minutes * 60))
-}
-
-fn render_time(seconds_of_day: f64, suffix: &str) -> String {
-    let hour = (seconds_of_day / 3600.0).floor();
-    let minute = ((seconds_of_day - hour * 3600.0) / 60.0).floor();
-    let second = seconds_of_day - hour * 3600.0 - minute * 60.0;
-    let second_text = if second.fract() == 0.0 {
-        format!("{:02}", second as i64)
-    } else {
-        let whole = second.floor() as i64;
-        let mut fraction = format!("{:.6}", second.fract());
-        while fraction.ends_with('0') {
-            fraction.pop();
-        }
-        let fraction = fraction.trim_start_matches('0').to_string();
-        format!("{whole:02}{fraction}")
-    };
-    format!(
-        "{:02}:{:02}:{}{}",
-        hour as i64, minute as i64, second_text, suffix
-    )
 }
 
 fn days_in_month(year: i64, month: i64) -> i64 {

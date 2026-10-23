@@ -52,6 +52,14 @@ class BinaryType(DWType):
 
 
 @dataclass(frozen=True)
+class TemporalType(DWType):
+    name: str
+
+    def describe(self) -> str:
+        return self.name
+
+
+@dataclass(frozen=True)
 class LiteralType(DWType):
     value: Any
     base_type: DWType
@@ -139,6 +147,14 @@ BOOLEAN = BooleanType()
 NULL = NullType()
 NOTHING = NothingType()
 BINARY = BinaryType()
+DATE = TemporalType("Date")
+DATETIME = TemporalType("DateTime")
+LOCAL_DATETIME = TemporalType("LocalDateTime")
+TIME = TemporalType("Time")
+LOCAL_TIME = TemporalType("LocalTime")
+PERIOD = TemporalType("Period")
+TIMEZONE = TemporalType("TimeZone")
+TEMPORAL_TYPES = {value.name: value for value in (DATE, DATETIME, LOCAL_DATETIME, TIME, LOCAL_TIME, PERIOD, TIMEZONE)}
 
 
 def object_type(

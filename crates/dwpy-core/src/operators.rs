@@ -1,5 +1,5 @@
+use crate::value::{DwMap as Map, DwValue as Value};
 use regex::Regex;
-use serde_json::{Map, Value};
 
 use crate::builtins::{binary_value, to_string_with_options};
 use crate::literals::parse_string_literal;
@@ -279,12 +279,6 @@ pub(crate) fn evaluate_additive(
                 combined.push(right.clone());
                 return Ok(Value::Array(combined));
             }
-            if let Some(value) = add_date_and_period(left, right)? {
-                return Ok(value);
-            }
-            if let Some(value) = add_date_and_period(right, left)? {
-                return Ok(value);
-            }
             number_result(number_value(left)? + number_value(right)?)
         }
         "-" => {
@@ -335,21 +329,17 @@ pub(crate) fn evaluate_shift(
 }
 
 fn shift_datetime_zone(value: &Value, zone: &Value) -> Option<Value> {
-    let source = as_dataweave_string(value);
-    let target_zone = as_dataweave_string(zone);
-    let target_offset = zone_offset_seconds(&target_zone, &source)?;
-    let (epoch_seconds, millis) = parse_datetime_epoch_seconds(&source)?;
-    let shifted = epoch_seconds + target_offset;
-    let days = shifted.div_euclid(86_400);
-    let seconds = shifted.rem_euclid(86_400);
-    let (year, month, day) = civil_from_unix_days(days);
-    let hour = seconds / 3_600;
-    let minute = (seconds % 3_600) / 60;
-    let second = seconds % 60;
-    let offset = format_offset(target_offset);
-    Some(Value::String(format!(
-        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}{offset}"
-    )))
+    let Value::DateTime(value) = value else {
+        return None;
+    };
+    let source = Value::DateTime(value.clone()).temporal_text()?;
+    let offset = zone_offset_seconds(&as_dataweave_string(zone), &source)?;
+    let offset = chrono::FixedOffset::east_opt(i32::try_from(offset).ok()?)?;
+    Some(Value::DateTime(crate::DwDateTime {
+        value: value.value.with_timezone(&offset),
+        fractional_digits: value.fractional_digits,
+        use_z: offset.local_minus_utc() == 0,
+    }))
 }
 
 fn parse_datetime_epoch_seconds(source: &str) -> Option<(i64, i64)> {
@@ -422,15 +412,6 @@ fn is_rough_northern_dst(source: &str) -> bool {
         .get(5..7)
         .and_then(|month| month.parse::<i64>().ok())
         .is_some_and(|month| (3..=10).contains(&month))
-}
-
-fn format_offset(seconds: i64) -> String {
-    if seconds == 0 {
-        return "Z".to_string();
-    }
-    let sign = if seconds < 0 { '-' } else { '+' };
-    let seconds = seconds.abs();
-    format!("{sign}{:02}:{:02}", seconds / 3_600, (seconds % 3_600) / 60)
 }
 
 fn concat_object_pairs(left: &Value, right: &Value) -> Vec<(String, Value)> {
@@ -514,6 +495,9 @@ pub(crate) fn evaluate_multiplicative(
 }
 
 pub(crate) fn evaluate_coercion(value: &Value, type_source: &str) -> Result<Value, DwError> {
+    if let Some(value) = unwrap_metadata_value(value) {
+        return evaluate_coercion(&value, type_source);
+    }
     let target_type = type_source.split_whitespace().next().unwrap_or_default();
     if type_source.starts_with("Array<") && type_source.ends_with('>') {
         return match value {
@@ -576,8 +560,27 @@ pub(crate) fn evaluate_coercion(value: &Value, type_source: &str) -> Result<Valu
         "LocalTime" => coerce_time(value, false),
         "Period" => coerce_period(value),
         "LocalDateTime" | "DateTime" => {
+            if value.is_null() {
+                return Ok(Value::Null);
+            }
             let format = extract_coercion_options(type_source)?.and_then(|options| options.format);
-            coerce_local_datetime(value, format.as_deref())
+            let parsed = coerce_local_datetime(value, format.as_deref())?;
+            match (target_type, parsed) {
+                ("LocalDateTime", Value::DateTime(value)) => {
+                    Ok(Value::LocalDateTime(crate::DwLocalDateTime {
+                        value: value.value.naive_local(),
+                        fractional_digits: value.fractional_digits,
+                    }))
+                }
+                ("DateTime", Value::LocalDateTime(value)) => {
+                    Ok(Value::DateTime(crate::DwDateTime {
+                        value: value.value.and_utc().fixed_offset(),
+                        fractional_digits: value.fractional_digits,
+                        use_z: true,
+                    }))
+                }
+                (_, value) => Ok(value),
+            }
         }
         "Date" => {
             let options = extract_coercion_options(type_source)?;
@@ -620,9 +623,7 @@ fn coerce_period(value: &Value) -> Result<Value, DwError> {
         Value::String(text) => period_literal(text).ok_or_else(|| {
             DwError::UnsupportedFeature(format!("cannot coerce string '{text}' to Period"))
         }),
-        Value::Object(map) if map.contains_key(crate::periods::DW_PERIOD_MARKER) => {
-            Ok(value.clone())
-        }
+        Value::Period(_) => Ok(value.clone()),
         _ => Err(DwError::UnsupportedFeature(format!(
             "cannot coerce {} to Period",
             as_dataweave_string(value)
@@ -652,6 +653,9 @@ fn coerce_binary(value: &Value) -> Result<Value, DwError> {
 }
 
 fn coerce_time(value: &Value, default_zone: bool) -> Result<Value, DwError> {
+    if value.is_null() {
+        return Ok(Value::Null);
+    }
     let text = as_dataweave_string(value);
     let time = text
         .split_once('T')
@@ -662,9 +666,16 @@ fn coerce_time(value: &Value, default_zone: bool) -> Result<Value, DwError> {
             && matches!(time.as_bytes()[time.len() - 6], b'+' | b'-')
             && time.as_bytes()[time.len() - 3] == b':');
     if default_zone && !has_zone {
-        Ok(Value::String(format!("{time}Z")))
+        Value::parse_temporal(&format!("{time}Z"))
     } else {
-        Ok(Value::String(time.to_string()))
+        let value = Value::parse_temporal(time)?;
+        match value {
+            Value::Time(value) if !default_zone => Ok(Value::LocalTime(crate::DwLocalTime {
+                value: value.value,
+                fractional_digits: value.fractional_digits,
+            })),
+            value => Ok(value),
+        }
     }
 }
 
@@ -672,7 +683,7 @@ struct CoercionOptions {
     format: Option<String>,
     locale: Option<String>,
     unit: Option<String>,
-    metadata: serde_json::Map<String, Value>,
+    metadata: crate::value::DwMap<String, Value>,
 }
 
 fn coercion_metadata(options: CoercionOptions) -> Map<String, Value> {
@@ -697,7 +708,7 @@ fn extract_coercion_options(type_source: &str) -> Result<Option<CoercionOptions>
     let mut format = None;
     let mut locale = None;
     let mut unit = None;
-    let mut metadata = serde_json::Map::new();
+    let mut metadata = crate::value::DwMap::new();
     for entry in split_top_level(options, ',') {
         let Some((key, value)) = entry.split_once(':') else {
             continue;
@@ -743,20 +754,11 @@ fn coerce_number(value: &Value) -> Result<Value, DwError> {
             })?;
             number_result(number)
         }
-        _ => {
-            if let Some(temporal) = temporal_from_value(value) {
-                if temporal.kind == "datetime" {
-                    if let Some((epoch_seconds, _)) =
-                        parse_datetime_epoch_seconds(&temporal.value)
-                    {
-                        return Ok(Value::Number(epoch_seconds.into()));
-                    }
-                }
-            }
-            Err(DwError::UnsupportedFeature(format!(
-                "cannot coerce {value:?} to Number"
-            )))
-        }
+        Value::DateTime(value) => Ok(Value::Number(value.value.timestamp().into())),
+        Value::LocalDateTime(value) => Ok(Value::Number(value.value.and_utc().timestamp().into())),
+        _ => Err(DwError::UnsupportedFeature(format!(
+            "cannot coerce {value:?} to Number"
+        ))),
     }
 }
 
@@ -783,7 +785,7 @@ fn coerce_date(value: &Value, format: Option<&str>) -> Result<Value, DwError> {
         Value::String(value) => {
             if let Some(format) = format {
                 if let Some(date) = parse_formatted_date(value, format) {
-                    return Ok(Value::String(date));
+                    return Value::parse_temporal(&date);
                 }
             }
             let date = value
@@ -792,8 +794,11 @@ fn coerce_date(value: &Value, format: Option<&str>) -> Result<Value, DwError> {
                 .ok_or_else(|| {
                     DwError::UnsupportedFeature(format!("cannot coerce string '{value}' to Date"))
                 })?;
-            Ok(Value::String(date.to_string()))
+            Value::parse_temporal(date)
         }
+        Value::Date(_) => Ok(value.clone()),
+        Value::DateTime(value) => Ok(Value::Date(value.value.date_naive())),
+        Value::LocalDateTime(value) => Ok(Value::Date(value.value.date())),
         _ => Err(DwError::UnsupportedFeature(format!(
             "cannot coerce {value:?} to Date"
         ))),
@@ -853,18 +858,18 @@ fn coerce_local_datetime(value: &Value, format: Option<&str>) -> Result<Value, D
             let day = parse_i64(&text[6..8])?;
             let hour = parse_i64(&text[8..10])?;
             let minute = parse_i64(&text[10..12])?;
-            return Ok(Value::String(format!(
+            return Value::parse_temporal(&format!(
                 "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:00"
-            )));
+            ));
         }
         if format == "M/dd/uuuu h:mm:ss a" {
             if let Some(value) = parse_us_datetime_with_ampm(&text) {
-                return Ok(Value::String(value));
+                return Value::parse_temporal(&value);
             }
         }
     }
     if text.len() >= 19 && text.as_bytes().get(10) == Some(&b'T') {
-        return Ok(Value::String(text));
+        return Value::parse_temporal(&text);
     }
     Err(DwError::UnsupportedFeature(format!(
         "cannot coerce string '{text}' to LocalDateTime"
@@ -911,28 +916,6 @@ fn parse_i64(value: &str) -> Result<i64, DwError> {
         .map_err(|_| DwError::UnsupportedFeature(format!("invalid datetime component {value}")))
 }
 
-fn add_date_and_period(date_value: &Value, period_value: &Value) -> Result<Option<Value>, DwError> {
-    let (Value::String(date), Value::String(period)) = (date_value, period_value) else {
-        return Ok(None);
-    };
-    let Some((year, month, day)) = parse_iso_date(date) else {
-        return Ok(None);
-    };
-    let Some(days) = parse_day_period(period) else {
-        return Ok(None);
-    };
-    let shifted = unix_days_from_civil(year, month, day) + days;
-    let (year, month, day) = civil_from_unix_days(shifted);
-    Ok(Some(Value::String(format!(
-        "{year:04}-{month:02}-{day:02}"
-    ))))
-}
-
-fn parse_day_period(source: &str) -> Option<i64> {
-    let inner = source.strip_prefix('P')?.strip_suffix('D')?;
-    inner.parse::<i64>().ok()
-}
-
 fn parse_iso_date(source: &str) -> Option<(i64, i64, i64)> {
     let date = source.get(..10)?;
     if !is_iso_date(date) {
@@ -955,23 +938,6 @@ fn unix_days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-fn civil_from_unix_days(days: i64) -> (i64, i64, i64) {
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 }.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe.div_euclid(1_460) + doe.div_euclid(36_524) - doe.div_euclid(146_096))
-        .div_euclid(365);
-    let mut year = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe.div_euclid(4) - yoe.div_euclid(100));
-    let mp = (5 * doy + 2).div_euclid(153);
-    let day = doy - (153 * mp + 2).div_euclid(5) + 1;
-    let month = mp + if mp < 10 { 3 } else { -9 };
-    if month <= 2 {
-        year += 1;
-    }
-    (year, month, day)
-}
-
 fn is_iso_date(value: &str) -> bool {
     let bytes = value.as_bytes();
     bytes.len() == 10
@@ -983,7 +949,7 @@ fn is_iso_date(value: &str) -> bool {
             .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit())
 }
 
-fn compare_values(left: &Value, right: &Value) -> Result<i8, DwError> {
+pub(crate) fn compare_values(left: &Value, right: &Value) -> Result<i8, DwError> {
     if let Some(unwrapped) = unwrap_metadata_value(left) {
         return compare_values(&unwrapped, right);
     }
@@ -1019,51 +985,44 @@ fn compare_values(left: &Value, right: &Value) -> Result<i8, DwError> {
 }
 
 fn compare_temporal_values(left: &Value, right: &Value) -> Result<i8, DwError> {
-    let left = temporal_from_value(left)
-        .ok_or_else(|| DwError::UnsupportedFeature(format!("comparison between {left:?} and {right:?}")))?;
-    let right = temporal_from_value(right)
-        .ok_or_else(|| DwError::UnsupportedFeature(format!("comparison between {left:?} and {right:?}")))?;
-
-    match (left.kind.as_str(), right.kind.as_str()) {
-        ("date", "date") => Ok(compare_ordering(&left.value.cmp(&right.value))),
-        ("datetime", "datetime") => {
-            let left = parse_datetime_epoch_seconds(&left.value)
-                .ok_or_else(|| DwError::UnsupportedFeature(format!("comparison between {left:?} and {right:?}")))?;
-            let right = parse_datetime_epoch_seconds(&right.value)
-                .ok_or_else(|| DwError::UnsupportedFeature(format!("comparison between {left:?} and {right:?}")))?;
-            Ok(compare_datetime_parts(left, right))
+    let ordering = match (left, right) {
+        (Value::Date(left), Value::Date(right)) => left.cmp(right),
+        (Value::DateTime(left), Value::DateTime(right)) => left.value.cmp(&right.value),
+        (Value::LocalDateTime(left), Value::LocalDateTime(right)) => left.value.cmp(&right.value),
+        (Value::LocalTime(left), Value::LocalTime(right)) => left.value.cmp(&right.value),
+        (Value::Time(left), Value::Time(right)) => {
+            use chrono::Timelike;
+            let left_seconds = left.value.num_seconds_from_midnight() as i64
+                - left.offset.local_minus_utc() as i64;
+            let right_seconds = right.value.num_seconds_from_midnight() as i64
+                - right.offset.local_minus_utc() as i64;
+            (left_seconds, left.value.nanosecond()).cmp(&(right_seconds, right.value.nanosecond()))
         }
-        ("date", "datetime") => compare_date_and_datetime(&left.value, &right.value),
-        ("datetime", "date") => compare_date_and_datetime(&right.value, &left.value).map(|value| -value),
-        ("time", "time") => Ok(compare_ordering(&left.value.cmp(&right.value))),
-        _ => Err(DwError::UnsupportedFeature(format!(
-            "comparison between {left:?} and {right:?}"
-        ))),
-    }
+        (Value::Date(date), Value::DateTime(datetime)) => date
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc()
+            .cmp(&datetime.value.to_utc()),
+        (Value::DateTime(datetime), Value::Date(date)) => datetime
+            .value
+            .to_utc()
+            .cmp(&date.and_hms_opt(0, 0, 0).unwrap().and_utc()),
+        (Value::Date(date), Value::LocalDateTime(datetime)) => {
+            date.and_hms_opt(0, 0, 0).unwrap().cmp(&datetime.value)
+        }
+        (Value::LocalDateTime(datetime), Value::Date(date)) => {
+            datetime.value.cmp(&date.and_hms_opt(0, 0, 0).unwrap())
+        }
+        _ => {
+            return Err(DwError::UnsupportedFeature(format!(
+                "comparison between {left:?} and {right:?}"
+            )))
+        }
+    };
+    Ok(compare_ordering(ordering))
 }
 
-fn compare_date_and_datetime(date_value: &str, datetime_value: &str) -> Result<i8, DwError> {
-    let (year, month, day) = parse_iso_date(date_value).ok_or_else(|| {
-        DwError::UnsupportedFeature(format!(
-            "comparison between {:?} and {:?}",
-            date_value, datetime_value
-        ))
-    })?;
-    let date_epoch = unix_days_from_civil(year, month, day) * 86_400;
-    let datetime_epoch = parse_datetime_epoch_seconds(datetime_value).ok_or_else(|| {
-        DwError::UnsupportedFeature(format!(
-            "comparison between {:?} and {:?}",
-            date_value, datetime_value
-        ))
-    })?;
-    Ok(compare_datetime_parts((date_epoch, 0), datetime_epoch))
-}
-
-fn compare_datetime_parts(left: (i64, i64), right: (i64, i64)) -> i8 {
-    compare_ordering(&left.cmp(&right))
-}
-
-fn compare_ordering(ordering: &std::cmp::Ordering) -> i8 {
+fn compare_ordering(ordering: std::cmp::Ordering) -> i8 {
     match ordering {
         std::cmp::Ordering::Less => -1,
         std::cmp::Ordering::Equal => 0,

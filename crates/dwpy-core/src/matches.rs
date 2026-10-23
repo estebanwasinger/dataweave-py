@@ -1,4 +1,4 @@
-use serde_json::{Map, Value};
+use crate::value::{DwMap as Map, DwValue as Value};
 
 use regex::Regex;
 
