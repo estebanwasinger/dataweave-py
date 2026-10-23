@@ -92,6 +92,45 @@ pub use value::{DwError, DwValue};
 use xml::{parse_xml_document, xml_list_items};
 use yaml::read_simple_yaml;
 
+const BINARY_BUILTIN_OPERATORS: &[&str] = &[
+    "contains",
+    "appendIfMissing",
+    "charCodeAt",
+    "countMatches",
+    "joinBy",
+    "splitBy",
+    "startsWith",
+    "endsWith",
+    "find",
+    "match",
+    "scan",
+    "first",
+    "hammingDistance",
+    "last",
+    "leftPad",
+    "levenshteinDistance",
+    "prependIfMissing",
+    "repeat",
+    "remove",
+    "rightPad",
+    "substringAfter",
+    "substringAfterLast",
+    "substringBefore",
+    "substringBeforeLast",
+    "substringEvery",
+    "withMaxSize",
+    "unwrap",
+    "wrapIfMissing",
+    "wrapWith",
+    "divideBy",
+    "zip",
+    "splitAt",
+    "indexOf",
+    "lastIndexOf",
+    "readLinesWith",
+    "writeLinesWith",
+];
+
 const COLLECTION_OPERATORS: &[&str] = &[
     "groupBy",
     "map",
@@ -746,6 +785,7 @@ fn scan_reference_paths(expression: &str, local_bindings: &BTreeSet<String>) -> 
         if !local_bindings.contains(root)
             && !follows_type_operator(expression, start)
             && !is_object_key
+            && !is_infix_function_reference(expression, start, end, path)
             && (path.contains('.') || (!following.starts_with('(') && !is_reference_keyword(root)))
         {
             references.push(path.to_string());
@@ -755,6 +795,59 @@ fn scan_reference_paths(expression: &str, local_bindings: &BTreeSet<String>) -> 
     references.sort();
     references.dedup();
     references
+}
+
+// An infix function is syntax, while the same name used as an operand can
+// still be a payload field (for example, `joinBy default []`).
+fn is_infix_function_reference(expression: &str, start: usize, end: usize, name: &str) -> bool {
+    if !BINARY_BUILTIN_OPERATORS.contains(&name) && !COLLECTION_OPERATORS.contains(&name) {
+        return false;
+    }
+    let before = &expression[..start];
+    let after = &expression[end..];
+    if !before.chars().last().is_some_and(char::is_whitespace)
+        || !after
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_whitespace() || ch == '(')
+        || !is_binary_operator_position(expression, start)
+    {
+        return false;
+    }
+    let previous_word = before
+        .trim_end()
+        .rsplit(|ch: char| !is_reference_identifier_continue(ch))
+        .next()
+        .unwrap_or("");
+    let previous_is_selector = before
+        .trim_end()
+        .strip_suffix(previous_word)
+        .is_some_and(|prefix| prefix.ends_with('.'));
+    if !previous_is_selector
+        && is_reference_keyword(previous_word)
+        && !matches!(previous_word, "true" | "false" | "null")
+    {
+        return false;
+    }
+    let next_word = after
+        .trim_start()
+        .split(|ch: char| !is_reference_identifier_continue(ch))
+        .next()
+        .unwrap_or("");
+    if is_reference_keyword(next_word)
+        && !matches!(
+            next_word,
+            "true" | "false" | "null" | "if" | "do" | "not" | "using"
+        )
+    {
+        return false;
+    }
+    after.trim_start().chars().next().is_some_and(|ch| {
+        !matches!(
+            ch,
+            ',' | ')' | ']' | '}' | ':' | '+' | '*' | '/' | '=' | '>' | '<'
+        )
+    })
 }
 
 fn is_reference_identifier_start(character: char) -> bool {
@@ -1240,44 +1333,7 @@ pub(crate) fn evaluate_expression_scoped(
         return evaluate_multiplicative(&left_value, operator, &right_value);
     }
 
-    for function_name in [
-        "contains",
-        "appendIfMissing",
-        "charCodeAt",
-        "countMatches",
-        "joinBy",
-        "splitBy",
-        "startsWith",
-        "endsWith",
-        "find",
-        "match",
-        "scan",
-        "first",
-        "hammingDistance",
-        "last",
-        "leftPad",
-        "levenshteinDistance",
-        "prependIfMissing",
-        "repeat",
-        "remove",
-        "rightPad",
-        "substringAfter",
-        "substringAfterLast",
-        "substringBefore",
-        "substringBeforeLast",
-        "substringEvery",
-        "withMaxSize",
-        "unwrap",
-        "wrapIfMissing",
-        "wrapWith",
-        "divideBy",
-        "zip",
-        "splitAt",
-        "indexOf",
-        "lastIndexOf",
-        "readLinesWith",
-        "writeLinesWith",
-    ] {
+    for &function_name in BINARY_BUILTIN_OPERATORS {
         if let Some((left, _, right)) =
             split_top_level_keyword_or_call_operator(source, &[function_name])
         {
@@ -6355,6 +6411,77 @@ sum(recurring_billings.amount)
         .unwrap();
 
         assert_eq!(result["references"], json!(["items"]));
+    }
+
+    #[test]
+    fn reference_analysis_ignores_infix_functions() {
+        for expression in [
+            r#"[1,2,3] joinBy ", ""#,
+            r#"joinBy([1,2,3], ", ")"#,
+            r#"[1,2,3] joinBy(", ")"#,
+            "([1,2,3]\n/* separator */ joinBy \", \")",
+            r#"{default: [1,2,3]}.default joinBy ", ""#,
+        ] {
+            let analysis = analyze_expression(expression, Some(json!({})), None).unwrap();
+            assert_eq!(analysis["references"], json!([]), "{expression}");
+            assert_eq!(analysis["unresolvedReferences"], json!([]), "{expression}");
+            assert_eq!(
+                execute_smoke(expression, Value::Null).unwrap(),
+                json!("1, 2, 3")
+            );
+        }
+
+        let analysis = analyze_expression(
+            r#"(record.names joinBy ", ") splitBy record.separator"#,
+            Some(json!({"record": {"names": ["a", "b"], "separator": ", "}})),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            analysis["references"],
+            json!(["record.names", "record.separator"])
+        );
+        assert_eq!(analysis["unresolvedReferences"], json!([]));
+
+        let analysis = analyze_expression(
+            "payload.items map ($ + 1)",
+            Some(json!({"items": [1, 2]})),
+            None,
+        )
+        .unwrap();
+        assert_eq!(analysis["references"], json!(["payload.items"]));
+        assert_eq!(analysis["unresolvedReferences"], json!([]));
+    }
+
+    #[test]
+    fn reference_analysis_preserves_fields_named_after_infix_functions() {
+        for expression in [
+            "joinBy",
+            "[joinBy, splitBy]",
+            "payload.names default joinBy",
+            "joinBy ++ splitBy",
+            "if (true) joinBy else splitBy",
+        ] {
+            let analysis = analyze_expression(expression, Some(json!({})), None).unwrap();
+            assert!(
+                analysis["references"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("joinBy")),
+                "{expression}"
+            );
+            assert!(
+                analysis["unresolvedReferences"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("joinBy")),
+                "{expression}"
+            );
+        }
+        let analysis =
+            analyze_expression(r#"payload.missing joinBy ", ""#, Some(json!({})), None).unwrap();
+        assert_eq!(analysis["references"], json!(["payload.missing"]));
+        assert_eq!(analysis["unresolvedReferences"], json!(["payload.missing"]));
     }
 
     #[test]
