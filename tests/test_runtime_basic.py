@@ -851,6 +851,73 @@ output text/plain
     assert runtime.execute(script, payload={}) == "hello"
 
 
+@pytest.mark.parametrize("render_output", [True, False])
+def test_output_plain_text_selects_markdown_content_from_object_literal(render_output):
+    content = (
+        "![Union Station reputation comparison]"
+        "(sandbox:/root/keypilot/artifacts/union_station_reputation.png)\n\n"
+        "Union Station is highlighted in teal; dashed lines show the national benchmark.\n\n"
+        "- **July 2026:** 3rd of 7 against external peers.\n"
+        "- **May 2026:** 1st of 9 portfolio assets—the latest common reporting month.\n\n"
+        "[Download PNG](sandbox:/root/keypilot/artifacts/union_station_reputation.png) · "
+        "[Download PDF](sandbox:/root/keypilot/artifacts/union_station_reputation.pdf)"
+    )
+    message = {
+        "id": None,
+        "role": "assistant",
+        "content": content,
+        "tool_calls": None,
+        "tool_call_id": None,
+        "reasoning_summary": None,
+        "timestamp": "2026-10-23T14:31:09.941263",
+        "ended_at": "2026-10-23T14:31:11.566467",
+        "memory_citations": None,
+    }
+    script = (
+        "%dw 2.0\noutput text/plain\n---\n"
+        + json.dumps(message, ensure_ascii=False, indent=2)
+        + ".content"
+    )
+
+    assert DataWeaveRuntime().execute(script, {}, render_output=render_output) == content
+
+
+@pytest.mark.parametrize(
+    "expression, expected",
+    [
+        ('{message: {content: "hello"}}.message.content', "hello"),
+        ('[{content: "hello"}.content, {content: "world"}.content]', ["hello", "world"]),
+        ('{result: upper({content: "hello"}.content)}', {"result": "HELLO"}),
+        ('{content: "--- // /* .content */"} /* selector */ .content', "--- // /* .content */"),
+        ('{content: "hello"}.missing default "fallback"', "fallback"),
+        ('{content: "hello"}.missing?', False),
+    ],
+)
+def test_object_literal_property_selectors_compose(expression, expected):
+    script = "%dw 2.0\noutput application/python\n---\n" + expression
+
+    assert DataWeaveRuntime().execute(script, {}) == expected
+
+
+def test_object_literal_required_selector_reports_missing_field():
+    script = '%dw 2.0\noutput text/plain\n---\n{content: "hello"}.missing!'
+
+    with pytest.raises(DataWeaveEvaluationError, match="There is no key named 'missing'"):
+        DataWeaveRuntime().execute(script, {})
+
+
+@pytest.mark.parametrize(
+    "expression, expected",
+    [
+        ('"café — · 😀\\nnext\\tline"', "café — · 😀\nnext\tline"),
+        (r"'café \'quote\' \\n'", "café 'quote' \\n"),
+        ('{"café": "😀"}."café"', "😀"),
+    ],
+)
+def test_string_literals_preserve_unicode_and_escapes(expression, expected):
+    assert DataWeaveRuntime().execute(expression, {}) == expected
+
+
 def test_output_plain_text_rejects_non_string_values():
     script = """%dw 2.0
 output text/plain

@@ -409,7 +409,7 @@ pub(crate) fn parse_postfix_path_access(source: &str) -> Option<(&str, &str)> {
             continue;
         }
         let base = source[..index].trim();
-        if base.ends_with(')') || base.ends_with(']') {
+        if base.ends_with(')') || base.ends_with(']') || base.ends_with('}') {
             return Some((base, &source[index..]));
         }
     }

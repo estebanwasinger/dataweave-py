@@ -374,6 +374,7 @@ The runtime supports these output directives:
 Format-specific notes:
 - `application/x-ndjson` maps newline-delimited JSON records to an array. Empty lines are ignored by default; use `skipInvalid=true` to skip malformed records. Writers emit one compact JSON record per line and support `skipNullOn` and `writeAttributes`.
 - `output text/plain` only works when the final script result is a string.
+- To return a string field verbatim, including Markdown and newlines, use `output text/plain --- {content: "hello\nworld"}.content`. The plain text directive is `text/plain`, not `text`.
 - `output text/markdown` expects a tabular value (`list` or `dict`) and renders a Markdown table.
 - `output text/markdown header=false` is rejected because Markdown table rendering requires headers.
 - `payload_format="text/markdown"` parses Markdown pipe tables into structured rows (`Array<Object>` by default, or `Array<Array<String>>` with `payload_format_options={"header": False}`).

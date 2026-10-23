@@ -2316,6 +2316,40 @@ mod tests {
     }
 
     #[test]
+    fn selects_object_literal_content_for_plain_text_output() {
+        let script = r#"%dw 2.0
+output text/plain
+---
+{
+  id: null,
+  content: "![Chart](sandbox:/chart.png)\n\n- **July:** 3rd of 7."
+}.content
+"#;
+        let expected = "![Chart](sandbox:/chart.png)\n\n- **July:** 3rd of 7.";
+        assert_eq!(
+            execute_json(script, Value::Null, true).unwrap(),
+            json!(expected)
+        );
+
+        let compiled = compile(script).unwrap();
+        for lazy_sequences in [true, false] {
+            let mut output = Vec::new();
+            compiled
+                .execute_to_writer(
+                    Value::Null,
+                    None,
+                    &ExecutionOptions {
+                        lazy_sequences,
+                        ..ExecutionOptions::default()
+                    },
+                    &mut output,
+                )
+                .unwrap();
+            assert_eq!(output, expected.as_bytes());
+        }
+    }
+
+    #[test]
     fn finds_top_level_script_delimiter() {
         let script = "%dw 2.0\n// --- ignored\nvar x = \"---\"\n---\npayload";
         assert_eq!(parse_script_boundary(script), Some(3));

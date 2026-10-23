@@ -1336,7 +1336,9 @@ class Parser:
 
 
 def _unescape_string(value: str) -> str:
-    return bytes(value[1:-1], "utf-8").decode("unicode_escape")
+    # unicode_escape decodes bytes as Latin-1; escape non-ASCII characters first
+    # so literal Unicode is preserved alongside DataWeave escape sequences.
+    return value[1:-1].encode("ascii", "backslashreplace").decode("unicode_escape")
 
 
 def parse_script(source: str) -> Script:
