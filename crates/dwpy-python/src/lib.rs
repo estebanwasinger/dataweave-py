@@ -324,7 +324,11 @@ fn py_to_json(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<serde_json::
     let kwargs = PyDict::new(py);
     kwargs.set_item("default", bridge.getattr("json_default")?)?;
     let encoded: String = json
-        .call_method("dumps", (value,), Some(&kwargs))?
+        .call_method(
+            "dumps",
+            (bridge.getattr("encode_bridge_value")?.call1((value,))?,),
+            Some(&kwargs),
+        )?
         .extract()?;
     serde_json::from_str(&encoded)
         .map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))

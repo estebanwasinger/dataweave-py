@@ -36,6 +36,25 @@ fn runs_inline_script_and_pretty_prints_native_values() {
 }
 
 #[test]
+fn preserves_duplicate_json_payload_keys_for_inline_and_file_inputs() {
+    let payload = r#"{"test":{"test2":{"array":1},"test2":{"array":2},"test2":{"array":3}}}"#;
+    let path = temp_file("duplicates", "json", payload);
+    for input in [
+        vec!["--payload", payload],
+        vec!["--payload-file", path.to_str().unwrap()],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_dw"))
+            .args(["run", "%dw 2.0\noutput application/json\n---\npayload.test.*test2"])
+            .args(input)
+            .output()
+            .expect("failed to run dw binary");
+        assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+        assert_eq!(String::from_utf8_lossy(&output.stdout), r#"[{"array":1},{"array":2},{"array":3}]"#);
+    }
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn runs_script_file_with_inferred_json_payload_file_format() {
     let script_path = temp_file(
         "script",

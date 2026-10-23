@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import date, datetime, time
 from typing import Any
 
+from .formats import DWObject
+
 
 try:
     import pandas as pd
@@ -32,3 +34,19 @@ def json_default(value: Any) -> Any:
     if hasattr(value, "isoformat"):
         return value.isoformat()
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+def encode_bridge_value(value: Any) -> Any:
+    """Preserve duplicate object entries across JSON-only runtime bridges."""
+    if isinstance(value, DWObject):
+        return {
+            "__dwpy_object_pairs": [
+                {"key": key, "value": encode_bridge_value(item)}
+                for key, item in value.items()
+            ]
+        }
+    if isinstance(value, dict):
+        return {key: encode_bridge_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [encode_bridge_value(item) for item in value]
+    return value

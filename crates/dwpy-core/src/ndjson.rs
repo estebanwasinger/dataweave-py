@@ -14,7 +14,7 @@ pub(crate) fn read_ndjson(text: &str, options: &Value) -> Result<Value, DwError>
         if line.trim().is_empty() && ignore_empty_line {
             continue;
         }
-        match serde_json::from_str::<Value>(line) {
+        match crate::json::read_json_value(line) {
             Ok(record) => records.push(record),
             Err(_error) if skip_invalid => continue,
             Err(error) => {
