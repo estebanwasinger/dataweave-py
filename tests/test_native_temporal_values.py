@@ -62,6 +62,21 @@ def test_iso_looking_strings_stay_strings(runtime):
     assert runtime.execute('"2026-10-29" ++ "T12:34:56Z"', {}, render_output=False) == "2026-10-29T12:34:56Z"
 
 
+@pytest.mark.parametrize("source, expected", [
+    ("Z", "Z"), ("+00:00", "Z"), ("-03:00", "-03:00"), ("+05:30", "+05:30"),
+])
+def test_timezone_string_coercion_and_output(runtime, source, expected):
+    script = f'''%dw 2.0
+import * from dw::util::Coercions
+output application/json
+---
+{{zone: |{source}|, text: toString(|{source}|), coerced: |{source}| as String}}'''
+    assert json.loads(runtime.execute(script, {})) == {
+        "zone": expected, "text": expected, "coerced": expected,
+    }
+    assert runtime.execute(f"output text\n---\n|{source}|", {}) == expected
+
+
 def test_nested_output_and_nanosecond_arithmetic_do_not_leak_markers(runtime):
     script = '''%dw 2.0
 output application/json

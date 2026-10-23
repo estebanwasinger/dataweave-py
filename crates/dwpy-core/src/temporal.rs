@@ -116,7 +116,7 @@ impl DwValue {
 
     pub fn temporal_text(&self) -> Option<String> {
         Some(match self {
-            Self::TimeZone(offset) => offset.to_string(),
+            Self::TimeZone(offset) => offset_text(*offset, true),
             Self::Date(date) => date.format("%Y-%m-%d").to_string(),
             Self::LocalDateTime(value) => format!(
                 "{}T{}",

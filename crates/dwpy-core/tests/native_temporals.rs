@@ -229,3 +229,33 @@ fn typed_bridge_rejects_invalid_temporal_data() {
         assert!(DwValue::from_transport_json(value).is_err());
     }
 }
+
+#[test]
+fn timezone_strings_use_z_for_utc_and_preserve_nonzero_offsets() {
+    for (source, expected) in [
+        ("Z", "Z"),
+        ("+00:00", "Z"),
+        ("-03:00", "-03:00"),
+        ("+05:30", "+05:30"),
+    ] {
+        let value = native(&format!("|{source}|"));
+        assert!(matches!(value, DwValue::TimeZone(_)));
+        assert_eq!(value.temporal_text().as_deref(), Some(expected));
+        assert_eq!(value.to_json(), json!(expected));
+        assert_eq!(native(&format!("|{source}| as String")), json!(expected));
+        let script = format!("import * from dw::util::Coercions\n---\ntoString(|{source}|)");
+        assert_eq!(native(&script), json!(expected));
+        let script = format!("output text\n---\n|{source}|");
+        assert_eq!(
+            execute_json(&script, json!(null), true).unwrap(),
+            json!(expected)
+        );
+    }
+    // Explicit numeric offsets on date-times and times retain their spelling.
+    for source in ["2026-10-26T12:34:56+00:00", "12:34:56+00:00"] {
+        assert_eq!(
+            native(&format!("|{source}|")).temporal_text().as_deref(),
+            Some(source)
+        );
+    }
+}
