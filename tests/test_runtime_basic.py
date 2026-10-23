@@ -563,6 +563,19 @@ payload
     assert result == [{"id": 1}, {"id": 2}]
 
 
+@pytest.mark.parametrize("format_name", ["ndjson", "application/x-ndjson", "application/x-ldjson"])
+def test_ndjson_read_function_reports_data_errors_and_skips_invalid_records(format_name):
+    runtime = DataWeaveRuntime()
+    payload = '{"id":1}\nnot-json\n{"id":2}\n'
+    script = f'%dw 2.0\noutput application/python\n---\nread(payload, "{format_name}")'
+
+    with pytest.raises(DataWeaveEvaluationError, match="Invalid NDJSON record on line 2"):
+        runtime.execute(script, payload)
+
+    skip_script = f'%dw 2.0\noutput application/python\n---\nread(payload, "{format_name}", {{skipInvalid: true}})'
+    assert runtime.execute(skip_script, payload) == [{"id": 1}, {"id": 2}]
+
+
 def test_python_backend_writes_ndjson_records_with_writer_options():
     script = """%dw 2.0
 output application/x-ndjson skipNullOn="objects" writeAttributes=true

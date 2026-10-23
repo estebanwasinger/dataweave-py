@@ -36,8 +36,9 @@ Updated: 2026-10-23, using the latest upstream v2.13 docs at
 | Active expected-fail examples | 0 |
 | Active progress | 100.00% |
 | Official docs test result | 528 passed, 5 xfailed |
-| Rust workspace test result | 139 passed |
-| Full Python test result | 979 passed, 5 xfailed |
+| Rust workspace test result | 140 passed |
+| Full Python test result | 982 passed, 5 xfailed |
+| Full forced-WASM Python matrix | 975 passed, 7 skipped, 5 xfailed |
 | JWT and official docs on WASM | 558 passed, 5 xfailed |
 
 The official docs test has one inventory test, so its passed count is one greater than the normal/runnable official example count.
@@ -56,15 +57,16 @@ Result:
 
 ```text
 official docs: 528 passed, 5 xfailed
-rust workspace: 139 passed
-full python: 979 passed, 5 xfailed
+rust workspace: 140 passed
+full python: 982 passed, 5 xfailed
+forced WASM: 975 passed, 7 skipped, 5 xfailed
 ```
 
-The broader forced-WASM Python matrix reports 971 passed, 7 skipped, 5 xfailed,
-and one separate NDJSON error-classification failure:
-`test_python_backend_ndjson_reader_options_control_invalid_lines` receives a
-`ParseError` instead of `DataWeaveEvaluationError` from the WASM adapter. The
-JWT and official-documentation tests pass under both Rust and WASM.
+NDJSON decoding failures are classified as invalid data rather than script
+parse errors. Both payload decoding and `read(...)` preserve the malformed
+record's line number and raise `DataWeaveEvaluationError` through the Python
+WASM bridge. `skipInvalid` continues to skip malformed records. The full WASM
+matrix, including the previously failing NDJSON test, now passes.
 
 ## Current Xfail Buckets
 

@@ -18,7 +18,7 @@ pub(crate) fn read_ndjson(text: &str, options: &Value) -> Result<Value, DwError>
             Ok(record) => records.push(record),
             Err(_error) if skip_invalid => continue,
             Err(error) => {
-                return Err(DwError::Parse(format!(
+                return Err(DwError::InvalidJson(format!(
                     "Invalid NDJSON record on line {line_number}: {error}"
                 )))
             }
@@ -138,4 +138,23 @@ fn validate_options(options: &Value) -> Result<(), DwError> {
 
 fn parse_bool(value: &str) -> bool {
     matches!(value, "true" | "True" | "1" | "yes")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn invalid_records_are_data_errors_and_can_be_skipped() {
+        let input = "{\"id\":1}\nnot-json\n{\"id\":2}\n";
+        assert!(matches!(
+            read_ndjson(input, &Value::Null),
+            Err(DwError::InvalidJson(message)) if message.starts_with("Invalid NDJSON record on line 2:")
+        ));
+        assert_eq!(
+            read_ndjson(input, &json!({"skipInvalid": true})).unwrap(),
+            json!([{"id": 1}, {"id": 2}])
+        );
+    }
 }
