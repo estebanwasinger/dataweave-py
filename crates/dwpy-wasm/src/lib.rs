@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
@@ -11,6 +12,82 @@ pub fn run_dataweave_smoke(script_source: &str, payload_json: &str) -> Result<St
 
 #[wasm_bindgen]
 pub fn run_dataweave_request(request_json: &str) -> Result<String, JsValue> {
+    run_request(request_json, dwpy_core::Loggers::default())
+}
+
+/// Opt-in envelope; preserves logs even when evaluation fails. The original
+/// entry point retains its result-only/throwing contract.
+#[wasm_bindgen]
+pub fn run_dataweave_request_with_logs(request_json: &str) -> Result<String, JsValue> {
+    let captured = Arc::new(Mutex::new(CapturedLogs::default()));
+    let sink = captured.clone();
+    let mut loggers = dwpy_core::Loggers::default();
+    loggers.push(move |entry: &dwpy_core::LogEntry| {
+        sink.lock().unwrap().push(entry);
+    });
+    let result = run_request(request_json, loggers);
+    let captured = captured.lock().unwrap();
+    let mut envelope = serde_json::json!({
+        "logs": captured.entries,
+        "logs_truncated": captured.truncated,
+    });
+    match result {
+        Ok(result) => {
+            envelope["result"] =
+                serde_json::from_str(&result).map_err(|err| JsValue::from_str(&err.to_string()))?
+        }
+        Err(error) => {
+            envelope["error"] = serde_json::json!(error
+                .as_string()
+                .unwrap_or_else(|| "DataWeave execution failed".into()))
+        }
+    }
+    serde_json::to_string(&envelope).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[derive(Default)]
+struct CapturedLogs {
+    entries: Vec<dwpy_core::LogEntry>,
+    bytes: usize,
+    truncated: bool,
+}
+
+impl CapturedLogs {
+    fn push(&mut self, entry: &dwpy_core::LogEntry) {
+        // Bound browser/Node captures by count, total bytes, and message size.
+        if self.entries.len() >= 1000 || self.bytes >= 1024 * 1024 {
+            self.truncated = true;
+            return;
+        }
+        let mut entry = entry.clone();
+        self.truncated |= truncate_log_text(&mut entry.message, 16 * 1024);
+        if let Some(prefix) = &mut entry.prefix {
+            self.truncated |= truncate_log_text(prefix, 1024);
+        }
+        let bytes = entry.message.len() + entry.prefix.as_ref().map_or(0, String::len);
+        if self.bytes + bytes > 1024 * 1024 {
+            self.truncated = true;
+            return;
+        }
+        self.bytes += bytes;
+        self.entries.push(entry);
+    }
+}
+
+fn truncate_log_text(text: &mut String, max_bytes: usize) -> bool {
+    if text.len() <= max_bytes {
+        return false;
+    }
+    let mut end = max_bytes;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+    text.push('…');
+    true
+}
+
+fn run_request(request_json: &str, loggers: dwpy_core::Loggers) -> Result<String, JsValue> {
     let request = decode_request_context(request_json)?;
     let request = request
         .as_object()
@@ -69,17 +146,19 @@ pub fn run_dataweave_request(request_json: &str) -> Result<String, JsValue> {
         .and_then(serde_json::Value::as_bool)
         == Some(true)
     {
-        dwpy_core::execute_transport_with_context(
+        dwpy_core::execute_transport_with_loggers(
             script_source,
             payload,
             Some(vars),
             Some(attributes),
             properties,
             render_output,
+            loggers,
         )
     } else {
         dwpy_core::ExecutionContext::new(Some(vars), Some(attributes), properties).and_then(
-            |context| {
+            |mut context| {
+                context.loggers = loggers;
                 dwpy_core::execute_json_with_context(script_source, payload, context, render_output)
             },
         )

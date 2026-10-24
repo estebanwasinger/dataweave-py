@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, Iterable, Literal, Optional
+
+from .logging import Logger, emit_bridge_log, logger_scope, normalize_loggers
 
 from ._python_runtime import (
     DataWeaveEvaluationError,
@@ -30,7 +32,9 @@ class DataWeaveRuntime:
         *,
         enable_module_imports: bool = True,
         backend: BackendName | None = None,
+        loggers: Iterable[Logger] | None = None,
     ) -> None:
+        self._loggers = normalize_loggers(loggers)
         requested_backend = (
             os.environ.get("DWPY_TEST_BACKEND")
             or backend
@@ -95,6 +99,30 @@ class DataWeaveRuntime:
         payload_format_options: Optional[Dict[str, Any]] = None,
         render_output: bool = True,
     ) -> Any:
+        with logger_scope(self._loggers):
+            return self._execute(
+                script_source,
+                payload,
+                vars=vars,
+                attributes=attributes,
+                properties=properties,
+                payload_format=payload_format,
+                payload_format_options=payload_format_options,
+                render_output=render_output,
+            )
+
+    def _execute(
+        self,
+        script_source: str,
+        payload: Any,
+        vars: Optional[Dict[str, Any]] = None,
+        *,
+        attributes: Any = None,
+        properties: Optional[Dict[str, str]] = None,
+        payload_format: Optional[str] = None,
+        payload_format_options: Optional[Dict[str, Any]] = None,
+        render_output: bool = True,
+    ) -> Any:
         if self._wasm_runtime is not None:
             return self._wasm_runtime.execute(
                 script_source,
@@ -105,6 +133,7 @@ class DataWeaveRuntime:
                 payload_format=payload_format,
                 payload_format_options=payload_format_options,
                 render_output=render_output,
+                log_callback=None if self._loggers == () else emit_bridge_log,
             )
 
         if self._rust_runtime is not None:
@@ -117,6 +146,7 @@ class DataWeaveRuntime:
                 payload_format=payload_format,
                 payload_format_options=payload_format_options,
                 render_output=render_output,
+                log_callback=None if self._loggers == () else emit_bridge_log,
             )
 
         return self._legacy_runtime.execute(

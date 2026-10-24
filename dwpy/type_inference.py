@@ -622,6 +622,11 @@ class TypeInferencer:
     def _infer_function_call(self, expr: parser.FunctionCall, ctx: TypeInferenceContext) -> DWType:
         if isinstance(expr.function, parser.Identifier):
             name = expr.function.name
+            if (
+                name in {"log", "logDebug", "logInfo", "logWarn", "logError"}
+                and len(expr.arguments) in {1, 2}
+            ) or (name == "logWith" and len(expr.arguments) == 3):
+                return self._infer_expression(expr.arguments[-1], ctx)
             if name == "JWT" or name.endswith("::JWT"):
                 return STRING
             if name in {

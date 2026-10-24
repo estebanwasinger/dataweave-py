@@ -76,11 +76,33 @@ pub fn execute_transport_with_context(
     properties: Option<std::collections::BTreeMap<String, String>>,
     render_output: bool,
 ) -> Result<Value, DwError> {
-    let context = ExecutionContext::from_values(
+    execute_transport_with_loggers(
+        script,
+        payload,
+        vars,
+        attributes,
+        properties,
+        render_output,
+        crate::Loggers::default(),
+    )
+}
+
+/// Typed-wire execution with host-provided sinks, without changing the result.
+pub fn execute_transport_with_loggers(
+    script: &str,
+    payload: Value,
+    vars: Option<Value>,
+    attributes: Option<Value>,
+    properties: Option<std::collections::BTreeMap<String, String>>,
+    render_output: bool,
+    loggers: crate::Loggers,
+) -> Result<Value, DwError> {
+    let mut context = ExecutionContext::from_values(
         vars.map(DwValue::from_transport_json).transpose()?,
         attributes.map(DwValue::from_transport_json).transpose()?,
         properties,
     )?;
+    context.loggers = loggers;
     crate::execute_value_with_context(
         script,
         DwValue::from_transport_json(payload)?,

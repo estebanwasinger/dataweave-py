@@ -16,6 +16,13 @@ output application/python
     assert result == {"id": 7, "upperName": "MULE"}
 
 
+def test_run_dataweave_accepts_injected_loggers() -> None:
+    entries = []
+    assert run_dataweave(script='logInfo("value", 42)', payload=None, loggers=[entries.append]) == 42
+    assert entries[0].level == "info"
+    assert entries[0].message == "value - 42"
+
+
 def test_run_dataweave_serializes_temporal_and_binary_values() -> None:
     script = """%dw 2.0
 import * from dw::Crypto

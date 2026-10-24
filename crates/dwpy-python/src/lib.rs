@@ -2,7 +2,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyFloat, PyList, PyModule};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 #[pyclass]
 struct RustDataWeaveRuntime {
@@ -45,7 +45,8 @@ impl RustDataWeaveRuntime {
         properties = None,
         payload_format = None,
         payload_format_options = None,
-        render_output = true
+        render_output = true,
+        log_callback = None
     ))]
     fn execute(
         &self,
@@ -58,7 +59,16 @@ impl RustDataWeaveRuntime {
         payload_format: Option<&str>,
         payload_format_options: Option<Py<PyAny>>,
         render_output: bool,
+        log_callback: Option<Py<PyAny>>,
     ) -> PyResult<Py<PyAny>> {
+        if log_callback
+            .as_ref()
+            .is_some_and(|callback| !callback.bind(py).is_callable())
+        {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "log_callback must be callable",
+            ));
+        }
         let attributes_json = attributes
             .as_ref()
             .map(|value| py_to_json(py, value.bind(py)))
@@ -122,17 +132,40 @@ impl RustDataWeaveRuntime {
                     .as_ref()
                     .map(|value| py_to_json(py, value.bind(py)))
                     .transpose();
+                let entries = Arc::new(Mutex::new(Vec::new()));
+                let mut loggers = dwpy_core::Loggers::default();
+                if log_callback.is_some() {
+                    let entries = entries.clone();
+                    loggers.push(move |entry: &dwpy_core::LogEntry| {
+                        entries.lock().unwrap().push(entry.clone());
+                    });
+                }
                 let rust_result = vars_json.and_then(|vars_json| {
-                    dwpy_core::execute_transport_with_context(
+                    dwpy_core::execute_transport_with_loggers(
                         script_source,
                         payload_json,
                         vars_json,
                         attributes_json.clone(),
                         properties_map.clone(),
                         render_output,
+                        loggers,
                     )
                     .map_err(|err| rust_core_error(py, err, script_source))
                 });
+
+                // A failed optimistic Rust attempt may be retried by the legacy
+                // evaluator. Deliver only the attempt whose result is used.
+                if rust_result.is_ok() || !self.allow_legacy_fallback {
+                    if let Some(callback) = &log_callback {
+                        let entries = std::mem::take(&mut *entries.lock().unwrap());
+                        for entry in entries {
+                            let value = serde_json::to_value(entry).map_err(|err| {
+                                pyo3::exceptions::PyValueError::new_err(err.to_string())
+                            })?;
+                            callback.call1(py, (json_to_py_plain(py, value)?,))?;
+                        }
+                    }
+                }
 
                 match rust_result {
                     Ok(result) => {

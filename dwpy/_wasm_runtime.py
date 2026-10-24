@@ -7,7 +7,7 @@ import subprocess
 import threading
 from datetime import date, datetime, time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from . import parser
 from ._python_runtime import DataWeaveEvaluationError
@@ -55,7 +55,11 @@ class _WasmNodeBridge:
                 cls._instance = cls()
             return cls._instance
 
-    def execute(self, request: Dict[str, Any]) -> Any:
+    def execute(
+        self,
+        request: Dict[str, Any],
+        log_callback: Callable[[dict], None] | None = None,
+    ) -> Any:
         encoded = json.dumps(request, separators=(",", ":"), allow_nan=False)
         with self.lock:
             if self.process.poll() is not None:
@@ -69,6 +73,15 @@ class _WasmNodeBridge:
         if not response_line:
             raise RuntimeError("Node.js WASM bridge closed its output")
         response = json.loads(response_line)
+        if log_callback is not None:
+            for entry in response.get("logs", []):
+                log_callback(entry)
+            if response.get("logs_truncated"):
+                log_callback({
+                    "level": "warn",
+                    "prefix": None,
+                    "message": "Log capture limit reached; some messages were truncated or omitted.",
+                })
         if not response.get("ok"):
             message = response.get("error", "WASM execution failed")
             if isinstance(message, str) and message.startswith("DataWeave parse error:"):
@@ -117,6 +130,7 @@ class WasmDataWeaveRuntime:
         payload_format: Optional[str] = None,
         payload_format_options: Optional[Dict[str, Any]] = None,
         render_output: bool = True,
+        log_callback: Callable[[dict], None] | None = None,
     ) -> Any:
         _validate_properties(properties)
         request: Dict[str, Any] = {
@@ -127,6 +141,7 @@ class WasmDataWeaveRuntime:
             "attributes": _encode_wasm_value(attributes or {}),
             "properties": _encode_wasm_value(properties or {}),
             "render_output": render_output,
+            "capture_logs": log_callback is not None,
         }
         if payload_format is not None:
             request["payload_format"] = payload_format
@@ -134,7 +149,7 @@ class WasmDataWeaveRuntime:
             request["payload_format_options"] = _encode_wasm_value(
                 payload_format_options
             )
-        return self._bridge.execute(request)
+        return self._bridge.execute(request, log_callback=log_callback)
 
     def capabilities(self) -> list[str]:
         return [

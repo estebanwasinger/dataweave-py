@@ -31,7 +31,20 @@ type ExecuteRequest = {
 /** Serialized JSON requests preserve duplicate keys in execution data. */
 declare const analyze: (request: AnalyzeRequest | string) => AnalyzeResult;
 /** Pass raw request JSON, or JSON payload text with payload_format, to retain duplicate keys. */
-declare const execute: (request: ExecuteRequest | string) => JsonValue;
+declare const execute: (request: ExecuteRequest | string, options?: {loggers?: DataWeaveLogger[]}) => JsonValue;
 
-export {analyze, execute};
-export type {AnalyzeRequest, AnalyzeResult, ExecuteRequest, JsonValue};
+type LogEntry = {
+  level: "debug" | "info" | "warn" | "error";
+  prefix: string | null;
+  message: string;
+};
+type DataWeaveLogger = (entry: LogEntry) => void;
+type ExecutionWithLogs = {
+  logs: LogEntry[];
+  logs_truncated: boolean;
+} & ({result: JsonValue; error?: never} | {error: string; result?: never});
+/** Captures up to 1000 entries / ~1 MiB; messages are limited to 16 KiB. */
+declare const executeWithLogs: (request: ExecuteRequest | string) => ExecutionWithLogs;
+
+export {analyze, execute, executeWithLogs};
+export type {AnalyzeRequest, AnalyzeResult, ExecuteRequest, JsonValue, LogEntry, DataWeaveLogger, ExecutionWithLogs};

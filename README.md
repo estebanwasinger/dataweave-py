@@ -500,7 +500,58 @@ DataWeave-Py currently supports a wide range of DataWeave language features:
 `now`, `isLeapYear`, `daysBetween`
 
 #### Utility Functions
-`log`, `logInfo`, `logDebug`, `logWarn`, `logError`
+`log`, `logInfo`, `logDebug`, `logWarn`, `logError`, `logWith`
+
+### Injecting loggers
+
+Logging functions return the value they inspect. Inject one or more sinks into
+the Python runtime to receive `LogEntry(level, prefix, message)` records:
+
+```python
+import logging
+from dwpy import DataWeaveRuntime
+
+entries = []
+runtime = DataWeaveRuntime(loggers=[entries.append, logging.getLogger("my-app.dataweave")])
+result = runtime.execute("1 to 10 map log($)", None)
+assert result == list(range(1, 11))
+assert entries[0].message == "1"
+```
+
+`log(value)` and `log("label", value)` use the `warn` level for compatibility
+with the existing Python implementation. The level-specific functions use
+`debug`, `info`, `warn`, or `error`; `logWith("debug", "label", value)` selects
+a level dynamically (unknown levels default to `info`). Logger callbacks see
+all levels; injected Python `logging.Logger` instances apply their own filters.
+With `loggers=None`, Python uses standard Python logging. Pass `loggers=[]` to
+silence script logs. Configured sinks replace the default sink.
+
+Sinks are isolated by execution, including nested and concurrent runs. Messages
+emitted before an execution error are delivered as well. Native Python-extension
+and WASM bridges deliver captured entries after evaluation; the Python interpreter
+and direct Rust sinks deliver them during evaluation. An exception in a Python or
+JavaScript logger callback propagates to the caller.
+
+Rust embedders use `ExecutionContext::with_logger`, repeatedly for multiple sinks:
+
+```rust
+use dwpy_core::{compile, ExecutionContext, ExecutionOptions, LogEntry};
+use serde_json::Value;
+
+let context = ExecutionContext::new(None, None, None)?
+    .with_logger(|entry: &LogEntry| eprintln!("{:?}: {}", entry.level, entry.message));
+let output = compile("logInfo(\"value\", payload)")?
+    .execute_with_context(Value::from(42), context, &ExecutionOptions::default())?;
+# Ok::<(), dwpy_core::DwError>(())
+```
+
+Direct Rust and result-only WASM APIs are silent without injected sinks. The
+WASM export `run_dataweave_request_with_logs` is opt-in and returns a JSON envelope
+with `result` or `error`, plus `logs` and `logs_truncated`; the existing
+`run_dataweave_request` contract is unchanged. Captures retain up to 1,000 entries
+and approximately 1 MiB of text, with 16 KiB per message and 1 KiB per prefix.
+The DataWeave playground displays these records in its **Logs** tab, including
+records produced before an error. Each run replaces the previous logs.
 
 ## Running Tests
 

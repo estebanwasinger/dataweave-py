@@ -1,7 +1,7 @@
 "use strict";
 
 const readline = require("readline");
-const { analyze, execute } = require("./index.js");
+const { analyze, execute, executeWithLogs } = require("./index.js");
 
 const input = readline.createInterface({
   input: process.stdin,
@@ -13,6 +13,14 @@ input.on("line", (line) => {
 
   try {
     const request = JSON.parse(line);
+    if (request.operation !== "analyze" && request.capture_logs === true) {
+      const execution = executeWithLogs(line);
+      process.stdout.write(JSON.stringify({
+        ok: execution.error === undefined,
+        ...execution,
+      }) + "\n");
+      return;
+    }
     const handler = request.operation === "analyze" ? analyze : execute;
     process.stdout.write(JSON.stringify({ ok: true, result: handler(line) }) + "\n");
   } catch (error) {

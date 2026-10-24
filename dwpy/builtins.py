@@ -11,6 +11,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from .formats import XMLNodeList, XMLNodeDict
+from .logging import LogEntry, emit_log
 
 
 def _format_decimal(value: float) -> str:
@@ -1105,7 +1106,13 @@ def _log_with_level(level: int, prefix: Optional[str], value: Any = _LOG_SENTINE
         actual_value = prefix
         actual_prefix = ""
     message = f"{actual_prefix} - {actual_value}" if actual_prefix else str(actual_value)
-    logging.log(level, message)
+    level_name = {
+        logging.DEBUG: "debug",
+        logging.INFO: "info",
+        logging.WARNING: "warn",
+        logging.ERROR: "error",
+    }[level]
+    emit_log(LogEntry(level_name, actual_prefix or None, message))
     return actual_value
 
 
