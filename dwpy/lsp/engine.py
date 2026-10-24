@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import inspect
 import json
+import logging
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from .. import builtins, parser
 from ..type_inference import (
@@ -26,6 +27,8 @@ from ..typesystem import (
     UnionType,
     union_types,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 DW_KEYWORDS: tuple[str, ...] = (
     "and",
@@ -140,8 +143,8 @@ class EngineCompletionItem:
     detail: str | None = None
     documentation: str | None = None
     insert_text_format: str = "plain"
-    sort_text: Optional[str] = None
-    replacement_range: Optional[Tuple[int, int, int, int]] = None
+    sort_text: str | None = None
+    replacement_range: tuple[int, int, int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -189,7 +192,7 @@ class DataWeaveLanguageEngine:
     def __init__(self, module_base_path: Path | None = None) -> None:
         self._module_base_path = module_base_path or (Path(__file__).resolve().parent.parent / "modules")
         self._module_catalog_fingerprint = None
-        self._module_catalog: Optional[Dict[str, Dict[str, Tuple[FunctionSignature, ...]]]] = None
+        self._module_catalog: dict[str, dict[str, tuple[FunctionSignature, ...]]] | None = None
         self._builtin_signatures = self._build_builtin_catalog()
 
     def complete(
@@ -251,7 +254,8 @@ class DataWeaveLanguageEngine:
         if native_items is not None:
             qualified = re.search(r"[A-Za-z_][A-Za-z0-9_]*::[A-Za-z0-9_:]*$", script[:offset])
             prefix = qualified.group(0) if qualified else _extract_current_word(script[:offset])
-            suffix = re.match(r"[A-Za-z0-9_]*", script[offset:]).group(0)
+            suffix_match = re.match(r"[A-Za-z0-9_]*", script[offset:])
+            suffix = suffix_match.group(0) if suffix_match else ""
             replacement_range = (line, max(column - len(prefix), 0), line, column + len(suffix))
             native_items = [replace(item, replacement_range=replacement_range) for item in native_items]
             selector = script[:offset - len(_extract_current_word(script[:offset]))].rstrip().endswith(".")
@@ -274,7 +278,7 @@ class DataWeaveLanguageEngine:
         return items
 
     def _native_field_completions(self, script: str, line: int, column: int,
-                                  offset: int, ctx: _AnalysisContext) -> Optional[List[EngineCompletionItem]]:
+                                  offset: int, ctx: _AnalysisContext) -> list[EngineCompletionItem] | None:
         try:
             from .._dwpy_rust import complete_fields_json
             context = {name: value for name, value in (
@@ -286,8 +290,10 @@ class DataWeaveLanguageEngine:
             return None
         if response is None:
             return None
-        prefix = re.search(r"[@A-Za-z0-9_]*$", script[:offset]).group(0)
-        suffix = re.match(r"[A-Za-z0-9_]*", script[offset:]).group(0)
+        prefix_match = re.search(r"[@A-Za-z0-9_]*$", script[:offset])
+        prefix = prefix_match.group(0) if prefix_match else ""
+        suffix_match = re.match(r"[A-Za-z0-9_]*", script[offset:])
+        suffix = suffix_match.group(0) if suffix_match else ""
         return [EngineCompletionItem(
             label=item["label"], kind=item["kind"], insert_text=item["insertText"],
             detail=item["detail"], sort_text=item["sortText"],
@@ -295,12 +301,12 @@ class DataWeaveLanguageEngine:
         ) for item in response]
 
     def _native_completions(self, script: str, line: int, column: int,
-                            document_path: Optional[str]) -> Optional[List[EngineCompletionItem]]:
+                            document_path: str | None) -> list[EngineCompletionItem] | None:
         try:
             from .._dwpy_rust import complete_symbols_json
         except (ImportError, AttributeError):
             return None
-        modules: Dict[str, str] = {}
+        modules: dict[str, str] = {}
         parsed, header = self._safe_parse(script)
         header = header or (parsed.header if parsed is not None else None)
         if header is not None:
@@ -320,7 +326,7 @@ class DataWeaveLanguageEngine:
                     except (OSError, UnicodeError):
                         continue
         response = json.loads(complete_symbols_json(script, max(line, 0), max(column, 0), json.dumps(modules)))
-        items: List[EngineCompletionItem] = []
+        items: list[EngineCompletionItem] = []
         for item in response:
             insert = item["insertText"]
             items.append(EngineCompletionItem(
@@ -475,7 +481,7 @@ class DataWeaveLanguageEngine:
                     symbol_types.update(inferencer.context.env)
             except Exception:
                 # Completion/hover should stay resilient to parser/type inference failures.
-                pass
+                LOGGER.debug("Type inference failed during editor analysis", exc_info=True)
 
         header = parsed_header or (parsed_script.header if parsed_script is not None else None)
         if header is not None:
@@ -514,8 +520,8 @@ class DataWeaveLanguageEngine:
     def _safe_parse(self, script: str) -> tuple[parser.Script | None, parser.Header | None]:
         try:
             return parser.parse_script(script), None
-        except Exception:
-            pass
+        except parser.ParseError:
+            LOGGER.debug("Could not parse editor buffer", exc_info=True)
 
         # Useful recovery for files being edited before delimiter/body is complete.
         delimiter_span = parser._find_top_level_script_delimiter_span(script)
@@ -523,8 +529,8 @@ class DataWeaveLanguageEngine:
             synthetic = script.rstrip() + "\n---\nnull\n"
             try:
                 return parser.parse_script(synthetic), None
-            except Exception:
-                pass
+            except parser.ParseError:
+                LOGGER.debug("Could not parse synthetic editor buffer", exc_info=True)
 
         header_parser = getattr(parser, "_parse_header", None)
         if callable(header_parser):
@@ -534,8 +540,8 @@ class DataWeaveLanguageEngine:
             try:
                 parsed_header = header_parser(header_source.strip())
                 return None, parsed_header
-            except Exception:
-                pass
+            except parser.ParseError:
+                LOGGER.debug("Could not parse editor header", exc_info=True)
 
         return None, None
 
@@ -609,7 +615,7 @@ class DataWeaveLanguageEngine:
             if prefix and not function_name.lower().startswith(prefix_lower):
                 continue
             signatures = self._builtin_signatures.get(function_name, ())
-            signature = signatures[0] if signatures else FunctionSignature(name=function_name, parameters=tuple())
+            signature = signatures[0] if signatures else FunctionSignature(name=function_name, parameters=())
             items.append(
                 EngineCompletionItem(
                     label=function_name,
@@ -623,8 +629,8 @@ class DataWeaveLanguageEngine:
             )
         return items
 
-    def _complete_global(self, *, prefix: str, ctx: _AnalysisContext) -> List[EngineCompletionItem]:
-        suggestions: Dict[Tuple[str, str, Optional[str]], EngineCompletionItem] = {}
+    def _complete_global(self, *, prefix: str, ctx: _AnalysisContext) -> list[EngineCompletionItem]:
+        suggestions: dict[tuple[str, str, str | None], EngineCompletionItem] = {}
         prefix_lower = prefix.lower()
 
         def add_item(item: EngineCompletionItem) -> None:
@@ -755,14 +761,17 @@ class DataWeaveLanguageEngine:
         try:
             from .._dwpy_rust import RustDataWeaveRuntime
 
-            descriptor = RustDataWeaveRuntime().infer_type_descriptor(
+            infer_descriptor = getattr(RustDataWeaveRuntime(), "infer_type_descriptor", None)
+            if not callable(infer_descriptor):
+                return None
+            descriptor = infer_descriptor(
                 expression,
                 payload=payload_value,
                 vars=vars_value,
                 attributes=attributes_value,
                 properties=properties_value,
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 - Rust inference is an optional editor enhancement
             return None
         return _dw_type_from_rust_descriptor(descriptor)
 
@@ -836,8 +845,8 @@ class DataWeaveLanguageEngine:
         )
         return payload_value, vars_value, attributes_value, properties_value
 
-    def _build_builtin_catalog(self) -> Dict[str, Tuple[FunctionSignature, ...]]:
-        signatures: Dict[str, Tuple[FunctionSignature, ...]] = {}
+    def _build_builtin_catalog(self) -> dict[str, tuple[FunctionSignature, ...]]:
+        signatures: dict[str, tuple[FunctionSignature, ...]] = {}
         try:
             from .._dwpy_rust import function_catalog_json
             for function in json.loads(function_catalog_json()):
@@ -882,14 +891,14 @@ class DataWeaveLanguageEngine:
             )
         return signatures
 
-    def _module_function_catalog(self) -> Dict[str, Dict[str, Tuple[FunctionSignature, ...]]]:
+    def _module_function_catalog(self) -> dict[str, dict[str, tuple[FunctionSignature, ...]]]:
         files = sorted(self._module_base_path.rglob("*.dwl")) if self._module_base_path.exists() else []
         fingerprint = tuple((str(path), path.stat().st_mtime_ns, path.stat().st_size) for path in files)
         if self._module_catalog is not None and self._module_catalog_fingerprint == fingerprint:
             return self._module_catalog
         self._module_catalog_fingerprint = fingerprint
 
-        catalog: Dict[str, Dict[str, List[FunctionSignature]]] = {}
+        catalog: dict[str, dict[str, list[FunctionSignature]]] = {}
         try:
             from .._dwpy_rust import function_catalog_json
             for function in json.loads(function_catalog_json()):
@@ -949,7 +958,7 @@ class DataWeaveLanguageEngine:
                 module_functions[fn_name] = [
                     FunctionSignature(
                         name=fn_name,
-                        parameters=tuple(),
+                        parameters=(),
                         origin=f"module:{module_name}",
                     )
                 ]
@@ -987,7 +996,7 @@ def _signature_from_callable(name: str, func: Any, origin: str) -> FunctionSigna
 def _safe_repr(value: Any) -> str:
     try:
         text = repr(value)
-    except Exception:
+    except Exception:  # noqa: BLE001 - user objects may raise arbitrary errors from __repr__
         return "..."
     if len(text) > 30:
         return text[:27] + "..."
@@ -1257,7 +1266,7 @@ def _load_json_file(path: Path) -> Any:
         if not raw.strip():
             return _MISSING
         return json.loads(raw)
-    except Exception:
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return _MISSING
 
 
