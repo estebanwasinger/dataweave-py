@@ -1,4 +1,5 @@
 import json
+import xml.etree.ElementTree as ET
 
 import pytest
 
@@ -91,6 +92,81 @@ def test_parent_object_output_preserves_duplicate_fields(runtime, expression, op
     assert json.loads(result, object_pairs_hook=list) == json.loads(
         expected, object_pairs_hook=list
     )
+
+
+def test_duplicate_json_keys_render_as_repeated_xml_elements(runtime):
+    result = runtime.execute(
+        "%dw 2.0\noutput application/xml\n---\n{root: payload.test}",
+        PAYLOAD,
+        payload_format="json",
+    )
+    assert ET.tostring(ET.fromstring(result), encoding="unicode") == (
+        "<root><test2><array>1</array></test2>"
+        "<test2><array>2</array></test2>"
+        "<test2><array>3</array></test2></root>"
+    )
+
+
+def test_rust_xml_writer_supports_implicit_root_object():
+    runtime = DataWeaveRuntime(backend="rust")
+    result = runtime.execute(
+        "%dw 2.0\noutput application/xml\n---\nroot: payload.test",
+        PAYLOAD,
+        payload_format="json",
+    )
+    assert result == (
+        "<root><test2><array>1</array></test2>"
+        "<test2><array>2</array></test2>"
+        "<test2><array>3</array></test2></root>"
+    )
+    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        '{root: {test2: {array: 1}, test2: {array: 2}, test2: {array: 3}}}',
+        '{root: read(payload, "application/json").test}',
+    ],
+)
+def test_duplicate_keys_render_as_xml_from_literals_and_read(runtime, expression):
+    result = runtime.execute(
+        f"%dw 2.0\noutput application/xml\n---\n{expression}", PAYLOAD
+    )
+    root = ET.fromstring(result)
+    assert root.tag == "root"
+    assert [child.tag for child in root] == ["test2"] * 3
+    assert [child.findtext("array") for child in root] == ["1", "2", "3"]
+
+
+def test_duplicate_xml_children_preserve_order_nested_values_and_attributes(runtime):
+    result = runtime.execute(
+        "%dw 2.0\noutput application/xml\n---\n{root: payload}",
+        '''{"@id":"a&b", "item":{"@code":"x\\\"y", "#text":"<one>"},
+            "between":null, "item":{"part":1,"part":2}, "last":true}''',
+        payload_format="json",
+    )
+    root = ET.fromstring(result)
+    assert root.attrib == {"id": "a&b"}
+    assert [child.tag for child in root] == ["item", "between", "item", "last"]
+    assert root[0].attrib == {"code": 'x"y'}
+    assert root[0].text == "<one>"
+    assert root[1].text is None
+    assert [(child.tag, child.text) for child in root[2]] == [("part", "1"), ("part", "2")]
+    assert root[3].text.lower() == "true"
+
+
+@pytest.mark.parametrize("directive", ["application/xml", 'application/xml root="root"'])
+def test_duplicate_xml_output_at_document_level_uses_wrapper(runtime, directive):
+    result = runtime.execute(
+        f"%dw 2.0\noutput {directive}\n---\npayload.test",
+        PAYLOAD,
+        payload_format="json",
+    )
+    root = ET.fromstring(result)
+    assert root.tag == "root"
+    assert [child.tag for child in root] == ["test2"] * 3
+    assert [child.findtext("array") for child in root] == ["1", "2", "3"]
 
 
 def test_preparsed_duplicate_json_object_survives_runtime_bridge(runtime):
