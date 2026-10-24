@@ -5,7 +5,6 @@ import pytest
 from dwpy.formats import DWObject, FormatRegistry
 from dwpy.runtime import DataWeaveEvaluationError, DataWeaveRuntime
 
-
 PAYLOAD = '''{
   "test": {
     "test2": {"array": 1},

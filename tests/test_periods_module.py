@@ -1,8 +1,10 @@
 import json
-from datetime import UTC, date, datetime, time
+from datetime import date, datetime, time, timezone
 
 from dwpy import builtins
 from dwpy.runtime import DataWeaveRuntime
+
+UTC = timezone.utc
 
 
 def test_periods_module_exports_all_documented_functions():

@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import inspect
 import json
+import logging
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any
 
 from .. import builtins, parser
-from ..type_inference import TypeInferencer, _dw_type_from_rust_descriptor, _python_value_to_type
+from ..type_inference import (
+    TypeInferencer,
+    _dw_type_from_rust_descriptor,
+    _python_value_to_type,
+)
 from ..typesystem import (
     ANY,
     NUMBER,
@@ -23,8 +28,9 @@ from ..typesystem import (
     union_types,
 )
 
+LOGGER = logging.getLogger(__name__)
 
-DW_KEYWORDS: Tuple[str, ...] = (
+DW_KEYWORDS: tuple[str, ...] = (
     "and",
     "as",
     "case",
@@ -47,7 +53,7 @@ DW_KEYWORDS: Tuple[str, ...] = (
 )
 
 
-_SNIPPETS: Tuple[Tuple[str, str, str], ...] = (
+_SNIPPETS: tuple[tuple[str, str, str], ...] = (
     (
         "dw:script-json",
         "%dw 2.0\noutput application/json\n---\n{\n  $1\n}",
@@ -73,7 +79,7 @@ _SNIPPETS: Tuple[Tuple[str, str, str], ...] = (
 
 _MISSING = object()
 
-_ARRAY_MEMBER_FUNCTIONS: Tuple[str, ...] = (
+_ARRAY_MEMBER_FUNCTIONS: tuple[str, ...] = (
     "map",
     "filter",
     "reduce",
@@ -86,7 +92,7 @@ _ARRAY_MEMBER_FUNCTIONS: Tuple[str, ...] = (
     "flatten",
 )
 
-_STRING_MEMBER_FUNCTIONS: Tuple[str, ...] = (
+_STRING_MEMBER_FUNCTIONS: tuple[str, ...] = (
     "upper",
     "lower",
     "trim",
@@ -99,7 +105,7 @@ _STRING_MEMBER_FUNCTIONS: Tuple[str, ...] = (
     "sizeOf",
 )
 
-_FUNCTION_SNIPPET_OVERRIDES: Dict[str, str] = {
+_FUNCTION_SNIPPET_OVERRIDES: dict[str, str] = {
     "map": "map ((value, index) -> ${1})",
     "filter": "filter ((value, index) -> ${1})",
     "reduce": "reduce ((value, accumulator = ${1}) -> ${2})",
@@ -107,7 +113,7 @@ _FUNCTION_SNIPPET_OVERRIDES: Dict[str, str] = {
     "groupBy": "groupBy ((value, key) -> ${1})",
 }
 
-_HOF_FALLBACK_SIGNATURES: Dict[str, Tuple[str, ...]] = {
+_HOF_FALLBACK_SIGNATURES: dict[str, tuple[str, ...]] = {
     "map": ("items", "mapper"),
     "reduce": ("items", "reducer"),
 }
@@ -116,9 +122,9 @@ _HOF_FALLBACK_SIGNATURES: Dict[str, Tuple[str, ...]] = {
 @dataclass(frozen=True)
 class FunctionSignature:
     name: str
-    parameters: Tuple[str, ...]
-    return_type: Optional[str] = None
-    documentation: Optional[str] = None
+    parameters: tuple[str, ...]
+    return_type: str | None = None
+    documentation: str | None = None
     origin: str = "builtin"
 
     @property
@@ -133,11 +139,11 @@ class FunctionSignature:
 class EngineCompletionItem:
     label: str
     kind: str
-    insert_text: Optional[str] = None
-    detail: Optional[str] = None
-    documentation: Optional[str] = None
+    insert_text: str | None = None
+    detail: str | None = None
+    documentation: str | None = None
     insert_text_format: str = "plain"
-    sort_text: Optional[str] = None
+    sort_text: str | None = None
 
 
 @dataclass(frozen=True)
@@ -148,13 +154,13 @@ class EngineHover:
 @dataclass(frozen=True)
 class EngineSignature:
     label: str
-    documentation: Optional[str]
-    parameters: Tuple[str, ...]
+    documentation: str | None
+    parameters: tuple[str, ...]
 
 
 @dataclass(frozen=True)
 class EngineSignatureHelp:
-    signatures: Tuple[EngineSignature, ...]
+    signatures: tuple[EngineSignature, ...]
     active_signature: int
     active_parameter: int
 
@@ -168,13 +174,13 @@ class _AnalysisContext:
     vars_value: Any
     attributes_value: Any
     properties_value: Any
-    symbol_types: Dict[str, DWType]
-    local_signatures: Dict[str, Tuple[FunctionSignature, ...]]
-    imported_signatures: Dict[str, Tuple[FunctionSignature, ...]]
-    builtin_signatures: Dict[str, Tuple[FunctionSignature, ...]]
+    symbol_types: dict[str, DWType]
+    local_signatures: dict[str, tuple[FunctionSignature, ...]]
+    imported_signatures: dict[str, tuple[FunctionSignature, ...]]
+    builtin_signatures: dict[str, tuple[FunctionSignature, ...]]
 
-    def all_function_signatures(self) -> Dict[str, Tuple[FunctionSignature, ...]]:
-        merged: Dict[str, Tuple[FunctionSignature, ...]] = {}
+    def all_function_signatures(self) -> dict[str, tuple[FunctionSignature, ...]]:
+        merged: dict[str, tuple[FunctionSignature, ...]] = {}
         for bucket in (self.builtin_signatures, self.imported_signatures, self.local_signatures):
             for name, signatures in bucket.items():
                 merged[name] = signatures
@@ -182,9 +188,9 @@ class _AnalysisContext:
 
 
 class DataWeaveLanguageEngine:
-    def __init__(self, module_base_path: Optional[Path] = None) -> None:
+    def __init__(self, module_base_path: Path | None = None) -> None:
         self._module_base_path = module_base_path or (Path(__file__).resolve().parent.parent / "modules")
-        self._module_catalog: Optional[Dict[str, Dict[str, Tuple[FunctionSignature, ...]]]] = None
+        self._module_catalog: dict[str, dict[str, tuple[FunctionSignature, ...]]] | None = None
         self._builtin_signatures = self._build_builtin_catalog()
 
     def complete(
@@ -193,12 +199,12 @@ class DataWeaveLanguageEngine:
         script: str,
         line: int,
         column: int,
-        document_path: Optional[str] = None,
+        document_path: str | None = None,
         payload: Any = _MISSING,
         vars: Any = _MISSING,
         attributes: Any = _MISSING,
         properties: Any = _MISSING,
-    ) -> List[EngineCompletionItem]:
+    ) -> list[EngineCompletionItem]:
         script = script or ""
         offset = _line_col_to_offset(script, line, column)
         ctx = self._collect_context(
@@ -247,12 +253,12 @@ class DataWeaveLanguageEngine:
         script: str,
         line: int,
         column: int,
-        document_path: Optional[str] = None,
+        document_path: str | None = None,
         payload: Any = _MISSING,
         vars: Any = _MISSING,
         attributes: Any = _MISSING,
         properties: Any = _MISSING,
-    ) -> Optional[EngineHover]:
+    ) -> EngineHover | None:
         script = script or ""
         offset = _line_col_to_offset(script, line, column)
         ctx = self._collect_context(
@@ -294,12 +300,12 @@ class DataWeaveLanguageEngine:
         script: str,
         line: int,
         column: int,
-        document_path: Optional[str] = None,
+        document_path: str | None = None,
         payload: Any = _MISSING,
         vars: Any = _MISSING,
         attributes: Any = _MISSING,
         properties: Any = _MISSING,
-    ) -> Optional[EngineSignatureHelp]:
+    ) -> EngineSignatureHelp | None:
         script = script or ""
         offset = _line_col_to_offset(script, line, column)
         ctx = self._collect_context(
@@ -320,7 +326,7 @@ class DataWeaveLanguageEngine:
         if not signatures:
             return None
 
-        engine_signatures: List[EngineSignature] = []
+        engine_signatures: list[EngineSignature] = []
         for signature in signatures:
             engine_signatures.append(
                 EngineSignature(
@@ -340,7 +346,7 @@ class DataWeaveLanguageEngine:
         self,
         *,
         script: str,
-        document_path: Optional[str],
+        document_path: str | None,
         payload: Any,
         vars: Any,
         attributes: Any,
@@ -367,9 +373,9 @@ class DataWeaveLanguageEngine:
 
         parsed_script, parsed_header = self._safe_parse(script)
 
-        local_signatures: Dict[str, Tuple[FunctionSignature, ...]] = {}
-        imported_signatures: Dict[str, Tuple[FunctionSignature, ...]] = {}
-        symbol_types: Dict[str, DWType] = {
+        local_signatures: dict[str, tuple[FunctionSignature, ...]] = {}
+        imported_signatures: dict[str, tuple[FunctionSignature, ...]] = {}
+        symbol_types: dict[str, DWType] = {
             "payload": payload_type,
             "vars": vars_type,
             "attributes": attributes_type,
@@ -387,7 +393,7 @@ class DataWeaveLanguageEngine:
                     symbol_types.update(inferencer.context.env)
             except Exception:
                 # Completion/hover should stay resilient to parser/type inference failures.
-                pass
+                LOGGER.debug("Type inference failed during editor analysis", exc_info=True)
 
         header = parsed_header or (parsed_script.header if parsed_script is not None else None)
         if header is not None:
@@ -423,19 +429,19 @@ class DataWeaveLanguageEngine:
             builtin_signatures=self._builtin_signatures,
         )
 
-    def _safe_parse(self, script: str) -> Tuple[Optional[parser.Script], Optional[parser.Header]]:
+    def _safe_parse(self, script: str) -> tuple[parser.Script | None, parser.Header | None]:
         try:
             return parser.parse_script(script), None
-        except Exception:
-            pass
+        except parser.ParseError:
+            LOGGER.debug("Could not parse editor buffer", exc_info=True)
 
         # Useful recovery for files being edited before delimiter/body is complete.
         if "---" not in script and script.strip():
             synthetic = script.rstrip() + "\n---\nnull\n"
             try:
                 return parser.parse_script(synthetic), None
-            except Exception:
-                pass
+            except parser.ParseError:
+                LOGGER.debug("Could not parse synthetic editor buffer", exc_info=True)
 
         header_parser = getattr(parser, "_parse_header", None)
         if callable(header_parser):
@@ -446,17 +452,17 @@ class DataWeaveLanguageEngine:
             try:
                 parsed_header = header_parser(header_source.strip())
                 return None, parsed_header
-            except Exception:
-                pass
+            except parser.ParseError:
+                LOGGER.debug("Could not parse editor header", exc_info=True)
 
         return None, None
 
     def _collect_imported_signatures(
         self,
         imports: Sequence[parser.ImportDirective],
-    ) -> Dict[str, Tuple[FunctionSignature, ...]]:
+    ) -> dict[str, tuple[FunctionSignature, ...]]:
         catalog = self._module_function_catalog()
-        imported: Dict[str, Tuple[FunctionSignature, ...]] = {}
+        imported: dict[str, tuple[FunctionSignature, ...]] = {}
 
         for directive in imports:
             raw = directive.raw.strip()
@@ -498,10 +504,10 @@ class DataWeaveLanguageEngine:
 
         return imported
 
-    def _complete_object_fields(self, root_type: DWType, prefix: str) -> List[EngineCompletionItem]:
+    def _complete_object_fields(self, root_type: DWType, prefix: str) -> list[EngineCompletionItem]:
         fields = sorted(_collect_object_fields(root_type))
         prefix_lower = prefix.lower()
-        items: List[EngineCompletionItem] = []
+        items: list[EngineCompletionItem] = []
         for field in fields:
             if prefix and not field.lower().startswith(prefix_lower):
                 continue
@@ -521,7 +527,7 @@ class DataWeaveLanguageEngine:
             if prefix and not function_name.lower().startswith(prefix_lower):
                 continue
             signatures = self._builtin_signatures.get(function_name, ())
-            signature = signatures[0] if signatures else FunctionSignature(name=function_name, parameters=tuple())
+            signature = signatures[0] if signatures else FunctionSignature(name=function_name, parameters=())
             items.append(
                 EngineCompletionItem(
                     label=function_name,
@@ -535,8 +541,8 @@ class DataWeaveLanguageEngine:
             )
         return items
 
-    def _complete_global(self, *, prefix: str, ctx: _AnalysisContext) -> List[EngineCompletionItem]:
-        suggestions: Dict[Tuple[str, str], EngineCompletionItem] = {}
+    def _complete_global(self, *, prefix: str, ctx: _AnalysisContext) -> list[EngineCompletionItem]:
+        suggestions: dict[tuple[str, str], EngineCompletionItem] = {}
         prefix_lower = prefix.lower()
 
         def add_item(item: EngineCompletionItem) -> None:
@@ -678,7 +684,7 @@ class DataWeaveLanguageEngine:
         self,
         expression: str,
         ctx: _AnalysisContext,
-    ) -> Optional[DWType]:
+    ) -> DWType | None:
         payload_value = None if ctx.payload_value is _MISSING else ctx.payload_value
         vars_value = None if ctx.vars_value is _MISSING else ctx.vars_value
         attributes_value = None if ctx.attributes_value is _MISSING else ctx.attributes_value
@@ -686,14 +692,17 @@ class DataWeaveLanguageEngine:
         try:
             from .._dwpy_rust import RustDataWeaveRuntime
 
-            descriptor = RustDataWeaveRuntime().infer_type_descriptor(
+            infer_descriptor = getattr(RustDataWeaveRuntime(), "infer_type_descriptor", None)
+            if not callable(infer_descriptor):
+                return None
+            descriptor = infer_descriptor(
                 expression,
                 payload=payload_value,
                 vars=vars_value,
                 attributes=attributes_value,
                 properties=properties_value,
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 - Rust inference is an optional editor enhancement
             return None
         return _dw_type_from_rust_descriptor(descriptor)
 
@@ -701,7 +710,7 @@ class DataWeaveLanguageEngine:
         self,
         name: str,
         ctx: _AnalysisContext,
-    ) -> Tuple[FunctionSignature, ...]:
+    ) -> tuple[FunctionSignature, ...]:
         if name in ctx.local_signatures:
             return ctx.local_signatures[name]
         if name in ctx.imported_signatures:
@@ -713,7 +722,7 @@ class DataWeaveLanguageEngine:
         script: str,
         offset: int,
         ctx: _AnalysisContext,
-    ) -> Dict[str, DWType]:
+    ) -> dict[str, DWType]:
         prefix = script[:offset]
         lambda_match = _find_last_lambda(prefix)
         if lambda_match is None:
@@ -735,7 +744,7 @@ class DataWeaveLanguageEngine:
         seq_type = self._resolve_expression_type(seq_expr, ctx)
         element_type = _element_type(seq_type)
 
-        typed: Dict[str, DWType] = {}
+        typed: dict[str, DWType] = {}
         for index, name in enumerate(params):
             if index == 0:
                 typed[name] = element_type
@@ -752,7 +761,7 @@ class DataWeaveLanguageEngine:
             return ANY
         return _python_value_to_type(value)
 
-    def _load_sidecar_context(self, document_path: Optional[str]) -> Tuple[Any, Any, Any, Any]:
+    def _load_sidecar_context(self, document_path: str | None) -> tuple[Any, Any, Any, Any]:
         if not document_path:
             return _MISSING, _MISSING, _MISSING, _MISSING
 
@@ -767,8 +776,8 @@ class DataWeaveLanguageEngine:
         )
         return payload_value, vars_value, attributes_value, properties_value
 
-    def _build_builtin_catalog(self) -> Dict[str, Tuple[FunctionSignature, ...]]:
-        signatures: Dict[str, Tuple[FunctionSignature, ...]] = {}
+    def _build_builtin_catalog(self) -> dict[str, tuple[FunctionSignature, ...]]:
+        signatures: dict[str, tuple[FunctionSignature, ...]] = {}
         for name, func in sorted(builtins.CORE_FUNCTIONS.items()):
             signature = _signature_from_callable(name=name, func=func, origin="builtin")
             signatures[name] = (signature,)
@@ -805,11 +814,11 @@ class DataWeaveLanguageEngine:
             )
         return signatures
 
-    def _module_function_catalog(self) -> Dict[str, Dict[str, Tuple[FunctionSignature, ...]]]:
+    def _module_function_catalog(self) -> dict[str, dict[str, tuple[FunctionSignature, ...]]]:
         if self._module_catalog is not None:
             return self._module_catalog
 
-        catalog: Dict[str, Dict[str, List[FunctionSignature]]] = {}
+        catalog: dict[str, dict[str, list[FunctionSignature]]] = {}
         function_pattern = re.compile(
             r"^fun\s+([A-Za-z0-9_]+)(?:\s*<[^>]*>)?\s*\((.*?)\)\s*(?::([^=\n]+))?=",
             re.MULTILINE,
@@ -843,7 +852,7 @@ class DataWeaveLanguageEngine:
                 module_functions[fn_name] = [
                     FunctionSignature(
                         name=fn_name,
-                        parameters=tuple(),
+                        parameters=(),
                         origin=f"module:{module_name}",
                     )
                 ]
@@ -856,7 +865,7 @@ class DataWeaveLanguageEngine:
 
 
 def _signature_from_callable(name: str, func: Any, origin: str) -> FunctionSignature:
-    parameters: List[str] = []
+    parameters: list[str] = []
     try:
         signature = inspect.signature(func)
         for param in signature.parameters.values():
@@ -881,7 +890,7 @@ def _signature_from_callable(name: str, func: Any, origin: str) -> FunctionSigna
 def _safe_repr(value: Any) -> str:
     try:
         text = repr(value)
-    except Exception:
+    except Exception:  # noqa: BLE001 - user objects may raise arbitrary errors from __repr__
         return "..."
     if len(text) > 30:
         return text[:27] + "..."
@@ -916,7 +925,7 @@ def _extract_current_word(prefix_source: str) -> str:
     return match.group(1)
 
 
-def _extract_property_chain(prefix_source: str) -> Optional[Tuple[str, str]]:
+def _extract_property_chain(prefix_source: str) -> tuple[str, str] | None:
     segment = r"[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]*\])*"
     pattern = re.compile(
         rf"({segment}(?:\??\.{segment})*)\.([A-Za-z_][A-Za-z0-9_]*)?$"
@@ -929,7 +938,7 @@ def _extract_property_chain(prefix_source: str) -> Optional[Tuple[str, str]]:
     return chain, prefix
 
 
-def _extract_property_key_prefix(prefix_source: str) -> Optional[str]:
+def _extract_property_key_prefix(prefix_source: str) -> str | None:
     match = re.search(
         r"\b(?:p|prop|Mule::p|Mule::prop)\(\s*['\"]([^'\"]*)$",
         prefix_source,
@@ -937,7 +946,7 @@ def _extract_property_key_prefix(prefix_source: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
-def _extract_chain_at_offset(source: str, offset: int) -> Optional[str]:
+def _extract_chain_at_offset(source: str, offset: int) -> str | None:
     left = source[:offset]
     right = source[offset:]
     segment = r"[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]*\])*"
@@ -963,7 +972,7 @@ def _extract_chain_at_offset(source: str, offset: int) -> Optional[str]:
     return chain.replace("?.", ".")
 
 
-def _extract_word_at_offset(source: str, offset: int) -> Optional[str]:
+def _extract_word_at_offset(source: str, offset: int) -> str | None:
     if not source:
         return None
     left = source[:offset]
@@ -1033,7 +1042,7 @@ def _resolve_index_type(base_type: DWType, index_token: str) -> DWType:
     return ANY
 
 
-def _parse_object_index_key(token: str) -> Optional[str]:
+def _parse_object_index_key(token: str) -> str | None:
     if not token:
         return None
     if token.startswith('"') and token.endswith('"') and len(token) >= 2:
@@ -1043,7 +1052,7 @@ def _parse_object_index_key(token: str) -> Optional[str]:
     return None
 
 
-def _split_index_tokens(segment: str) -> Tuple[str, List[str]]:
+def _split_index_tokens(segment: str) -> tuple[str, list[str]]:
     text = segment.strip()
     if not text:
         return "", []
@@ -1054,7 +1063,7 @@ def _split_index_tokens(segment: str) -> Tuple[str, List[str]]:
 
     name = match.group(1)
     idx = match.end()
-    tokens: List[str] = []
+    tokens: list[str] = []
 
     while idx < len(text):
         if text[idx].isspace():
@@ -1105,8 +1114,8 @@ def _element_type(type_: DWType) -> DWType:
     return ANY
 
 
-def _member_functions_for_type(type_: DWType) -> Tuple[str, ...]:
-    collected: List[str] = []
+def _member_functions_for_type(type_: DWType) -> tuple[str, ...]:
+    collected: list[str] = []
 
     def add(names: Sequence[str]) -> None:
         for name in names:
@@ -1142,7 +1151,7 @@ def _load_json_file(path: Path) -> Any:
         if not raw.strip():
             return _MISSING
         return json.loads(raw)
-    except Exception:
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return _MISSING
 
 
@@ -1153,8 +1162,8 @@ def _module_name_from_path(base: Path, module_file: Path) -> str:
     return "::".join(parts)
 
 
-def _find_last_lambda(prefix_source: str) -> Optional[Tuple[int, List[str]]]:
-    matches: List[Tuple[int, List[str]]] = []
+def _find_last_lambda(prefix_source: str) -> tuple[int, list[str]] | None:
+    matches: list[tuple[int, list[str]]] = []
 
     for match in re.finditer(r"\(\(\s*([^)]*?)\s*\)\s*->", prefix_source):
         params = _parse_lambda_parameters(match.group(1))
@@ -1170,8 +1179,8 @@ def _find_last_lambda(prefix_source: str) -> Optional[Tuple[int, List[str]]]:
     return matches[-1]
 
 
-def _parse_lambda_parameters(params_chunk: str) -> List[str]:
-    params: List[str] = []
+def _parse_lambda_parameters(params_chunk: str) -> list[str]:
+    params: list[str] = []
     for piece in params_chunk.split(","):
         part = piece.strip()
         if not part:
@@ -1182,10 +1191,10 @@ def _parse_lambda_parameters(params_chunk: str) -> List[str]:
     return params
 
 
-def _find_active_call(prefix_source: str) -> Optional[Tuple[str, int]]:
-    stack: List[Tuple[str, int]] = []
+def _find_active_call(prefix_source: str) -> tuple[str, int] | None:
+    stack: list[tuple[str, int]] = []
 
-    in_string: Optional[str] = None
+    in_string: str | None = None
     escaped = False
     in_line_comment = False
     block_depth = 0
@@ -1276,12 +1285,12 @@ def _extract_function_name_before(source: str, open_paren_index: int) -> str:
     return chain.split(".")[-1]
 
 
-def _parse_parameter_specs(params_chunk: str) -> List[str]:
+def _parse_parameter_specs(params_chunk: str) -> list[str]:
     if not params_chunk.strip():
         return []
 
-    parts: List[str] = []
-    current: List[str] = []
+    parts: list[str] = []
+    current: list[str] = []
     depth = 0
 
     for char in params_chunk:
@@ -1303,7 +1312,7 @@ def _parse_parameter_specs(params_chunk: str) -> List[str]:
         if piece:
             parts.append(piece)
 
-    rendered: List[str] = []
+    rendered: list[str] = []
     for part in parts:
         cleaned = re.sub(r"@[\w:<>]+(?:\([^)]*\))?", "", part).strip()
         if not cleaned:
@@ -1319,7 +1328,7 @@ def _parse_parameter_specs(params_chunk: str) -> List[str]:
     return rendered
 
 
-def _render_type_spec(spec: Optional[parser.TypeSpec]) -> Optional[str]:
+def _render_type_spec(spec: parser.TypeSpec | None) -> str | None:
     if spec is None:
         return None
 
@@ -1334,7 +1343,7 @@ def _render_type_spec(spec: Optional[parser.TypeSpec]) -> Optional[str]:
         return spec.name
 
     if isinstance(spec, parser.ObjectTypeSpec):
-        fields: List[str] = []
+        fields: list[str] = []
         for name, field_type, is_optional, is_repeatable in spec.fields:
             suffix = "?" if is_optional else "*" if is_repeatable else ""
             rendered = _render_type_spec(field_type) or "Any"
@@ -1361,7 +1370,7 @@ def _render_type_spec(spec: Optional[parser.TypeSpec]) -> Optional[str]:
 
 
 def _function_signature_from_declaration(function_decl: parser.FunctionDeclaration) -> FunctionSignature:
-    parameters: List[str] = []
+    parameters: list[str] = []
     for parameter in function_decl.parameters:
         rendered_type = _render_type_spec(parameter.type_annotation)
         if rendered_type:
@@ -1378,7 +1387,7 @@ def _function_signature_from_declaration(function_decl: parser.FunctionDeclarati
     )
 
 
-def _scan_declared_local_names(script: str) -> List[str]:
+def _scan_declared_local_names(script: str) -> list[str]:
     names = set()
     for match in re.finditer(r"(?m)^\s*var\s+([A-Za-z_][A-Za-z0-9_]*)", script):
         names.add(match.group(1))

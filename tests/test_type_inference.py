@@ -12,9 +12,9 @@ from dwpy.typesystem import (
     LiteralType,
     ObjectType,
     UnionType,
-    union_types,
     array_type,
     object_type,
+    union_types,
 )
 
 
@@ -132,7 +132,7 @@ def test_lambda_type_inference_defaults_to_any_params():
 def test_default_op_unions_branches():
     inferred = infer_script_type("null default 1")
     assert isinstance(inferred, UnionType)
-    assert set(type(opt) for opt in inferred.options) == {type(NULL), type(NUMBER)}
+    assert {type(opt) for opt in inferred.options} == {type(NULL), type(NUMBER)}
 
 
 def test_match_expression_unions_cases():
@@ -343,4 +343,6 @@ def test_group_by_preserves_value_shape():
     assert isinstance(grouped_array_type, ArrayType)
     elem = grouped_array_type.element
     assert isinstance(elem, ObjectType)
-    assert elem.field_dict().get("age")[0] == NUMBER
+    age_field = elem.field_dict().get("age")
+    assert age_field is not None
+    assert age_field[0] == NUMBER

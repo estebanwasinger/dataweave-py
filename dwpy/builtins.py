@@ -6,16 +6,17 @@ import logging
 import math
 import random
 import re
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
+from datetime import date, datetime, timedelta, timezone
+from typing import Any
 
-from .formats import XMLNodeList, XMLNodeDict
+from .formats import XMLNodeDict, XMLNodeList
 
 
 def _format_decimal(value: float) -> str:
     if math.isclose(value, round(value)):
-        return str(int(round(value)))
+        return str(round(value))
     rendered = f"{value:.12f}".rstrip("0").rstrip(".")
     return rendered if rendered != "-0" else "0"
 
@@ -48,7 +49,7 @@ class DWPeriod:
     def as_timedelta(self) -> timedelta:
         return timedelta(seconds=self.total_seconds())
 
-    def negate(self) -> "DWPeriod":
+    def negate(self) -> DWPeriod:
         return DWPeriod(
             years=-self.years,
             months=-self.months,
@@ -61,7 +62,7 @@ class DWPeriod:
 
     def to_iso8601(self) -> str:
         if self.date_based:
-            parts: List[str] = []
+            parts: list[str] = []
             if self.years != 0:
                 parts.append(f"{self.years}Y")
             if self.months != 0:
@@ -91,7 +92,7 @@ class DWPeriod:
                 seconds = -seconds
             elif hours == 0 and minutes == 0:
                 seconds = -0.0
-        parts: List[str] = []
+        parts: list[str] = []
         if hours != 0:
             parts.append(f"{hours}H")
         if minutes != 0:
@@ -114,7 +115,7 @@ def _coerce_iterable(value: Any) -> Iterable[Any]:
     return list(value)
 
 
-def parameter_count(function: Callable[..., Any]) -> Optional[int]:
+def parameter_count(function: Callable[..., Any]) -> int | None:
     params = getattr(function, "parameters", None)
     if params is None:
         return None
@@ -157,10 +158,7 @@ def binary_diff(left: Any, right: Any) -> Any:
         return [item for item in left if item not in right_values]
     if isinstance(left, Mapping):
         result = dict(left)
-        if isinstance(right, Mapping):
-            for key in right.keys():
-                result.pop(key, None)
-        elif isinstance(right, list):
+        if isinstance(right, (Mapping, list)):
             for key in right:
                 result.pop(key, None)
         else:
@@ -201,7 +199,7 @@ def builtin_contains(items: Any, element: Any) -> bool:
             return False
         return str(element) in items
     if isinstance(items, Mapping):
-        return element in items.values() or element in items.keys()
+        return element in items.values() or element in items
     iterable = _coerce_iterable(items)
     return any(item == element for item in iterable)
 
@@ -227,7 +225,7 @@ def builtin_joinby(elements: Any, separator: Any) -> Any:
     return sep.join("" if el is None else str(el) for el in elements)
 
 
-def builtin_keys_of(obj: Any) -> List[Any]:
+def builtin_keys_of(obj: Any) -> list[Any] | None:
     if obj is None:
         return None
     if not isinstance(obj, Mapping):
@@ -235,7 +233,7 @@ def builtin_keys_of(obj: Any) -> List[Any]:
     return list(obj.keys())
 
 
-def builtin_values_of(obj: Any) -> List[Any]:
+def builtin_values_of(obj: Any) -> list[Any] | None:
     if obj is None:
         return None
     if not isinstance(obj, Mapping):
@@ -340,7 +338,7 @@ def builtin_collapse(text: Any) -> Any:
     source = str(text)
     if source == "":
         return []
-    groups: List[str] = []
+    groups: list[str] = []
     current = source[0]
     run = [current]
     for char in source[1:]:
@@ -554,7 +552,7 @@ def builtin_lines(text: Any) -> Any:
 def builtin_map_string(text: Any, mapper: Callable[..., Any]) -> Any:
     if text is None:
         return None
-    output: List[str] = []
+    output: list[str] = []
     for index, char in enumerate(str(text)):
         mapped = invoke_lambda(mapper, char, index)
         output.append("" if mapped is None else str(mapped))
@@ -645,10 +643,8 @@ def builtin_substring(text: Any, from_index: Any, until_index: Any) -> Any:
     source = str(text)
     start = int(_coerce_number(from_index))
     end = int(_coerce_number(until_index))
-    if start < 0:
-        start = 0
-    if end < 0:
-        end = 0
+    start = max(start, 0)
+    end = max(end, 0)
     if start >= end or start >= len(source):
         return ""
     return source[start:end]
@@ -710,8 +706,8 @@ def builtin_substring_by(text: Any, predicate: Callable[..., Any]) -> Any:
     if text is None:
         return None
     source = str(text)
-    result: List[str] = []
-    current: List[str] = []
+    result: list[str] = []
+    current: list[str] = []
     for index, char in enumerate(source):
         if invoke_lambda(predicate, char, index):
             result.append("".join(current))
@@ -881,25 +877,6 @@ def builtin_is_odd(value: Any) -> bool:
 
 
 def builtin_is_leap_year(value: Any) -> bool:
-    try:
-        dt = _parse_datetime(value)
-    except ValueError:
-        return False
-    year = dt.year
-    return (year % 4 == 0 and year % 100 != 0) or (year % 400 == 0)
-
-
-def builtin_is_even(value: Any) -> bool:
-    number = int(_coerce_number(value))
-    return number % 2 == 0
-
-
-def builtin_is_odd(value: Any) -> bool:
-    number = int(_coerce_number(value))
-    return number % 2 != 0
-
-
-def builtin_is_leap_year(value: Any) -> bool:
     if value is None:
         return False
     if isinstance(value, str):
@@ -914,14 +891,14 @@ def builtin_is_leap_year(value: Any) -> bool:
     return (year % 4 == 0 and year % 100 != 0) or (year % 400 == 0)
 
 
-def builtin_distinct_by(items: Any, criteria: Callable[..., Any]) -> List[Any]:
+def builtin_distinct_by(items: Any, criteria: Callable[..., Any]) -> list[Any] | None:
     if items is None:
         return None
     iterable = list(_coerce_iterable(items))
     if criteria is None:
         return iterable
     seen = []
-    result: List[Any] = []
+    result: list[Any] = []
     for index, item in enumerate(iterable):
         key = invoke_lambda(criteria, item, index)
         marker = _hashable_key(key)
@@ -931,10 +908,10 @@ def builtin_distinct_by(items: Any, criteria: Callable[..., Any]) -> List[Any]:
     return result
 
 
-def builtin_flatten(items: Any) -> List[Any]:
+def builtin_flatten(items: Any) -> list[Any] | None:
     if items is None:
         return None
-    result: List[Any] = []
+    result: list[Any] = []
     for element in _coerce_iterable(items):
         if isinstance(element, (list, tuple)):
             result.extend(element)
@@ -943,10 +920,10 @@ def builtin_flatten(items: Any) -> List[Any]:
     return result
 
 
-def builtin_flat_map(items: Any, mapper: Callable[..., Any]) -> List[Any]:
+def builtin_flat_map(items: Any, mapper: Callable[..., Any]) -> list[Any] | None:
     if items is None:
         return None
-    result: List[Any] = []
+    result: list[Any] = []
     for index, item in enumerate(_coerce_iterable(items)):
         mapped = invoke_lambda(mapper, item, index)
         result.extend(_coerce_iterable(mapped))
@@ -1017,7 +994,7 @@ def builtin_min_by(items: Any, criteria: Callable[..., Any]) -> Any:
     return best_item
 
 
-def builtin_pluck(obj: Any, mapper: Callable[..., Any]) -> List[Any]:
+def builtin_pluck(obj: Any, mapper: Callable[..., Any]) -> list[Any] | None:
     if obj is None:
         return None
     if not isinstance(obj, Mapping):
@@ -1030,7 +1007,7 @@ def builtin_map_object(obj: Any, mapper: Callable[..., Any]) -> Any:
         return None
     if not isinstance(obj, Mapping):
         raise TypeError("mapObject expects an object")
-    result: Dict[Any, Any] = {}
+    result: dict[Any, Any] = {}
     for index, (key, value) in enumerate(obj.items()):
         mapped = invoke_lambda(mapper, value, key, index)
         if mapped is None:
@@ -1041,7 +1018,7 @@ def builtin_map_object(obj: Any, mapper: Callable[..., Any]) -> Any:
     return result
 
 
-def builtin_zip(left: Any, right: Any) -> List[List[Any]]:
+def builtin_zip(left: Any, right: Any) -> list[list[Any]]:
     if left is None or right is None:
         return []
     return [
@@ -1050,7 +1027,7 @@ def builtin_zip(left: Any, right: Any) -> List[List[Any]]:
     ]
 
 
-def builtin_unzip(items: Any) -> List[List[Any]]:
+def builtin_unzip(items: Any) -> list[list[Any]]:
     if items is None:
         return []
     rows = [list(_coerce_iterable(item)) for item in _coerce_iterable(items)]
@@ -1060,7 +1037,7 @@ def builtin_unzip(items: Any) -> List[List[Any]]:
     return [[row[index] for row in rows] for index in range(width)]
 
 
-def builtin_xsi_type(name: Any, namespace: Any) -> Dict[str, Any]:
+def builtin_xsi_type(name: Any, namespace: Any) -> dict[str, Any]:
     namespace_obj = namespace if isinstance(namespace, Mapping) else {}
     prefix = namespace_obj.get("prefix", "xsi")
     return {"xsi:type": f"{prefix}:{name}"}
@@ -1098,38 +1075,38 @@ def builtin_entries_of(obj: Any) -> Any:
 _LOG_SENTINEL = object()
 
 
-def _log_with_level(level: int, prefix: Optional[str], value: Any = _LOG_SENTINEL) -> Any:
+def _log_with_level(level: int, prefix: str | None, value: Any = _LOG_SENTINEL) -> Any:
     actual_prefix = prefix or ""
     actual_value = value
     if value is _LOG_SENTINEL:
         actual_value = prefix
         actual_prefix = ""
     message = f"{actual_prefix} - {actual_value}" if actual_prefix else str(actual_value)
-    logging.log(level, message)
+    logging.getLogger(__name__).log(level, message)
     return actual_value
 
 
-def builtin_log(prefix: Optional[str], value: Any = _LOG_SENTINEL) -> Any:
+def builtin_log(prefix: str | None, value: Any = _LOG_SENTINEL) -> Any:
     return _log_with_level(logging.WARNING, prefix, value)
 
 
-def builtin_log_debug(prefix: Optional[str], value: Any = _LOG_SENTINEL) -> Any:
+def builtin_log_debug(prefix: str | None, value: Any = _LOG_SENTINEL) -> Any:
     return _log_with_level(logging.DEBUG, prefix, value)
 
 
-def builtin_log_info(prefix: Optional[str], value: Any = _LOG_SENTINEL) -> Any:
+def builtin_log_info(prefix: str | None, value: Any = _LOG_SENTINEL) -> Any:
     return _log_with_level(logging.INFO, prefix, value)
 
 
-def builtin_log_warn(prefix: Optional[str], value: Any = _LOG_SENTINEL) -> Any:
+def builtin_log_warn(prefix: str | None, value: Any = _LOG_SENTINEL) -> Any:
     return _log_with_level(logging.WARNING, prefix, value)
 
 
-def builtin_log_error(prefix: Optional[str], value: Any = _LOG_SENTINEL) -> Any:
+def builtin_log_error(prefix: str | None, value: Any = _LOG_SENTINEL) -> Any:
     return _log_with_level(logging.ERROR, prefix, value)
 
 
-def builtin_log_with(level: Any, prefix: Optional[str], value: Any) -> Any:
+def builtin_log_with(level: Any, prefix: str | None, value: Any) -> Any:
     level_map = {
         "debug": logging.DEBUG,
         "info": logging.INFO,
@@ -1275,7 +1252,7 @@ def builtin_between(end_date_exclusive: Any, start_date_inclusive: Any) -> DWPer
     return _period_between_dates(end_date, start_date)
 
 
-def builtin_match(text: Any, pattern: Any) -> List[str]:
+def builtin_match(text: Any, pattern: Any) -> list[str]:
     if text is None:
         return []
     pattern_text = str(pattern)
@@ -1298,7 +1275,7 @@ def builtin_matches(text: Any, pattern: Any) -> bool:
     return bool(regex.fullmatch(str(text)))
 
 
-MODULE_EXPORTS: Dict[str, List[str]] = {
+MODULE_EXPORTS: dict[str, list[str]] = {
     "dw::core::Strings": [
         "appendIfMissing",
         "camelize",
@@ -1382,8 +1359,8 @@ MODULE_EXPORTS: Dict[str, List[str]] = {
 }
 
 
-def resolve_module_exports(module: str) -> Dict[str, Callable[..., Any]]:
-    exports: Dict[str, Callable[..., Any]] = {}
+def resolve_module_exports(module: str) -> dict[str, Callable[..., Any]]:
+    exports: dict[str, Callable[..., Any]] = {}
     names = MODULE_EXPORTS.get(module)
     if not names:
         return exports
@@ -1401,7 +1378,7 @@ def builtin_filter_object(obj: Any, criteria: Callable[..., Any]) -> Any:
         raise TypeError("filterObject expects an object")
     if criteria is None:
         return dict(obj)
-    result: Dict[Any, Any] = {}
+    result: dict[Any, Any] = {}
     for index, (key, value) in enumerate(obj.items()):
         if invoke_lambda(criteria, value, key, index):
             result[key] = value
@@ -1412,7 +1389,7 @@ def _normalise_group_key(raw_key: Any) -> str:
     return str(_hashable_key(raw_key))
 
 
-def builtin_divide_by(items: Any, amount: Any) -> List[Any]:
+def builtin_divide_by(items: Any, amount: Any) -> list[Any]:
     try:
         size = int(amount)
     except (TypeError, ValueError):
@@ -1422,8 +1399,8 @@ def builtin_divide_by(items: Any, amount: Any) -> List[Any]:
     if items is None:
         return []
     if isinstance(items, Mapping):
-        groups: List[Dict[Any, Any]] = []
-        current: Dict[Any, Any] = {}
+        groups: list[dict[Any, Any]] = []
+        current: dict[Any, Any] = {}
         for key, value in items.items():
             current[key] = value
             if len(current) == size:
@@ -1437,8 +1414,8 @@ def builtin_divide_by(items: Any, amount: Any) -> List[Any]:
         iterable = items
     else:
         iterable = _coerce_iterable(items)
-    groups: List[List[Any]] = []
-    current: List[Any] = []
+    groups: list[list[Any]] = []
+    current: list[Any] = []
     for value in iterable:
         current.append(value)
         if len(current) == size:
@@ -1455,7 +1432,7 @@ def builtin_filter(items: Any, condition: Callable[..., Any]) -> Any:
     if condition is None:
         return dict(items) if isinstance(items, Mapping) else list(_coerce_iterable(items))
     if isinstance(items, Mapping):
-        result: Dict[Any, Any] = {}
+        result: dict[Any, Any] = {}
         for index, (key, value) in enumerate(items.items()):
             if invoke_lambda(condition, value, key, index):
                 result[key] = value
@@ -1471,15 +1448,15 @@ def builtin_entry_set(obj: Any) -> Any:
     return builtin_entries_of(obj)
 
 
-def builtin_name_set(obj: Any) -> Optional[List[str]]:
+def builtin_name_set(obj: Any) -> list[str] | None:
     if obj is None:
         return None
     if not isinstance(obj, Mapping):
         raise TypeError("nameSet expects an object")
-    return [str(key) for key in obj.keys()]
+    return [str(key) for key in obj]
 
 
-def builtin_key_set(obj: Any) -> Optional[List[Any]]:
+def builtin_key_set(obj: Any) -> list[Any] | None:
     if obj is None:
         return None
     if not isinstance(obj, Mapping):
@@ -1487,12 +1464,12 @@ def builtin_key_set(obj: Any) -> Optional[List[Any]]:
     return list(obj.keys())
 
 
-def builtin_value_set(obj: Any) -> Optional[List[Any]]:
+def builtin_value_set(obj: Any) -> list[Any] | None:
     if obj is None:
         return None
     if not isinstance(obj, Mapping):
         raise TypeError("valueSet expects an object")
-    values: List[Any] = []
+    values: list[Any] = []
     for value in obj.values():
         if isinstance(value, XMLNodeList):
             for entry in value:
@@ -1510,7 +1487,7 @@ def builtin_merge_with(source: Any, target: Any) -> Any:
     if not isinstance(source, Mapping) or not isinstance(target, Mapping):
         raise TypeError("mergeWith expects objects")
     result = dict(source)
-    for key in target.keys():
+    for key in target:
         result.pop(key, None)
     result.update(target)
     return result
@@ -1523,7 +1500,7 @@ def builtin_take_while(obj: Any, condition: Callable[..., Any]) -> Any:
         raise TypeError("takeWhile expects an object")
     if condition is None:
         raise TypeError("takeWhile expects a condition function")
-    result: Dict[Any, Any] = {}
+    result: dict[Any, Any] = {}
     for index, (key, value) in enumerate(obj.items()):
         if invoke_lambda(condition, value, key, index):
             result[key] = value
@@ -1539,7 +1516,7 @@ def _collapse_xml_node(value: Any) -> Any:
         text_value = value.get("#text")
         if text_value is not None:
             return text_value
-        collapsed: Dict[str, Any] = {}
+        collapsed: dict[str, Any] = {}
         for key, child in value.items():
             if key.startswith("@"):
                 continue
@@ -1574,27 +1551,27 @@ def builtin_some_entry(obj: Any, condition: Callable[..., Any]) -> bool:
     return False
 
 
-def builtin_group_by(items: Any, criteria: Callable[..., Any]) -> Any:
+def builtin_group_by(items: Any, criteria: Callable[..., Any] | None) -> Any:
     if items is None:
         return None
     if isinstance(items, Mapping):
-        result: Dict[str, Dict[Any, Any]] = {}
+        result: dict[str, dict[Any, Any]] = {}
         for index, (key, value) in enumerate(items.items()):
-            group_key = _normalise_group_key(invoke_lambda(criteria, value, key, index)) if criteria else _normalise_group_key(key)
+            group_key = _normalise_group_key(invoke_lambda(criteria, value, key, index)) if criteria is not None else _normalise_group_key(key)
             bucket = result.setdefault(group_key, {})
             bucket[key] = value
         return result
     iterable = list(_coerce_iterable(items))
     if criteria is None:
         return {str(index): [item] for index, item in enumerate(iterable)}
-    grouped: Dict[str, List[Any]] = {}
+    grouped: dict[str, list[Any]] = {}
     for index, item in enumerate(iterable):
         group_key = _normalise_group_key(invoke_lambda(criteria, item, index))
         grouped.setdefault(group_key, []).append(item)
     return grouped
 
 
-def builtin_order_by(items: Any, criteria: Optional[Callable[..., Any]]) -> Any:
+def builtin_order_by(items: Any, criteria: Callable[..., Any] | None) -> Any:
     if items is None:
         return None
     if isinstance(items, Mapping):
@@ -1628,7 +1605,7 @@ def builtin_find(value: Any, matcher: Any) -> Any:
             pattern = re.compile(matcher[1:-1])
             return [match.start() for match in pattern.finditer(value)]
         needle = str(matcher)
-        indices: List[int] = []
+        indices: list[int] = []
         start = 0
         step = max(len(needle), 1)
         while True:
@@ -1657,14 +1634,14 @@ def builtin_split_by(text: Any, separator: Any) -> Any:
     return string.split(sep)
 
 
-def builtin_to(start: Any, end: Any) -> List[Any]:
+def builtin_to(start: Any, end: Any) -> list[Any]:
     start_num = int(_coerce_number(start))
     end_num = int(_coerce_number(end))
     step = 1 if end_num >= start_num else -1
     return list(range(start_num, end_num + step, step))
 
 
-CORE_FUNCTIONS: Dict[str, Callable[..., Any]] = {
+CORE_FUNCTIONS: dict[str, Callable[..., Any]] = {
     "_binary_concat": binary_concat,
     "_binary_diff": binary_diff,
     "abs": builtin_abs,
@@ -1789,7 +1766,7 @@ CORE_FUNCTIONS: Dict[str, Callable[..., Any]] = {
     "zip": builtin_zip,
     "unzip": builtin_unzip,
 }
-INFIX_ALIASES: Dict[str, str] = {
+INFIX_ALIASES: dict[str, str] = {
     "map": "map",
     "reduce": "reduce",
     "filter": "filter",

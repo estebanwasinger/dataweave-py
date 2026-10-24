@@ -3,16 +3,20 @@ from __future__ import annotations
 import json
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from . import parser
 from .formats import (
-    DWObject, FormatRegistry, XMLNodeDict, XMLNodeList, _JSONEncoder,
+    DWObject,
+    FormatRegistry,
+    XMLNodeDict,
+    XMLNodeList,
     _json_object_from_pairs,
+    _JSONEncoder,
 )
 
 
-def infer_payload_format_from_path(path: str) -> Optional[str]:
+def infer_payload_format_from_path(path: str) -> str | None:
     suffix = Path(path).suffix.lower()
     if suffix == ".json":
         return "application/json"
@@ -37,7 +41,7 @@ def parse_inline_payload(value: str) -> Any:
 def script_renders_text(script_source: str) -> bool:
     try:
         script = parser.parse_script(script_source)
-    except Exception:
+    except parser.ParseError:
         return False
 
     if not script.header.output:

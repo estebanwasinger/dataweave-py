@@ -4,9 +4,9 @@ import json
 import os
 
 import pytest
+from jwt_support import FIXTURES, RSA_PRIVATE_KEY, decode_segment, verify_rsa_token
 
 from dwpy.runtime import DataWeaveEvaluationError, DataWeaveRuntime
-from jwt_support import FIXTURES, RSA_PRIVATE_KEY, decode_segment, verify_rsa_token
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("DWPY_TEST_BACKEND") == "python",
@@ -106,4 +106,5 @@ def test_named_input_requires_a_supplied_value():
 
 def test_jwt_type_is_string():
     runtime = DataWeaveRuntime(backend="rust")
+    assert runtime._rust_runtime is not None
     assert runtime._rust_runtime.infer_type_descriptor('dw::util::jwt::HMAC::JWT({}, vars.key)')["kind"] == "String"

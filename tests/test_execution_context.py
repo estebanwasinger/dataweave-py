@@ -4,7 +4,6 @@ import pytest
 
 from dwpy.runtime import DataWeaveRuntime
 
-
 SAMPLE_SCRIPT = r'''%dw 2.0
 output application/python
 ---
@@ -82,7 +81,7 @@ def test_properties_require_string_values(backend: str) -> None:
             runtime.execute(
                 'p("env")',
                 {},
-                properties={"env": 1},  # type: ignore[dict-item]
+                properties={"env": 1},  # ty: ignore[invalid-argument-type] - validates runtime rejection
                 render_output=False,
             )
     except RuntimeError as error:

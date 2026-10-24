@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Literal
 
 from ._python_runtime import (
     DataWeaveEvaluationError,
@@ -29,7 +29,7 @@ class DataWeaveRuntime:
         self,
         *,
         enable_module_imports: bool = True,
-        backend: BackendName | None = None,
+        backend: str | None = None,
     ) -> None:
         requested_backend = (
             os.environ.get("DWPY_TEST_BACKEND")
@@ -44,9 +44,9 @@ class DataWeaveRuntime:
 
         self.backend: BackendName = selected_backend  # type: ignore[assignment]
         self._enable_module_imports = enable_module_imports
-        self._python_runtime: Optional[PythonDataWeaveRuntime] = None
-        self._rust_runtime: Optional[Any] = None
-        self._wasm_runtime: Optional[Any] = None
+        self._python_runtime: PythonDataWeaveRuntime | None = None
+        self._rust_runtime: Any | None = None
+        self._wasm_runtime: Any | None = None
 
         if self.backend == "python":
             self._python_runtime = PythonDataWeaveRuntime(
@@ -70,7 +70,7 @@ class DataWeaveRuntime:
                     enable_module_imports,
                     allow_legacy_fallback=True,
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 - auto backend falls back on any Rust startup failure
                 self._python_runtime = PythonDataWeaveRuntime(
                     enable_module_imports=enable_module_imports
                 )
@@ -87,12 +87,12 @@ class DataWeaveRuntime:
         self,
         script_source: str,
         payload: Any,
-        vars: Optional[Dict[str, Any]] = None,
+        vars: dict[str, Any] | None = None,
         *,
-        attributes: Optional[Dict[str, Any]] = None,
-        properties: Optional[Dict[str, str]] = None,
-        payload_format: Optional[str] = None,
-        payload_format_options: Optional[Dict[str, Any]] = None,
+        attributes: dict[str, Any] | None = None,
+        properties: dict[str, str] | None = None,
+        payload_format: str | None = None,
+        payload_format_options: dict[str, Any] | None = None,
         render_output: bool = True,
     ) -> Any:
         if self._wasm_runtime is not None:
@@ -165,13 +165,13 @@ class DataWeaveRuntime:
 
 
 __all__ = [
-    "DataWeaveRuntime",
-    "PythonDataWeaveRuntime",
     "DataWeaveEvaluationError",
-    "EvaluationContext",
-    "OutputDirective",
-    "LambdaCallable",
+    "DataWeaveRuntime",
     "DefinedFunction",
-    "OverloadedFunction",
+    "EvaluationContext",
     "ImplicitLambdaCallable",
+    "LambdaCallable",
+    "OutputDirective",
+    "OverloadedFunction",
+    "PythonDataWeaveRuntime",
 ]
