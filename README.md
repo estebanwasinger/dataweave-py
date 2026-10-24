@@ -222,6 +222,10 @@ core Rust unit test in WASM or validate Deno/browser host integration.
 Pass a test-name filter after `--` to focus a run, for example
 `bash scripts/test_wasm_rust.sh -- infix`.
 
+Compare the strict Rust engine with MuleSoft's pinned `dataweave-native` engine
+using the [543-case conformance harness](conformance/README.md). Stored
+expectations also support offline comparisons without the reference package.
+
 Run the Python suite against the Rust backend:
 
 ```bash

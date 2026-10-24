@@ -50,3 +50,6 @@ uv.lock
 
 # Rust
 target/
+
+# Local conformance reports
+.refs/
