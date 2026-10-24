@@ -31,4 +31,11 @@ const execute = (request, options) => {
   return execution.result;
 };
 
-module.exports = {analyze, execute, executeWithLogs};
+class DebugAdapter {
+  constructor() { this.adapter = new bindings.DataWeaveDebugAdapter(); }
+  dispatch(request) { return parseResult(this.adapter.dispatch(encodeRequest(request))); }
+  poll(fuel = 200) { return parseResult(this.adapter.poll(fuel)); }
+  get running() { return this.adapter.is_running(); }
+  dispose() { this.adapter.free(); }
+}
+module.exports = {analyze, execute, executeWithLogs, DebugAdapter};

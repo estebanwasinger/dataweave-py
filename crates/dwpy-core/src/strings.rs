@@ -793,3 +793,148 @@ pub(crate) fn wrap_if_missing(text: &Value, wrapper: &Value) -> Result<Value, Dw
     }
     Ok(Value::String(source))
 }
+
+/// Match planning is atomic regex work; callers evaluate replacement callbacks
+/// separately, exactly once per occurrence, without rescanning previous matches.
+pub(crate) fn replacement_parts(
+    text: &Value,
+    target: &Value,
+) -> Result<(Vec<(String, Vec<Value>)>, String), DwError> {
+    let source = as_dataweave_string(text);
+    let needle = if target.is_null() {
+        String::new()
+    } else {
+        as_dataweave_string(target)
+    };
+    if text.is_null() || needle.is_empty() {
+        return Ok((vec![], source));
+    }
+    let mut parts = vec![];
+    let mut end = 0;
+    let pattern = regex_literal_inner(&needle).unwrap_or(&needle);
+    if regex_literal_inner(&needle).is_some() || is_regex_like_pattern(pattern) {
+        let regex = Regex::new(pattern).map_err(|err| {
+            DwError::UnsupportedFeature(format!("regex pattern /{pattern}/: {err}"))
+        })?;
+        for captures in regex.captures_iter(&source) {
+            let matched = captures.get(0).unwrap();
+            let values = (0..captures.len())
+                .map(|i| {
+                    captures
+                        .get(i)
+                        .map(|m| Value::String(m.as_str().into()))
+                        .unwrap_or(Value::Null)
+                })
+                .collect();
+            parts.push((source[end..matched.start()].into(), values));
+            end = matched.end();
+        }
+    } else {
+        for (start, matched) in source.match_indices(&needle) {
+            parts.push((
+                source[end..start].into(),
+                vec![Value::String(matched.into())],
+            ));
+            end = start + matched.len();
+        }
+    }
+    Ok((parts, source[end..].into()))
+}
+pub(crate) fn replace_with_scoped(
+    text: &Value,
+    target: &Value,
+    replacement: &Value,
+    payload: &Value,
+    locals: &crate::value::DwMap<String, Value>,
+) -> Result<Value, DwError> {
+    let lambda = replacement.get("__lambda").is_some();
+    let reference = replacement.get("__function_ref").and_then(Value::as_str);
+    if !lambda && reference.is_none() {
+        return replace_with(text, target, replacement);
+    }
+    if text.is_null() {
+        return Ok(Value::Null);
+    }
+    let (parts, tail) = replacement_parts(text, target)?;
+    let mut output = String::new();
+    for (index, (prefix, captures)) in parts.into_iter().enumerate() {
+        output.push_str(&prefix);
+        let mut scoped = locals.clone();
+        scoped.insert("__replace_match".into(), Value::Array(captures));
+        scoped.insert("__replace_index".into(), Value::Number(index.into()));
+        let sources = ["__replace_match", "__replace_index"];
+        let value = if lambda {
+            let count = callback_argument_count(
+                replacement,
+                locals,
+                &[
+                    scoped["__replace_match"].clone(),
+                    Value::Number(index.into()),
+                ],
+            );
+            crate::functions::evaluate_lambda_value_call(
+                replacement,
+                &sources[..count],
+                payload,
+                &scoped,
+            )?
+            .unwrap()
+        } else {
+            let count = callback_argument_count(
+                replacement,
+                locals,
+                &[
+                    scoped["__replace_match"].clone(),
+                    Value::Number(index.into()),
+                ],
+            );
+            crate::calls::evaluate_function_call(
+                reference.unwrap(),
+                &sources[..count],
+                payload,
+                &scoped,
+            )?
+        };
+        output.push_str(&as_dataweave_string(&value));
+    }
+    output.push_str(&tail);
+    Ok(Value::String(output))
+}
+
+pub(crate) fn callback_argument_count(
+    function: &Value,
+    locals: &crate::value::DwMap<String, Value>,
+    args: &[Value],
+) -> usize {
+    if function.get("__lambda").is_some() {
+        return function
+            .get("params")
+            .and_then(Value::as_array)
+            .map_or(args.len(), Vec::len)
+            .min(args.len());
+    }
+    if let Some(definitions) = function
+        .get("__function_ref")
+        .and_then(Value::as_str)
+        .and_then(|name| locals.get("__functions").and_then(|f| f.get(name)))
+        .and_then(Value::as_array)
+    {
+        for count in (0..=args.len()).rev() {
+            for definition in definitions {
+                if let Some(params) = definition.get("params").and_then(Value::as_array) {
+                    let required = params.iter().filter(|p| p.get("default").is_none()).count();
+                    if count >= required
+                        && count <= params.len()
+                        && params
+                            .iter()
+                            .zip(&args[..count])
+                            .all(|(p, a)| crate::functions::parameter_accepts_value(p, a))
+                    {
+                        return count;
+                    }
+                }
+            }
+        }
+    }
+    args.len()
+}

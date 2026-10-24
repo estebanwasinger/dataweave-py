@@ -116,42 +116,38 @@ fn split_header_var_without_equals(source: &str) -> Option<(&str, &str)> {
     }
 }
 
-fn collect_header_declarations(header: &str) -> Vec<String> {
-    let mut declarations = Vec::new();
-    let mut current: Option<String> = None;
-    let mut delimiter_state = DelimiterState::default();
-
-    for raw_line in header.lines() {
-        let trimmed = raw_line.trim();
-        if trimmed.is_empty() || trimmed.starts_with("//") {
-            continue;
+pub(crate) fn collect_header_declarations(header: &str) -> Vec<String> {
+    let mut candidates = vec![];
+    let mut offset = 0;
+    for line in header.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if is_header_declaration_start(trimmed) {
+            candidates.push(offset + line.len() - trimmed.len());
         }
-
-        if delimiter_state.depth <= 0 && is_header_declaration_start(raw_line) {
-            if let Some(declaration) = current.take() {
-                declarations.push(declaration);
-            }
-            current = Some(trimmed.to_string());
-            delimiter_state = DelimiterState::default();
-            delimiter_state.apply_line(trimmed);
-            continue;
+        offset += line.len();
+    }
+    let mut starts = vec![];
+    crate::syntax::visit_top_level(header, |index, _| {
+        if candidates.binary_search(&index).is_ok() {
+            starts.push(index);
         }
-
-        if let Some(declaration) = current.as_mut() {
-            declaration.push('\n');
-            declaration.push_str(trimmed);
-            delimiter_state.apply_line(trimmed);
+    });
+    if starts.is_empty() {
+        return if header.trim().is_empty() {
+            vec![]
         } else {
-            declarations.push(trimmed.to_string());
-            delimiter_state = DelimiterState::default();
-        }
+            vec![header.trim().into()]
+        };
     }
-
-    if let Some(declaration) = current {
-        declarations.push(declaration);
+    let mut out = vec![];
+    if !header[..starts[0]].trim().is_empty() {
+        out.push(header[..starts[0]].trim().into());
     }
-
-    declarations
+    starts.push(header.len());
+    for pair in starts.windows(2) {
+        out.push(header[pair[0]..pair[1]].trim().to_owned());
+    }
+    out
 }
 
 pub(crate) fn header_reference_sources(header: &str) -> Vec<HeaderReferenceSource> {
@@ -197,44 +193,6 @@ pub(crate) fn header_reference_sources(header: &str) -> Vec<HeaderReferenceSourc
             })
         })
         .collect()
-}
-
-#[derive(Default)]
-struct DelimiterState {
-    depth: i32,
-    in_string: Option<char>,
-    escaped: bool,
-}
-
-impl DelimiterState {
-    fn apply_line(&mut self, source: &str) {
-        let mut chars = source.chars().peekable();
-        while let Some(ch) = chars.next() {
-            if let Some(quote) = self.in_string {
-                if self.escaped {
-                    self.escaped = false;
-                } else if ch == '\\' {
-                    self.escaped = true;
-                } else if ch == quote {
-                    self.in_string = None;
-                }
-                continue;
-            }
-
-            if ch == '/' && chars.peek() == Some(&'/') {
-                break;
-            }
-            if ch == '"' || ch == '\'' {
-                self.in_string = Some(ch);
-                continue;
-            }
-            match ch {
-                '{' | '[' | '(' => self.depth += 1,
-                '}' | ']' | ')' => self.depth -= 1,
-                _ => {}
-            }
-        }
-    }
 }
 
 fn is_header_declaration_start(line: &str) -> bool {
@@ -467,7 +425,10 @@ fn push_substituted_token(
     token.clear();
 }
 
-fn register_import_aliases(line: &str, locals: &mut Map<String, Value>) -> Result<(), DwError> {
+pub(crate) fn register_import_aliases(
+    line: &str,
+    locals: &mut Map<String, Value>,
+) -> Result<(), DwError> {
     let declaration = line
         .strip_prefix("import ")
         .ok_or_else(|| DwError::UnsupportedFeature(format!("import line {line}")))?;
@@ -512,6 +473,30 @@ fn register_import_aliases(line: &str, locals: &mut Map<String, Value>) -> Resul
                 aliases.insert(binding, Value::String(canonical.clone()));
             }
             return Ok(());
+        }
+    }
+    if declaration.starts_with("dw::") && !declaration.contains(" from ") {
+        let (module, alias) = declaration.split_once(" as ").map_or(
+            (
+                declaration,
+                declaration.rsplit("::").next().unwrap_or(declaration),
+            ),
+            |(module, alias)| (module.trim(), alias.trim()),
+        );
+        if is_identifier(alias) {
+            let aliases = locals
+                .entry("__aliases".into())
+                .or_insert_with(|| Value::Object(Map::new()));
+            if let Value::Object(aliases) = aliases {
+                for op in crate::COLLECTION_OPERATORS.iter().copied().chain([
+                    "join",
+                    "leftJoin",
+                    "outerJoin",
+                ]) {
+                    aliases.insert(format!("{alias}::{op}"), Value::String(op.into()));
+                    aliases.insert(format!("{module}::{op}"), Value::String(op.into()));
+                }
+            }
         }
     }
     if declaration.starts_with("dw::")
@@ -605,7 +590,7 @@ fn register_header_function(
     Ok(())
 }
 
-fn strip_generic_function_type_parameters(source: &str) -> &str {
+pub(crate) fn strip_generic_function_type_parameters(source: &str) -> &str {
     let Some(open) = source.find('<') else {
         return source;
     };
@@ -651,7 +636,29 @@ pub(crate) fn resolve_invoked_function_name(
             return Some(name.clone());
         }
     }
-    resolve_function_alias(function_name, locals)
+    if matches!(locals.get("__functions"), Some(Value::Object(functions)) if functions.contains_key(function_name))
+    {
+        return Some(function_name.into());
+    }
+    resolve_function_alias(function_name, locals).or_else(|| {
+        let (module, name) = function_name.rsplit_once("::")?;
+        ([
+            "Arrays",
+            "Objects",
+            "Strings",
+            "Tree",
+            "Core",
+            "dw::Core",
+            "dw::core::Arrays",
+            "dw::core::Objects",
+            "dw::core::Strings",
+            "dw::util::Tree",
+        ]
+        .contains(&module)
+            && (crate::COLLECTION_OPERATORS.contains(&name)
+                || ["join", "leftJoin", "outerJoin"].contains(&name)))
+        .then(|| name.to_owned())
+    })
 }
 
 fn resolve_function_alias(function_name: &str, locals: &Map<String, Value>) -> Option<String> {
@@ -887,7 +894,7 @@ pub(crate) fn evaluate_user_function_call(
     )))
 }
 
-fn parameter_accepts_value(param: &Value, value: &Value) -> bool {
+pub(crate) fn parameter_accepts_value(param: &Value, value: &Value) -> bool {
     let Value::Object(param) = param else {
         return true;
     };
@@ -921,4 +928,43 @@ fn single_type_matches(value: &Value, type_source: &str) -> bool {
         _ if lower.contains("object") => value.is_object(),
         _ => true,
     }
+}
+
+/// Resolve imported callback operator names without rewriting their source spans.
+pub(crate) fn split_collection_operator<'a>(
+    source: &'a str,
+    locals: &Map<String, Value>,
+) -> Option<(&'a str, String, &'a str)> {
+    if !matches!(locals.get("__aliases"),Some(Value::Object(aliases)) if !aliases.is_empty()) {
+        let (left, name, right) = crate::syntax::split_top_level_keyword_or_call_operator(
+            source,
+            crate::COLLECTION_OPERATORS,
+        )?;
+        return Some((left, name.into(), right));
+    }
+    let mut names = crate::COLLECTION_OPERATORS
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect::<Vec<_>>();
+    if let Some(Value::Object(aliases)) = locals.get("__aliases") {
+        for (name, canonical) in aliases {
+            if canonical
+                .as_str()
+                .is_some_and(|s| crate::COLLECTION_OPERATORS.contains(&s))
+            {
+                names.push(name.clone());
+            }
+        }
+    }
+    let refs = names.iter().map(String::as_str).collect::<Vec<_>>();
+    let (left, name, right) =
+        crate::syntax::split_top_level_keyword_or_call_operator(source, &refs)?;
+    let canonical = if crate::COLLECTION_OPERATORS.contains(&name) {
+        name.into()
+    } else {
+        resolve_invoked_function_name(name, locals).unwrap_or_else(|| name.into())
+    };
+    crate::COLLECTION_OPERATORS
+        .contains(&canonical.as_str())
+        .then_some((left, canonical, right))
 }

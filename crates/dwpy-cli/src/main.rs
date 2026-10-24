@@ -1,3 +1,4 @@
+mod dap;
 use serde_json::Value;
 use std::env;
 use std::fs;
@@ -7,6 +8,7 @@ use std::process::ExitCode;
 
 const USAGE: &str = "\
 usage:
+  dw dap
   dw run <script> [--payload TEXT | --payload-file PATH] [--payload-format MIME]
   dw run --file PATH [--payload TEXT | --payload-file PATH] [--payload-format MIME]";
 
@@ -49,6 +51,7 @@ fn run(args: Vec<String>) -> Result<(), CliError> {
     }
     match args[0].as_str() {
         "run" => run_command(&args[1..]),
+        "dap" if args.len() == 1 => dap::run().map_err(CliError::Execution),
         other => Err(CliError::Usage(format!("unknown command `{other}`"))),
     }
 }

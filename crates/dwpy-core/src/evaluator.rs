@@ -266,7 +266,7 @@ fn evaluate_fast_default_literal(source: &str) -> Result<Option<Value>, DwError>
     Ok(None)
 }
 
-fn extend_object_spread(
+pub(crate) fn extend_object_spread(
     target: &mut Map<String, Value>,
     pairs: &mut Vec<(String, Value)>,
     has_duplicate_key: &mut bool,
@@ -308,46 +308,19 @@ fn extend_object_spread(
     }
 }
 
-fn split_object_entries(source: &str) -> Vec<&str> {
-    let mut parts = Vec::new();
-    let mut start = 0usize;
-    let mut depth = 0i32;
-    let mut angle_depth = 0i32;
-    let mut in_string: Option<char> = None;
-    let mut escaped = false;
-    for (index, ch) in source.char_indices() {
-        if let Some(quote) = in_string {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == quote {
-                in_string = None;
-            }
-            continue;
-        }
-        match ch {
-            '/' if starts_regex_literal(source, index) => in_string = Some('/'),
-            '"' | '\'' | '`' | '|' => in_string = Some(ch),
-            '<' if starts_type_argument_list(source, index) => angle_depth += 1,
-            '>' if angle_depth > 0 => angle_depth -= 1,
-            '{' | '[' | '(' => depth += 1,
-            '}' | ']' | ')' => depth -= 1,
-            ',' if depth == 0 && angle_depth == 0 => {
-                parts.push(&source[start..index]);
-                start = index + ch.len_utf8();
-            }
-            '\n' if depth == 0
-                && angle_depth == 0
+pub(crate) fn split_object_entries(source: &str) -> Vec<&str> {
+    let mut parts = vec![];
+    let mut start = 0;
+    crate::syntax::visit_top_level(source, |index, ch| {
+        if ch == ','
+            || (ch == '\n'
                 && object_entry_can_end_at_line(source[start..index].trim())
-                && next_line_starts_object_entry(&source[index + ch.len_utf8()..]) =>
-            {
-                parts.push(&source[start..index]);
-                start = index + ch.len_utf8();
-            }
-            _ => {}
+                && next_line_starts_object_entry(&source[index + ch.len_utf8()..]))
+        {
+            parts.push(&source[start..index]);
+            start = index + ch.len_utf8();
         }
-    }
+    });
     parts.push(&source[start..]);
     parts
 }
@@ -410,30 +383,6 @@ fn source_ends_with_collection_operator(source: &str) -> bool {
     )
 }
 
-fn starts_regex_literal(source: &str, index: usize) -> bool {
-    source[index..].starts_with('/')
-        && source[..index]
-            .chars()
-            .rev()
-            .find(|ch| !ch.is_whitespace())
-            .is_none_or(|ch| matches!(ch, '(' | '[' | '{' | ':' | ',' | '='))
-}
-
-fn starts_type_argument_list(source: &str, index: usize) -> bool {
-    source[index..].starts_with('<')
-        && source[index + '<'.len_utf8()..]
-            .chars()
-            .next()
-            .is_some_and(|next| next.is_ascii_alphabetic() || next == '_')
-        && source[..index]
-            .chars()
-            .rev()
-            .find(|ch| !ch.is_whitespace())
-            .is_some_and(|previous| {
-                previous.is_ascii_alphabetic() || previous == '_' || previous == '>'
-            })
-}
-
 fn next_line_starts_object_entry(source: &str) -> bool {
     let rest = source.trim_start();
     if rest.is_empty() {
@@ -477,7 +426,7 @@ pub(crate) fn evaluate_array_literal_scoped(
     Ok(Value::Array(output))
 }
 
-fn parse_conditional_literal_element(source: &str) -> Option<(&str, &str)> {
+pub(crate) fn parse_conditional_literal_element(source: &str) -> Option<(&str, &str)> {
     let (item_source, _, condition_source) =
         split_top_level_keyword_or_call_operator(source, &["if"])?;
     let item_source = item_source.trim();

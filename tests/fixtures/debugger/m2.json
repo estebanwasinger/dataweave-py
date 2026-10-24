@@ -1,0 +1,72 @@
+[
+  {
+    "seq": 1,
+    "type": "request",
+    "command": "initialize",
+    "arguments": {}
+  },
+  {
+    "seq": 2,
+    "type": "request",
+    "command": "launch",
+    "arguments": {
+      "source": "%dw 2.0\noutput application/json\nimport pluck as entries from dw::Core\nfun add(n)=log(n+1)\n---\n{\n object: entries({a:2}, (v,k,i) ->\n  add(v) + i),\n sequence: 1 to 4 flatMap [$,$+1] distinctBy $ takeWhile ($<4) sumBy $,\n groups: [1,2,3] groupBy ($ mod 2),\n ordered: [3,1,2] orderBy $,\n strings: \"a🐈\" mapString upper($),\n tree: {a:[1,2]} mapLeafValues ($*2),\n joined: outerJoin([1,2],[2,3],$,$),\n partitioned: [1,2,3] partition ($>1),\n lines: \"a\\nb\" readLinesWith \"UTF-8\",\n scanned: \"a1\" scan /(\\d)/,\n fallback: null onNull \"ok\",\n guarded: 2 failIf ($>5),\n waited: 3 wait log(\"never\")\n}",
+      "stopOnEntry": false
+    }
+  },
+  {
+    "seq": 3,
+    "type": "request",
+    "command": "setBreakpoints",
+    "arguments": {
+      "source": {
+        "sourceReference": 1
+      },
+      "breakpoints": [
+        {
+          "line": 8
+        }
+      ]
+    }
+  },
+  {
+    "seq": 4,
+    "type": "request",
+    "command": "configurationDone",
+    "arguments": {}
+  },
+  {
+    "seq": 5,
+    "type": "request",
+    "command": "stackTrace",
+    "arguments": {
+      "threadId": 1
+    }
+  },
+  {
+    "seq": 6,
+    "type": "request",
+    "command": "evaluate",
+    "arguments": {
+      "frameId": 1,
+      "expression": "v",
+      "context": "watch"
+    }
+  },
+  {
+    "seq": 7,
+    "type": "request",
+    "command": "stepIn",
+    "arguments": {
+      "threadId": 1
+    }
+  },
+  {
+    "seq": 8,
+    "type": "request",
+    "command": "continue",
+    "arguments": {
+      "threadId": 1
+    }
+  }
+]

@@ -49,6 +49,19 @@ pub(crate) fn evaluate_function_call(
     let resolved_function_name = resolve_invoked_function_name(function_name, locals);
     let function_name = resolved_function_name.as_deref().unwrap_or(function_name);
     let arity = argument_sources.len();
+    if matches!(locals.get("__functions"), Some(Value::Object(functions)) if functions.contains_key(function_name))
+    {
+        return evaluate_user_function_call(function_name, argument_sources, payload, locals);
+    }
+    if arity == 2 && crate::COLLECTION_OPERATORS.contains(&function_name) {
+        return crate::evaluate_collection_operator(
+            argument_sources[0],
+            function_name,
+            argument_sources[1],
+            payload,
+            locals,
+        );
+    }
     match function_name {
         "dw::util::jwt::HMAC::JWT" | "dw::util::jwt::RSA::JWT" | "HMAC::JWT" | "RSA::JWT" => {
             let arguments = argument_sources
