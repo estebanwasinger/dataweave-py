@@ -16,7 +16,7 @@ from .formats import (
 )
 
 
-def infer_payload_format_from_path(path: str) -> Optional[str]:
+def infer_payload_format_from_path(path: str) -> str | None:
     suffix = Path(path).suffix.lower()
     if suffix == ".json":
         return "application/json"

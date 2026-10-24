@@ -6,8 +6,8 @@ import argparse
 import json
 import os
 import re
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Mapping
 
 import tomllib
 

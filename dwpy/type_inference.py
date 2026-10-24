@@ -60,9 +60,9 @@ class TypeInferenceContext:
         self.payload_type = payload_type
         self.vars_type = vars_type
         self.attributes_type = attributes_type
-        self.env: Dict[str, DWType] = {}
+        self.env: dict[str, DWType] = {}
         # Keep type definitions case-insensitive to mirror DW resolution
-        self._defined_types: Dict[str, DWType] = {}
+        self._defined_types: dict[str, DWType] = {}
 
     @staticmethod
     def _normalize_name(name: str) -> str:
@@ -89,10 +89,10 @@ class TypeInferenceContext:
     def define_type(self, name: str, type_: DWType) -> None:
         self._defined_types[self._normalize_name(name)] = type_
 
-    def resolve_type(self, name: str) -> Optional[DWType]:
+    def resolve_type(self, name: str) -> DWType | None:
         return self._defined_types.get(self._normalize_name(name))
 
-    def clone(self) -> "TypeInferenceContext":
+    def clone(self) -> TypeInferenceContext:
         new_ctx = TypeInferenceContext(self.payload_type, self.vars_type, self.attributes_type)
         new_ctx.env = dict(self.env)
         new_ctx._defined_types = dict(self._defined_types)
@@ -133,7 +133,7 @@ def _infer_script_type_rust(
     payload_type: DWType | Any,
     vars_type: DWType | Any,
     attributes_type: DWType | Any,
-) -> Optional[DWType]:
+) -> DWType | None:
     payload_arg: Any
     vars_arg: Any
     if isinstance(payload_type, DWType) and payload_type is not ANY:
@@ -159,7 +159,7 @@ def _infer_script_type_rust(
     return _dw_type_from_rust_descriptor(descriptor)
 
 
-def _dw_type_from_rust_descriptor(descriptor: Any) -> Optional[DWType]:
+def _dw_type_from_rust_descriptor(descriptor: Any) -> DWType | None:
     if not isinstance(descriptor, dict):
         return None
     kind = descriptor.get("kind")
@@ -179,7 +179,7 @@ def _dw_type_from_rust_descriptor(descriptor: Any) -> Optional[DWType]:
         element = _dw_type_from_rust_descriptor(descriptor.get("element"))
         return array_type(element or ANY)
     if kind == "Object":
-        fields: Dict[str, Tuple[DWType, bool, bool]] = {}
+        fields: dict[str, tuple[DWType, bool, bool]] = {}
         raw_fields = descriptor.get("fields")
         if isinstance(raw_fields, dict):
             for name, raw_field in raw_fields.items():
@@ -237,7 +237,7 @@ def _python_value_to_type(value: Any) -> DWType:
             element_type = union_types(element_type, _python_value_to_type(item))
         return array_type(element_type)
     if isinstance(value, dict):
-        fields: Dict[str, Tuple[DWType, bool, bool]] = {}
+        fields: dict[str, tuple[DWType, bool, bool]] = {}
         for k, v in value.items():
             fields[str(k)] = (_python_value_to_type(v), False, False)
         return object_type(fields, is_open_flag=True)
@@ -293,12 +293,12 @@ def infer_script_pydantic_model(
         if isinstance(dw_type, LiteralType):
             return type(dw_type.value)
         if isinstance(dw_type, ArrayType):
-            return List[to_annotation(dw_type.element)]
+            return list[to_annotation(dw_type.element)]
         if isinstance(dw_type, UnionType):
             annos = [to_annotation(opt) for opt in dw_type.options]
             return Union[tuple(annos)]  # type: ignore
         if isinstance(dw_type, ObjectType):
-            fields_def: Dict[str, Tuple[Any, Any]] = {}
+            fields_def: dict[str, tuple[Any, Any]] = {}
             for name, f_type, is_optional, is_repeat in dw_type.fields:
                 field_type = f_type
                 # If nullable union, remove Null and mark optional
@@ -309,7 +309,7 @@ def infer_script_pydantic_model(
                     nullable = True
                 annotation = to_annotation(field_type)
                 if is_repeat:
-                    annotation = List[annotation]  # type: ignore
+                    annotation = list[annotation]  # type: ignore
                 if is_optional or nullable or isinstance(field_type, NullType):
                     annotation = Optional[annotation]
                     default = None
@@ -346,8 +346,8 @@ class TypeInferencer:
         self.payload_type = payload_type
         self.vars_type = vars_type
         self.attributes_type = attributes_type
-        self.context: Optional[TypeInferenceContext] = None
-        self._functions: Dict[str, parser.FunctionDeclaration] = {}
+        self.context: TypeInferenceContext | None = None
+        self._functions: dict[str, parser.FunctionDeclaration] = {}
 
     def infer_script(self, script: parser.Script) -> DWType:
         ctx = TypeInferenceContext(
@@ -363,7 +363,7 @@ class TypeInferencer:
             ctx.define_type(type_def.name, inferred_type)
 
         for function_decl in script.header.functions:
-            param_types: List[DWType] = []
+            param_types: list[DWType] = []
             for param in function_decl.parameters:
                 if param.type_annotation is not None:
                     param_types.append(self._type_from_spec(param.type_annotation))
@@ -491,7 +491,7 @@ class TypeInferencer:
         return ANY
 
     def _infer_object(self, expr: parser.ObjectLiteral, ctx: TypeInferenceContext) -> DWType:
-        fields: Dict[str, Tuple[DWType, bool, bool]] = {}
+        fields: dict[str, tuple[DWType, bool, bool]] = {}
         open_object = False
         for key_expr, value_expr in expr.fields:
             if key_expr is None:
@@ -563,7 +563,7 @@ class TypeInferencer:
         return array_type(self._infer_descendant_property_element(base_type, attribute))
 
     def _infer_descendant_property_element(self, base_type: DWType, attribute: str) -> DWType:
-        matches: List[DWType] = []
+        matches: list[DWType] = []
 
         if isinstance(base_type, ArrayType):
             matches.append(self._infer_descendant_property_element(base_type.element, attribute))
@@ -744,7 +744,7 @@ class TypeInferencer:
             return union_types(*merged)
         return ANY
 
-    def _infer_binary_minus(self, left: DWType, right: DWType, right_expr: Optional[parser.Expression]) -> DWType:
+    def _infer_binary_minus(self, left: DWType, right: DWType, right_expr: parser.Expression | None) -> DWType:
         if isinstance(left, TemporalType) and right == PERIOD:
             return left
         # Numeric subtraction
@@ -758,7 +758,7 @@ class TypeInferencer:
             return union_types(*merged)
         if isinstance(left, ObjectType):
             # Attempt to remove a concrete key if provided as string literal
-            key_name: Optional[str] = None
+            key_name: str | None = None
             if isinstance(right_expr, parser.StringLiteral):
                 key_name = right_expr.value
             elif isinstance(right_expr, parser.InterpolatedString):
@@ -776,7 +776,7 @@ class TypeInferencer:
         left_expr: parser.Expression,
         right_expr: parser.Expression,
         ctx: TypeInferenceContext,
-    ) -> Optional[DWType]:
+    ) -> DWType | None:
         """
         Recover type for parser shape: `_binary_lt(_infix_filter(seq, $), rhs)`.
 
@@ -843,7 +843,7 @@ class TypeInferencer:
             result_type = union_types(result_type, self._infer_expression(case.expression, ctx))
         return result_type
 
-    def _extract_constant_string(self, expr: parser.Expression, ctx: TypeInferenceContext) -> Optional[str]:
+    def _extract_constant_string(self, expr: parser.Expression, ctx: TypeInferenceContext) -> str | None:
         if isinstance(expr, parser.StringLiteral):
             return expr.value
         if isinstance(expr, parser.Identifier):
@@ -877,7 +877,7 @@ class TypeInferencer:
             return FunctionType(parameter_types=param_types, return_type=return_type)
 
         if isinstance(spec, ObjectTypeSpec):
-            fields: List[Tuple[str, DWType, bool, bool]] = []
+            fields: list[tuple[str, DWType, bool, bool]] = []
             for name, field_type_spec, is_optional, is_repeatable in spec.fields:
                 field_dw_type = self._type_from_spec(field_type_spec)
                 # Optional fields can be absent, effectively allowing Null

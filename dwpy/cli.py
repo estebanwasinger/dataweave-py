@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Optional
 
 from ._cli_shared import (
     infer_payload_format_from_path,
@@ -34,7 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     return args.handler(args)
 
@@ -73,7 +74,7 @@ def _read_script_source(args: argparse.Namespace) -> str:
     return args.script
 
 
-def _load_payload(args: argparse.Namespace) -> tuple[object, Optional[str]]:
+def _load_payload(args: argparse.Namespace) -> tuple[object, str | None]:
     if args.payload is not None:
         if args.payload_format:
             return args.payload, args.payload_format
