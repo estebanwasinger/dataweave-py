@@ -8,7 +8,7 @@ import xml.etree.ElementTree as ET
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from typing import Any, Dict, Optional
+from typing import Any, ClassVar
 
 import yaml
 from tabulate import tabulate
@@ -33,7 +33,9 @@ class XMLNodeDict(dict):
 class FormattedNumber(float):
     """Numeric value that preserves DataWeave formatting metadata for string writers."""
 
-    def __new__(cls, value: Any, formatted_text: str) -> FormattedNumber:
+    formatted_text: str
+
+    def __new__(cls, value: Any, formatted_text: str) -> FormattedNumber:  # noqa: PYI034 - Python 3.10 lacks typing.Self
         instance = float.__new__(cls, float(value))
         instance.formatted_text = str(formatted_text)
         return instance
@@ -75,8 +77,8 @@ class FormatDefinition:
 
 
 class FormatRegistry:
-    _FORMATS: dict[str, FormatDefinition] = {}
-    _ALIASES: dict[str, str] = {}
+    _FORMATS: ClassVar[dict[str, FormatDefinition]] = {}
+    _ALIASES: ClassVar[dict[str, str]] = {}
 
     @classmethod
     def register(
@@ -280,7 +282,7 @@ def _ndjson_writer(value: Any, options: dict[str, Any]) -> str:
 def _normalize_ndjson_value(value: Any, *, write_attributes: bool) -> Any:
     if isinstance(value, FormattedNumber):
         return value.raw_value()
-    if hasattr(value, "to_iso8601") and callable(getattr(value, "to_iso8601")):
+    if hasattr(value, "to_iso8601") and callable(value.to_iso8601):
         return value.to_iso8601()
     if isinstance(value, datetime):
         return value.isoformat().replace("+00:00", "Z")
@@ -368,7 +370,7 @@ def _yaml_writer(value: Any, options: dict[str, Any]) -> str:
 def _normalize_yaml_value(value: Any) -> Any:
     if isinstance(value, FormattedNumber):
         return value.raw_value()
-    if hasattr(value, "to_iso8601") and callable(getattr(value, "to_iso8601")):
+    if hasattr(value, "to_iso8601") and callable(value.to_iso8601):
         return value.to_iso8601()
     if isinstance(value, datetime):
         return value.isoformat().replace("+00:00", "Z")
@@ -573,7 +575,7 @@ class _JSONEncoder:
     def _normalize_value(self, value: Any) -> Any:
         if isinstance(value, FormattedNumber):
             return value.raw_value()
-        if hasattr(value, "to_iso8601") and callable(getattr(value, "to_iso8601")):
+        if hasattr(value, "to_iso8601") and callable(value.to_iso8601):
             return value.to_iso8601()
         if isinstance(value, datetime):
             return value.isoformat().replace("+00:00", "Z")
@@ -653,10 +655,8 @@ def _markdown_reader(value: Any, options: dict[str, Any]) -> Any:
 
 def _parse_markdown_row(line: str) -> list[str]:
     row = line.strip()
-    if row.startswith("|"):
-        row = row[1:]
-    if row.endswith("|"):
-        row = row[:-1]
+    row = row.removeprefix("|")
+    row = row.removesuffix("|")
     cells: list[str] = []
     current: list[str] = []
     idx = 0

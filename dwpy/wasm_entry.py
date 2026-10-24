@@ -152,7 +152,7 @@ def _to_json_compatible(value: Any) -> Any:
             "base64": base64.b64encode(bytes(value)).decode("ascii"),
         }
 
-    if hasattr(value, "to_iso8601") and callable(getattr(value, "to_iso8601")):
+    if hasattr(value, "to_iso8601") and callable(value.to_iso8601):
         return value.to_iso8601()
 
     if isinstance(value, datetime):

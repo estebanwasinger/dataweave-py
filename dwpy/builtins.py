@@ -8,15 +8,15 @@ import random
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from datetime import date, datetime, timedelta, timezone
+from typing import Any
 
 from .formats import XMLNodeDict, XMLNodeList
 
 
 def _format_decimal(value: float) -> str:
     if math.isclose(value, round(value)):
-        return str(int(round(value)))
+        return str(round(value))
     rendered = f"{value:.12f}".rstrip("0").rstrip(".")
     return rendered if rendered != "-0" else "0"
 
@@ -158,10 +158,7 @@ def binary_diff(left: Any, right: Any) -> Any:
         return [item for item in left if item not in right_values]
     if isinstance(left, Mapping):
         result = dict(left)
-        if isinstance(right, Mapping):
-            for key in right.keys():
-                result.pop(key, None)
-        elif isinstance(right, list):
+        if isinstance(right, (Mapping, list)):
             for key in right:
                 result.pop(key, None)
         else:
@@ -202,7 +199,7 @@ def builtin_contains(items: Any, element: Any) -> bool:
             return False
         return str(element) in items
     if isinstance(items, Mapping):
-        return element in items.values() or element in items.keys()
+        return element in items.values() or element in items
     iterable = _coerce_iterable(items)
     return any(item == element for item in iterable)
 
@@ -228,7 +225,7 @@ def builtin_joinby(elements: Any, separator: Any) -> Any:
     return sep.join("" if el is None else str(el) for el in elements)
 
 
-def builtin_keys_of(obj: Any) -> list[Any]:
+def builtin_keys_of(obj: Any) -> list[Any] | None:
     if obj is None:
         return None
     if not isinstance(obj, Mapping):
@@ -236,7 +233,7 @@ def builtin_keys_of(obj: Any) -> list[Any]:
     return list(obj.keys())
 
 
-def builtin_values_of(obj: Any) -> list[Any]:
+def builtin_values_of(obj: Any) -> list[Any] | None:
     if obj is None:
         return None
     if not isinstance(obj, Mapping):
@@ -646,10 +643,8 @@ def builtin_substring(text: Any, from_index: Any, until_index: Any) -> Any:
     source = str(text)
     start = int(_coerce_number(from_index))
     end = int(_coerce_number(until_index))
-    if start < 0:
-        start = 0
-    if end < 0:
-        end = 0
+    start = max(start, 0)
+    end = max(end, 0)
     if start >= end or start >= len(source):
         return ""
     return source[start:end]
@@ -882,25 +877,6 @@ def builtin_is_odd(value: Any) -> bool:
 
 
 def builtin_is_leap_year(value: Any) -> bool:
-    try:
-        dt = _parse_datetime(value)
-    except ValueError:
-        return False
-    year = dt.year
-    return (year % 4 == 0 and year % 100 != 0) or (year % 400 == 0)
-
-
-def builtin_is_even(value: Any) -> bool:
-    number = int(_coerce_number(value))
-    return number % 2 == 0
-
-
-def builtin_is_odd(value: Any) -> bool:
-    number = int(_coerce_number(value))
-    return number % 2 != 0
-
-
-def builtin_is_leap_year(value: Any) -> bool:
     if value is None:
         return False
     if isinstance(value, str):
@@ -915,7 +891,7 @@ def builtin_is_leap_year(value: Any) -> bool:
     return (year % 4 == 0 and year % 100 != 0) or (year % 400 == 0)
 
 
-def builtin_distinct_by(items: Any, criteria: Callable[..., Any]) -> list[Any]:
+def builtin_distinct_by(items: Any, criteria: Callable[..., Any]) -> list[Any] | None:
     if items is None:
         return None
     iterable = list(_coerce_iterable(items))
@@ -932,7 +908,7 @@ def builtin_distinct_by(items: Any, criteria: Callable[..., Any]) -> list[Any]:
     return result
 
 
-def builtin_flatten(items: Any) -> list[Any]:
+def builtin_flatten(items: Any) -> list[Any] | None:
     if items is None:
         return None
     result: list[Any] = []
@@ -944,7 +920,7 @@ def builtin_flatten(items: Any) -> list[Any]:
     return result
 
 
-def builtin_flat_map(items: Any, mapper: Callable[..., Any]) -> list[Any]:
+def builtin_flat_map(items: Any, mapper: Callable[..., Any]) -> list[Any] | None:
     if items is None:
         return None
     result: list[Any] = []
@@ -1018,7 +994,7 @@ def builtin_min_by(items: Any, criteria: Callable[..., Any]) -> Any:
     return best_item
 
 
-def builtin_pluck(obj: Any, mapper: Callable[..., Any]) -> list[Any]:
+def builtin_pluck(obj: Any, mapper: Callable[..., Any]) -> list[Any] | None:
     if obj is None:
         return None
     if not isinstance(obj, Mapping):
@@ -1106,7 +1082,7 @@ def _log_with_level(level: int, prefix: str | None, value: Any = _LOG_SENTINEL) 
         actual_value = prefix
         actual_prefix = ""
     message = f"{actual_prefix} - {actual_value}" if actual_prefix else str(actual_value)
-    logging.log(level, message)
+    logging.getLogger(__name__).log(level, message)
     return actual_value
 
 
@@ -1477,7 +1453,7 @@ def builtin_name_set(obj: Any) -> list[str] | None:
         return None
     if not isinstance(obj, Mapping):
         raise TypeError("nameSet expects an object")
-    return [str(key) for key in obj.keys()]
+    return [str(key) for key in obj]
 
 
 def builtin_key_set(obj: Any) -> list[Any] | None:
@@ -1511,7 +1487,7 @@ def builtin_merge_with(source: Any, target: Any) -> Any:
     if not isinstance(source, Mapping) or not isinstance(target, Mapping):
         raise TypeError("mergeWith expects objects")
     result = dict(source)
-    for key in target.keys():
+    for key in target:
         result.pop(key, None)
     result.update(target)
     return result
@@ -1575,13 +1551,13 @@ def builtin_some_entry(obj: Any, condition: Callable[..., Any]) -> bool:
     return False
 
 
-def builtin_group_by(items: Any, criteria: Callable[..., Any]) -> Any:
+def builtin_group_by(items: Any, criteria: Callable[..., Any] | None) -> Any:
     if items is None:
         return None
     if isinstance(items, Mapping):
         result: dict[str, dict[Any, Any]] = {}
         for index, (key, value) in enumerate(items.items()):
-            group_key = _normalise_group_key(invoke_lambda(criteria, value, key, index)) if criteria else _normalise_group_key(key)
+            group_key = _normalise_group_key(invoke_lambda(criteria, value, key, index)) if criteria is not None else _normalise_group_key(key)
             bucket = result.setdefault(group_key, {})
             bucket[key] = value
         return result
