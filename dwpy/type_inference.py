@@ -2,48 +2,56 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from typing import Dict, List, Optional, Tuple, Any, Union, get_origin, get_args
+from typing import Any, Dict, List, Optional, Tuple, Union, get_args, get_origin
 
 from . import parser
-from .parser import (
-    ReferenceTypeSpec, ObjectTypeSpec, UnionTypeSpec as ParserUnionTypeSpec,
-    IntersectionTypeSpec as ParserIntersectionTypeSpec, FunctionTypeSpec as ParserFunctionTypeSpec,
-    LiteralTypeSpec as ParserLiteralTypeSpec, TypeSpec as ParserTypeSpec
-)
+from .parser import FunctionTypeSpec as ParserFunctionTypeSpec
+from .parser import IntersectionTypeSpec as ParserIntersectionTypeSpec
+from .parser import LiteralTypeSpec as ParserLiteralTypeSpec
+from .parser import ObjectTypeSpec, ReferenceTypeSpec
+from .parser import TypeSpec as ParserTypeSpec
+from .parser import UnionTypeSpec as ParserUnionTypeSpec
 from .typesystem import (
-    DWType,
+    ANY,
+    BINARY,
+    BOOLEAN,
+    DATE,
+    DATETIME,
+    LOCAL_DATETIME,
+    LOCAL_TIME,
+    NOTHING,
+    NULL,
+    NUMBER,
+    PERIOD,
+    STRING,
+    TEMPORAL_TYPES,
+    TIME,
+    TIMEZONE,
     AnyType,
-    StringType,
-    NumberType,
-    BooleanType,
-    NullType,
-    BinaryType,
-    TemporalType,
-    DATE, DATETIME, LOCAL_DATETIME, TIME, LOCAL_TIME, PERIOD, TIMEZONE, TEMPORAL_TYPES,
     ArrayType,
-    ObjectType,
+    BinaryType,
+    BooleanType,
+    DWType,
     FunctionType,
-    UnionType,
     IntersectionType,
     LiteralType,
     NothingType,
-    ANY,
-    STRING,
-    NUMBER,
-    BOOLEAN,
-    NULL,
-    BINARY,
-    NOTHING,
+    NullType,
+    NumberType,
+    ObjectType,
+    StringType,
+    TemporalType,
+    UnionType,
     array_type,
-    object_type,
-    union_types,
     intersection_types,
+    is_array,
+    is_boolean,
+    is_number,
+    is_string,
     merge_array_types,
     merge_object_types,
-    is_string,
-    is_number,
-    is_boolean,
-    is_array,
+    object_type,
+    union_types,
 )
 
 

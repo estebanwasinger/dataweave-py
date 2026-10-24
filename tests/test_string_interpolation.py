@@ -1,5 +1,6 @@
 """Tests for string interpolation feature."""
 import pytest
+
 from dwpy.runtime import DataWeaveRuntime
 
 

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
-from .formats import XMLNodeList, XMLNodeDict
+from .formats import XMLNodeDict, XMLNodeList
 
 
 def _format_decimal(value: float) -> str:

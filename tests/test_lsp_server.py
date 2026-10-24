@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 from lsprotocol import types
 
-from dwpy.lsp.engine import EngineCompletionItem
 from dwpy.lsp import server as lsp_server
+from dwpy.lsp.engine import EngineCompletionItem
 
 
 def test_uri_to_path_handles_file_uri() -> None:

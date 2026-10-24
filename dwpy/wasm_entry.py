@@ -10,7 +10,6 @@ from typing import Any
 from .lsp.engine import DataWeaveLanguageEngine
 from .runtime import DataWeaveRuntime
 
-
 _LANGUAGE_ENGINE = DataWeaveLanguageEngine()
 
 

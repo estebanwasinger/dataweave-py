@@ -4,7 +4,6 @@ import pytest
 
 from dwpy.runtime import DataWeaveRuntime
 
-
 SAMPLE_SCRIPT = r'''%dw 2.0
 output application/python
 ---

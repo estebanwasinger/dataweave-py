@@ -1,27 +1,34 @@
 from __future__ import annotations
 
-import logging
-import re
-import inspect
 import copy
-import os
-import json
-import math
-import uuid as uuid_lib
 import hashlib
 import hmac
-from datetime import date, datetime, time, timedelta, timezone
-from zoneinfo import ZoneInfo
-from decimal import Decimal, InvalidOperation, localcontext
+import inspect
+import json
+import logging
+import math
+import os
+import re
+import uuid as uuid_lib
 from dataclasses import dataclass, field
+from datetime import date, datetime, time, timedelta, timezone
+from decimal import Decimal, InvalidOperation, localcontext
 from importlib import metadata as importlib_metadata
 from pathlib import Path
+from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple
 from urllib.parse import urlparse
 from urllib.request import urlopen
-from typing import Any, Callable, Dict, List, Optional, Mapping, Set, Tuple
+from zoneinfo import ZoneInfo
 
 from . import builtins, parser
-from .formats import DWObject, FormatRegistry, FormatError, FormattedNumber, XMLNodeList, XMLNodeDict
+from .formats import (
+    DWObject,
+    FormatError,
+    FormatRegistry,
+    FormattedNumber,
+    XMLNodeDict,
+    XMLNodeList,
+)
 
 try:  # pragma: no cover - optional dependency guard
     import pandas as pd  # type: ignore

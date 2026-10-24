@@ -11,10 +11,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
-from dwpy.runtime import DataWeaveRuntime
 from jwt_support import RSA_PRIVATE_KEY, verify_rsa_token
 
+from dwpy.runtime import DataWeaveRuntime
 
 DOCS_ROOT = Path(
     os.environ.get(
