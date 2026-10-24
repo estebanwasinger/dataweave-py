@@ -78,6 +78,21 @@ def test_duplicate_json_input_round_trips_without_losing_entries(runtime):
     )
 
 
+@pytest.mark.parametrize("expression", ["payload.test", "[payload.test]"])
+@pytest.mark.parametrize("options", ["", "indent=2", "indent=4 sort_keys=true"])
+def test_parent_object_output_preserves_duplicate_fields(runtime, expression, options):
+    result = runtime.execute(
+        f"%dw 2.0\noutput application/json {options}\n---\n{expression}",
+        PAYLOAD, payload_format="application/json",
+    )
+    expected = '{"test2":{"array":1},"test2":{"array":2},"test2":{"array":3}}'
+    if expression.startswith("["):
+        expected = f"[{expected}]"
+    assert json.loads(result, object_pairs_hook=list) == json.loads(
+        expected, object_pairs_hook=list
+    )
+
+
 def test_preparsed_duplicate_json_object_survives_runtime_bridge(runtime):
     payload = FormatRegistry.read(PAYLOAD, "json", {})
     assert isinstance(payload["test"], DWObject)
