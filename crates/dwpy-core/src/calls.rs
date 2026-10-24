@@ -204,8 +204,35 @@ pub(crate) fn evaluate_function_call(
             let algorithm = evaluate_expression_scoped(argument_sources[1], payload, locals)?;
             hash_binary_with(&content, &algorithm)
         }
-        "log" | "logDebug" | "logInfo" | "logWarn" if arity == 1 => {
-            evaluate_expression_scoped(argument_sources[0], payload, locals)
+        "log" | "logDebug" | "logInfo" | "logWarn" | "logError" if arity == 1 || arity == 2 => {
+            let prefix = if arity == 2 {
+                let prefix = evaluate_expression_scoped(argument_sources[0], payload, locals)?;
+                Some(as_string(&prefix)?)
+            } else {
+                None
+            };
+            let value = evaluate_expression_scoped(argument_sources[arity - 1], payload, locals)?;
+            let level = match function_name {
+                "logDebug" => crate::LogLevel::Debug,
+                "logInfo" => crate::LogLevel::Info,
+                "logError" => crate::LogLevel::Error,
+                _ => crate::LogLevel::Warn,
+            };
+            crate::logging::emit(level, prefix, &value);
+            Ok(value)
+        }
+        "logWith" if arity == 3 => {
+            let level = evaluate_expression_scoped(argument_sources[0], payload, locals)?;
+            let prefix = evaluate_expression_scoped(argument_sources[1], payload, locals)?;
+            let value = evaluate_expression_scoped(argument_sources[2], payload, locals)?;
+            let level = match as_string(&level)?.to_lowercase().as_str() {
+                "debug" => crate::LogLevel::Debug,
+                "warn" | "warning" => crate::LogLevel::Warn,
+                "error" => crate::LogLevel::Error,
+                _ => crate::LogLevel::Info,
+            };
+            crate::logging::emit(level, Some(as_string(&prefix)?), &value);
+            Ok(value)
         }
         "years" | "months" | "days" | "hours" | "minutes" | "seconds" if arity == 1 => {
             let argument = evaluate_expression_scoped(argument_sources[0], payload, locals)?;
@@ -218,9 +245,6 @@ pub(crate) fn evaluate_function_call(
         "duration" if arity == 1 => {
             let argument = evaluate_expression_scoped(argument_sources[0], payload, locals)?;
             period_from_object(&argument, false)
-        }
-        "log" | "logDebug" | "logInfo" | "logWarn" if arity == 2 => {
-            evaluate_expression_scoped(argument_sources[1], payload, locals)
         }
         "between" if arity == 2 => {
             let end = evaluate_expression_scoped(argument_sources[0], payload, locals)?;

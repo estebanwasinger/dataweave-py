@@ -1,6 +1,9 @@
 #![cfg(target_arch = "wasm32")]
 
-use dwpy_wasm::{analyze_dataweave_request, run_dataweave_request, run_dataweave_smoke};
+use dwpy_wasm::{
+    analyze_dataweave_request, run_dataweave_request, run_dataweave_request_with_logs,
+    run_dataweave_smoke,
+};
 use serde_json::{json, Value};
 use wasm_bindgen::JsValue;
 use wasm_bindgen_test::wasm_bindgen_test;
@@ -17,6 +20,30 @@ fn analyze(request: Value) -> Value {
 
 fn error_message(error: JsValue) -> String {
     error.as_string().expect("WASM errors should be strings")
+}
+
+#[wasm_bindgen_test]
+fn log_capture_preserves_result_errors_and_execution_isolation() {
+    let run = |script: &str| -> Value {
+        serde_json::from_str(
+            &run_dataweave_request_with_logs(&json!({"script": script}).to_string()).unwrap(),
+        )
+        .unwrap()
+    };
+    let execution = run("%dw 2.0\noutput application/json\n---\n1 to 10 map log($)");
+    assert_eq!(execution["result"], json!("[1,2,3,4,5,6,7,8,9,10]"));
+    assert_eq!(execution["logs"].as_array().unwrap().len(), 10);
+    assert_eq!(
+        execution["logs"][0],
+        json!({"level":"warn", "prefix": null, "message":"1"})
+    );
+    let failed = run("[logInfo(\"before\", 1), fail(\"boom\")]");
+    assert!(failed["error"].as_str().unwrap().contains("boom"));
+    assert_eq!(failed["logs"][0]["message"], "before - 1");
+    assert_eq!(run("42")["logs"], json!([]));
+    let bounded = run("1 to 1005 map log($)");
+    assert_eq!(bounded["logs"].as_array().unwrap().len(), 1000);
+    assert_eq!(bounded["logs_truncated"], true);
 }
 
 #[wasm_bindgen_test]

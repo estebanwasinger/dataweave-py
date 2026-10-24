@@ -16,6 +16,7 @@ mod functions;
 mod json;
 mod jwt;
 mod literals;
+mod logging;
 mod markdown;
 mod matches;
 mod mime;
@@ -62,6 +63,7 @@ use json::json_output_options;
 use literals::{
     evaluate_string_literal_scoped, parse_call_args, parse_literal, parse_string_literal,
 };
+pub use logging::{LogEntry, LogLevel, Logger, Loggers};
 use markdown::read_simple_markdown_table;
 use matches::{evaluate_match_expression, parse_match_expression_source};
 use mime::{
@@ -186,11 +188,13 @@ const PROPERTIES_LOCAL: &str = "__dwpy_properties";
 /// `properties` is intentionally kept separate from the visible DataWeave
 /// locals. It is exposed through `p`, `Mule::p`, `prop`, and `props`, rather
 /// than as a `properties.foo` root value.
+/// `loggers` are host-only sinks, scoped to this execution and its writers.
 #[derive(Debug, Clone, Default)]
 pub struct ExecutionContext {
     pub vars: Value,
     pub attributes: Value,
     pub properties: BTreeMap<String, String>,
+    pub loggers: Loggers,
 }
 
 impl ExecutionContext {
@@ -232,7 +236,14 @@ impl ExecutionContext {
             vars,
             attributes,
             properties,
+            loggers: Loggers::default(),
         })
+    }
+
+    /// Route this execution's messages to a sink. May be called repeatedly.
+    pub fn with_logger(mut self, logger: impl Logger + 'static) -> Self {
+        self.loggers.push(logger);
+        self
     }
 
     fn into_locals(self) -> Map<String, Value> {
@@ -321,6 +332,7 @@ impl CompiledScript {
         context: ExecutionContext,
         options: &ExecutionOptions,
     ) -> Result<Value, DwError> {
+        let _logging = context.loggers.enter();
         self.execute_scoped(payload, context.into_locals(), options)
     }
 
@@ -342,6 +354,7 @@ impl CompiledScript {
         options: &ExecutionOptions,
         writer: &mut W,
     ) -> Result<(), DwError> {
+        let _logging = context.loggers.enter();
         let mut locals = context.into_locals();
         evaluate_header_declarations(&self.parsed.header, &payload, &mut locals)?;
 
@@ -1051,12 +1064,14 @@ fn execute_parsed_scoped(
             .filter(|directive| !directive.contains("with binary"))
         {
             let options = json_output_options(directive)?;
-            if options.indent.is_none() {
-                if let Ok(rendered) =
-                    render_json_compact_expression(parsed.body.trim(), payload, locals, options)
-                {
-                    return Ok(Value::String(rendered));
-                }
+            if options.indent.is_none() && output::supports_compact_expression(parsed.body.trim()) {
+                return render_json_compact_expression(
+                    parsed.body.trim(),
+                    payload,
+                    locals,
+                    options,
+                )
+                .map(Value::String);
             }
         }
     }

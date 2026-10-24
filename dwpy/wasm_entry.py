@@ -5,10 +5,11 @@ import math
 from collections.abc import Mapping
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, Iterable
 
 from .lsp.engine import DataWeaveLanguageEngine
 from .runtime import DataWeaveRuntime
+from .logging import Logger
 
 
 _LANGUAGE_ENGINE = DataWeaveLanguageEngine()
@@ -23,11 +24,12 @@ def run_dataweave(
     payload_format: str | None = None,
     payload_format_options: dict[str, Any] | None = None,
     render_output: bool = True,
+    loggers: Iterable[Logger] | None = None,
 ) -> Any:
     """
     Execute DataWeave and return JSON-serializable output for JS/WASM interop.
     """
-    runtime = DataWeaveRuntime()
+    runtime = DataWeaveRuntime(loggers=loggers)
     result = runtime.execute(
         script,
         payload,

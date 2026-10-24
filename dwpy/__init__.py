@@ -1,10 +1,12 @@
 from .runtime import DataWeaveRuntime
+from .logging import LogEntry
 from .type_inference import infer_script_type, infer_script_pydantic_model
 from .wasm_entry import run_dataweave
 from .lsp import DataWeaveLanguageEngine
 
 __all__ = [
     "DataWeaveRuntime",
+    "LogEntry",
     "DataWeaveLanguageEngine",
     "infer_script_type",
     "infer_script_pydantic_model",

@@ -109,7 +109,20 @@ pub(crate) fn infer_expression_type(
         return Ok(type_number());
     }
 
-    if let Some((function_name, _arguments)) = parse_call_args(source) {
+    if let Some((function_name, arguments)) = parse_call_args(source) {
+        if (matches!(
+            function_name,
+            "log" | "logDebug" | "logInfo" | "logWarn" | "logError"
+        ) && matches!(arguments.len(), 1 | 2))
+            || (function_name == "logWith" && arguments.len() == 3)
+        {
+            return infer_expression_type(
+                arguments[arguments.len() - 1],
+                payload_type,
+                vars_type,
+                attributes_type,
+            );
+        }
         if function_name == "JWT" || function_name.ends_with("::JWT") {
             return Ok(type_string());
         }

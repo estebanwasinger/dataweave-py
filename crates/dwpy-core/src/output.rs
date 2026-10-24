@@ -9,7 +9,8 @@ use crate::ndjson::render_ndjson_output;
 use crate::periods::special_string_value;
 use crate::selectors::unwrap_metadata_value;
 use crate::syntax::{
-    find_matching_delimiter, split_top_level, split_top_level_char, strip_wrapping_parens,
+    find_matching_delimiter, is_identifier, split_top_level, split_top_level_char,
+    split_top_level_keyword, strip_wrapping_parens,
 };
 use crate::xml::render_xml_output;
 use crate::yaml::render_yaml_output;
@@ -114,6 +115,45 @@ pub(crate) fn render_json_compact_expression(
     }
     let value = evaluate_expression_scoped(source, payload, locals)?;
     render_json_value(&value, options)
+}
+
+/// Decide whether the compact literal writer can handle the entire expression
+/// before evaluating any part of it. Falling back after evaluation would replay
+/// logs (and other effects) in the first fields/items of an otherwise valid script.
+pub(crate) fn supports_compact_expression(source: &str) -> bool {
+    let source = strip_wrapping_parens(source.trim());
+    if is_full_delimited(source, '{', '}') {
+        return split_top_level(&source[1..source.len() - 1], ',')
+            .into_iter()
+            .all(|entry| {
+                let entry = entry.trim();
+                if entry.is_empty() {
+                    return true;
+                }
+                let Some((key, value)) = split_top_level_char(entry, ':') else {
+                    return false;
+                };
+                let key = key.trim();
+                // Other keys (dynamic, namespaced, conditional, spreads) are
+                // handled by the normal object evaluator.
+                (is_identifier(key)
+                    || matches!(crate::literals::parse_string_literal(key), Ok(Some(_))))
+                    // The regular evaluator also accepts newline-separated
+                    // object entries without commas. A second top-level colon
+                    // means this comma-delimited writer cannot handle them.
+                    && split_top_level_char(value, ':').is_none()
+                    && supports_compact_expression(value.trim())
+            });
+    }
+    if is_full_delimited(source, '[', ']') {
+        return split_top_level(&source[1..source.len() - 1], ',')
+            .into_iter()
+            .all(|item| {
+                let item = item.trim();
+                split_top_level_keyword(item, "if").is_none() && supports_compact_expression(item)
+            });
+    }
+    true
 }
 
 fn render_json_object_literal(
