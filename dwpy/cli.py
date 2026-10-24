@@ -4,7 +4,6 @@ import argparse
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Optional
 
 from ._cli_shared import (
     infer_payload_format_from_path,

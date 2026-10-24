@@ -16,10 +16,10 @@ from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, InvalidOperation, localcontext
 from importlib import metadata as importlib_metadata
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, ClassVar
 from urllib.parse import urlparse
 from urllib.request import urlopen
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import builtins, parser
 from .formats import (
@@ -32,8 +32,8 @@ from .formats import (
 )
 
 try:  # pragma: no cover - optional dependency guard
-    import pandas as pd  # type: ignore
-except Exception:  # pragma: no cover
+    import pandas as pd
+except ImportError:  # pragma: no cover
     pd = None
 PANDAS_AVAILABLE = pd is not None
 
@@ -261,7 +261,7 @@ class DataWeaveRuntime:
         49, 68, 80, 180, 143, 237, 31, 26, 219, 153, 141, 51, 159, 17, 131, 20,
     )
 
-    _IMPLICIT_LAMBDA_ARGUMENTS: dict[str, tuple[int, ...]] = {
+    _IMPLICIT_LAMBDA_ARGUMENTS: ClassVar[dict[str, tuple[int, ...]]] = {
         "_infix_map": (1,),
         "_infix_filter": (1,),
         "_infix_flatMap": (1,),
@@ -331,11 +331,11 @@ class DataWeaveRuntime:
         if attributes is None:
             attributes = {}
         if not isinstance(attributes, Mapping):
-            raise ValueError("attributes must be a JSON object")
+            raise ValueError("attributes must be a JSON object")  # noqa: TRY004 - public validation contract
         effective_properties = dict(os.environ)
         for key, value in (properties or {}).items():
             if not isinstance(value, str):
-                raise ValueError(f"property '{key}' must be a string value")
+                raise ValueError(f"property '{key}' must be a string value")  # noqa: TRY004 - public validation contract
             effective_properties[str(key)] = value
         attributes = self._normalise_input_value(attributes)
         try:
@@ -391,7 +391,7 @@ class DataWeaveRuntime:
         return self._render_output(result, directive)
 
     def _normalise_input_value(self, value: Any) -> Any:
-        if PANDAS_AVAILABLE:
+        if pd is not None:
             if isinstance(value, pd.DataFrame):
                 records = value.to_dict(orient="records")
                 return [self._normalise_input_value(record) for record in records]
@@ -469,7 +469,7 @@ class DataWeaveRuntime:
             text_value = collapsed.get("#text")
             if text_value is not None:
                 non_meta_keys = [
-                    key for key in collapsed.keys() if key != "#text" and not key.startswith("@")
+                    key for key in collapsed if key != "#text" and not key.startswith("@")
                 ]
                 if not non_meta_keys:
                     return text_value
@@ -546,6 +546,8 @@ class DataWeaveRuntime:
     def _matches_type_annotation(self, value: Any, type_spec: parser.TypeSpec | None) -> bool:
         if type_spec is None:
             return True
+        if not isinstance(type_spec, parser.ReferenceTypeSpec):
+            return False
         type_name = (type_spec.name or "").lower()
         if type_name in ("any", "anytype"):
             return True
@@ -606,7 +608,7 @@ class DataWeaveRuntime:
             return "".join(result_parts)
         if isinstance(expr, parser.NumberLiteral):
             # Prefer int when possible for friendlier outputs.
-            return int(expr.value) if expr.value.is_integer() else expr.value
+            return int(expr.value) if isinstance(expr.value, int) or expr.value.is_integer() else expr.value
         if isinstance(expr, parser.BooleanLiteral):
             return expr.value
         if isinstance(expr, parser.NullLiteral):
@@ -842,7 +844,7 @@ class DataWeaveRuntime:
             raise TypeError(f"{function_name}() expects one property name")
         property_name = arguments[0]
         if not isinstance(property_name, str):
-            raise ValueError("property name passed to p()/prop() must be a string")
+            raise ValueError("property name passed to p()/prop() must be a string")  # noqa: TRY004 - public validation contract
         return ctx.properties.get(property_name)
 
     def _evaluate_update_expression(
@@ -1179,9 +1181,7 @@ class DataWeaveRuntime:
             base_date = value if isinstance(value, date) and not isinstance(value, datetime) else value.date()
             return base_date.timetuple().tm_yday
         if attribute == "offsetSeconds":
-            if isinstance(value, datetime):
-                offset = value.utcoffset()
-            elif isinstance(value, time):
+            if isinstance(value, (datetime, time)):
                 offset = value.utcoffset()
             else:
                 offset = None
@@ -1477,7 +1477,7 @@ class DataWeaveRuntime:
     @staticmethod
     def _selector_display_name(expr: parser.Expression) -> str:
         if isinstance(expr, parser.PropertyAccess) and expr.attribute is not None:
-            return expr.attribute[1:] if expr.attribute.startswith("@") else expr.attribute
+            return expr.attribute.removeprefix("@")
         if isinstance(expr, parser.DynamicSelector):
             return "<dynamic selector>"
         if isinstance(expr, parser.IndexAccess):
@@ -1815,7 +1815,7 @@ class DataWeaveRuntime:
                 return timezone(sign * delta)
             try:
                 return ZoneInfo(token)
-            except Exception:
+            except (ValueError, ZoneInfoNotFoundError):
                 return timezone.utc
         return timezone.utc
 
@@ -1988,7 +1988,7 @@ class DataWeaveRuntime:
                     "parameters": parameters,
                 },
             }
-        except Exception as err:
+        except ValueError as err:
             return {"success": False, "error": {"message": str(err)}}
 
     def _func_mime_to_string(self, mime_type: Any) -> str:
@@ -2030,14 +2030,14 @@ class DataWeaveRuntime:
         raise DataWeaveEvaluationError(str(message))
 
     @staticmethod
-    def _func_wait(value: Any, timeout: Any) -> Any:  # noqa: ARG004
+    def _func_wait(value: Any, timeout: Any) -> Any:
         return value
 
     def _func_try(self, delegate: Callable[..., Any]) -> dict[str, Any]:
         try:
             result = builtins.invoke_lambda(delegate)
             return {"success": True, "result": result}
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - DataWeave try converts arbitrary delegate errors to values
             return {
                 "success": False,
                 "error": {
@@ -2047,13 +2047,13 @@ class DataWeaveRuntime:
             }
 
     @staticmethod
-    def _func_location(value: Any) -> dict[str, Any]:  # noqa: ARG004
+    def _func_location(value: Any) -> dict[str, Any]:
         return {"locationString": "Unknown location", "text": ""}
 
     def _func_version(self) -> str:
         try:
             return importlib_metadata.version("dataweave-py")
-        except Exception:
+        except importlib_metadata.PackageNotFoundError:
             return "0.0.0"
 
     def _func_data_format_descriptors(self) -> list[dict[str, Any]]:
@@ -2211,7 +2211,7 @@ class DataWeaveRuntime:
         return str(uuid_lib.uuid4())
 
     @staticmethod
-    def _func_evaluate_compatibility_flag(flag: Any) -> bool:  # noqa: ARG004
+    def _func_evaluate_compatibility_flag(flag: Any) -> bool:
         return False
 
     def _func_hash_with(self, content: Any, algorithm: Any = "SHA-1") -> bytes:
@@ -2373,7 +2373,7 @@ class DataWeaveRuntime:
         fs: Any,
         reader_inputs: Any = None,
         input_values: Any = None,
-        configuration: Any = None,  # noqa: ARG002
+        configuration: Any = None,
         *,
         execution_context: EvaluationContext | None = None,
     ) -> dict[str, Any]:
@@ -2401,7 +2401,7 @@ class DataWeaveRuntime:
         fs: Any,
         reader_inputs: Any = None,
         input_values: Any = None,
-        configuration: Any = None,  # noqa: ARG002
+        configuration: Any = None,
         *,
         execution_context: EvaluationContext | None = None,
     ) -> dict[str, Any]:
@@ -2460,7 +2460,7 @@ class DataWeaveRuntime:
                 render_output=False,
             )
             return {"success": True, "result": result}
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - run returns script failures as structured values
             return {
                 "success": False,
                 "error": {
@@ -2503,7 +2503,7 @@ class DataWeaveRuntime:
                     return candidate.read_bytes()
             raise FileNotFoundError(f"Classpath resource not found: {resource}")
         if parsed.scheme in {"http", "https"}:
-            with urlopen(resource) as response:  # noqa: S310
+            with urlopen(resource) as response:
                 return response.read()
         if parsed.scheme == "file":
             return Path(parsed.path).read_bytes()
@@ -2567,7 +2567,7 @@ class DataWeaveRuntime:
             left_num = float(left)
             right_num = float(right)
             result = left_num + right_num
-            return int(result) if result.is_integer() else result
+            return int(result) if isinstance(result, float) and result.is_integer() else result
 
         if isinstance(left, list):
             result_list = list(left)
@@ -2605,7 +2605,7 @@ class DataWeaveRuntime:
             left_num = float(left)
             right_num = float(right)
             result = left_num - right_num
-            return int(result) if result.is_integer() else result
+            return int(result) if isinstance(result, float) and result.is_integer() else result
 
         if isinstance(left, (datetime, date, time)) and self._is_period_value(right):
             return self._add_temporal_and_period(left, self._negate_period_value(right))
@@ -2789,11 +2789,14 @@ class DataWeaveRuntime:
         has_default, accumulator = self._reduce_default_accumulator(function)
         if not iterable:
             return accumulator if has_default else None
-        if not has_default and self._is_implicit_integer_sum_reducer(function):
-            if all(type(item) is int for item in iterable):
-                absolute_sum = sum(map(abs, iterable))
-                if absolute_sum <= 2**53:
-                    return sum(iterable)
+        if (
+            not has_default
+            and self._is_implicit_integer_sum_reducer(function)
+            and all(type(item) is int for item in iterable)
+        ):
+            absolute_sum = sum(map(abs, iterable))
+            if absolute_sum <= 2**53:
+                return sum(iterable)
         start_index = 0
         if not has_default:
             accumulator = iterable[0]
@@ -3086,7 +3089,7 @@ class DataWeaveRuntime:
 
     @staticmethod
     def _transform_module_source(source: str) -> str | None:
-        cleaned = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
+        cleaned = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
         cleaned = re.sub(r"//.*", "", cleaned)
         cleaned = re.sub(r"(?m)^\s*@.*$", "", cleaned)
         pattern = re.compile(
@@ -3357,7 +3360,7 @@ class DataWeaveRuntime:
             return all(self._evaluate_type_check(value, option, ctx) for option in type_spec.options)
         if not isinstance(type_spec, parser.ReferenceTypeSpec):
             return False
-        for definition in ctx.header.types:
+        for definition in ctx.header.types if ctx.header is not None else ():
             if definition.name == type_spec.name:
                 return self._evaluate_type_check(value, definition.type, ctx)
         type_name = type_spec.name.lower()
@@ -3390,6 +3393,8 @@ class DataWeaveRuntime:
         options: Any,
         ctx: EvaluationContext,
     ) -> Any:
+        if not isinstance(type_spec, parser.ReferenceTypeSpec):
+            return value
         target_name = (type_spec.name or "Any").strip()
         normalised = target_name.lower()
         if normalised == "null":
