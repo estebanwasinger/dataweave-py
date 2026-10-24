@@ -25,8 +25,8 @@ def python_type_from_dw_type(
     dw_type: DWType,
     *,
     model_name: str = "DataWeaveModel",
-    registry: Optional[Dict[DWType, Type[BaseModel]]] = None,
-) -> Type[Any]:
+    registry: dict[DWType, type[BaseModel]] | None = None,
+) -> type[Any]:
     registry = registry or {}
     return _build_python_type(dw_type, model_name, registry)
 
@@ -35,7 +35,7 @@ def pydantic_model_from_script(
     script_source: str,
     *,
     model_name: str = "DataWeaveOutput",
-) -> Type[Any]:
+) -> type[Any]:
     inferred = infer_script_type(script_source)
     return python_type_from_dw_type(inferred, model_name=model_name)
 
@@ -43,8 +43,8 @@ def pydantic_model_from_script(
 def _build_python_type(
     dw_type: DWType,
     model_name: str,
-    registry: Dict[DWType, Type[BaseModel]],
-) -> Type[Any]:
+    registry: dict[DWType, type[BaseModel]],
+) -> type[Any]:
     if isinstance(dw_type, AnyType):
         return Any
     if isinstance(dw_type, StringType):
@@ -59,11 +59,11 @@ def _build_python_type(
         return bytes
     if isinstance(dw_type, ArrayType):
         item_type = _build_python_type(dw_type.element, f"{model_name}Item", registry)
-        return List[item_type]  # type: ignore[index]
+        return list[item_type]  # type: ignore[index]
     if isinstance(dw_type, ObjectType):
         if dw_type in registry:
             return registry[dw_type]
-        fields: Dict[str, Tuple[Type[Any], Any]] = {}
+        fields: dict[str, tuple[type[Any], Any]] = {}
         for key, value_type in dw_type.field_dict().items():
             field_annotation = _build_python_type(
                 value_type, f"{model_name}_{key.capitalize()}", registry
@@ -95,7 +95,7 @@ def _build_python_type(
                 return type(None)
             if len(non_none) == 1:
                 return Optional[non_none[0]]  # type: ignore[index]
-            return Optional[Union[non_none]]  # type: ignore[index]
+            return Optional[non_none]  # type: ignore[index]
         if len(annotations) == 1:
             return annotations[0]
         return Union[annotations]  # type: ignore[index]

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class DWType:
@@ -84,11 +85,11 @@ class ArrayType(DWType):
 
 @dataclass(frozen=True)
 class ObjectType(DWType):
-    fields: Tuple[Tuple[str, DWType, bool, bool], ...]
+    fields: tuple[tuple[str, DWType, bool, bool], ...]
     is_open: bool = True
 
     def describe(self) -> str:
-        body_parts: List[str] = []
+        body_parts: list[str] = []
         for name, type_, is_optional, is_repeatable in self.fields:
             modifier = "?" if is_optional else ("*" if is_repeatable else "")
             body_parts.append(f"{name}{modifier}: {type_.describe()}")
@@ -98,10 +99,10 @@ class ObjectType(DWType):
         parts = [part for part in (body, suffix) if part]
         return "{ " + ", ".join(parts) + " }"
 
-    def field_dict(self) -> Dict[str, Tuple[DWType, bool, bool]]:
+    def field_dict(self) -> dict[str, tuple[DWType, bool, bool]]:
         return {name: (type_, is_optional, is_repeatable) for name, type_, is_optional, is_repeatable in self.fields}
 
-    def get(self, name: str) -> Optional[Tuple[DWType, bool, bool]]:
+    def get(self, name: str) -> tuple[DWType, bool, bool] | None:
         for field_name, field_type, is_optional, is_repeatable in self.fields:
             if field_name == name:
                 return (field_type, is_optional, is_repeatable)
@@ -115,7 +116,7 @@ class ObjectType(DWType):
 
 @dataclass(frozen=True)
 class FunctionType(DWType):
-    parameter_types: List[DWType]
+    parameter_types: list[DWType]
     return_type: DWType
 
     def describe(self) -> str:
@@ -125,7 +126,7 @@ class FunctionType(DWType):
 
 @dataclass(frozen=True)
 class UnionType(DWType):
-    options: Tuple[DWType, ...]
+    options: tuple[DWType, ...]
 
     def describe(self) -> str:
         return " | ".join(sorted({opt.describe() for opt in self.options}))
@@ -133,7 +134,7 @@ class UnionType(DWType):
 
 @dataclass(frozen=True)
 class IntersectionType(DWType):
-    options: Tuple[DWType, ...]
+    options: tuple[DWType, ...]
 
     def describe(self) -> str:
         return " & ".join(sorted({opt.describe() for opt in self.options}))
@@ -158,9 +159,9 @@ TEMPORAL_TYPES = {value.name: value for value in (DATE, DATETIME, LOCAL_DATETIME
 
 
 def object_type(
-    fields_map: Dict[str, Any],
+    fields_map: dict[str, Any],
     is_open_flag: bool = True,
-    open: Optional[bool] = None
+    open: bool | None = None
 ) -> ObjectType:
     """
     Build an ObjectType.
@@ -168,7 +169,7 @@ def object_type(
     The values in `fields_map` can be either a DWType (shorthand, treated as required/non-repeatable)
     or a tuple of (DWType, is_optional, is_repeatable).
     """
-    normalised_items: List[Tuple[str, DWType, bool, bool]] = []
+    normalised_items: list[tuple[str, DWType, bool, bool]] = []
     for name, value in fields_map.items():
         if isinstance(value, tuple) and len(value) == 3:
             type_, is_optional, is_repeatable = value
@@ -261,7 +262,7 @@ def merge_array_types(left: ArrayType, right: ArrayType) -> ArrayType:
 
 
 def merge_object_types(left: ObjectType, right: ObjectType) -> ObjectType:
-    merged_fields: Dict[str, Tuple[DWType, bool, bool]] = {}
+    merged_fields: dict[str, tuple[DWType, bool, bool]] = {}
 
     # Collect fields from left
     for key, (l_type, l_optional, l_repeatable) in left.field_dict().items():

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, List, Optional, Tuple
 
 
 class ParseError(ValueError):
-    def __init__(self, message: str, line: Optional[int] = None, column: Optional[int] = None):
+    def __init__(self, message: str, line: int | None = None, column: int | None = None):
         super().__init__(message)
         self.line = line
         self.column = column
@@ -15,7 +16,7 @@ class ParseError(ValueError):
 @dataclass
 class VarDeclaration:
     name: str
-    expression: "Expression"
+    expression: Expression
 
 
 @dataclass
@@ -26,25 +27,25 @@ class ImportDirective:
 @dataclass
 class FunctionDeclaration:
     name: str
-    parameters: List["Parameter"]
-    body: "Expression"
-    return_type: Optional["TypeSpec"] = None
+    parameters: list[Parameter]
+    body: Expression
+    return_type: TypeSpec | None = None
 
 
 @dataclass
 class TypeDefinition:
     name: str
-    type: "TypeSpec"
+    type: TypeSpec
 
 
 @dataclass
 class Header:
     version: str
-    output: Optional[str]
-    imports: List[ImportDirective]
-    variables: List[VarDeclaration]
-    functions: List[FunctionDeclaration]
-    types: List[TypeDefinition]
+    output: str | None
+    imports: list[ImportDirective]
+    variables: list[VarDeclaration]
+    functions: list[FunctionDeclaration]
+    types: list[TypeDefinition]
 
 
 
@@ -52,7 +53,7 @@ class Header:
 @dataclass
 class Script:
     header: Header
-    body: "Expression"
+    body: Expression
 
 
 class Expression:
@@ -66,28 +67,28 @@ class TypeSpec:
 @dataclass
 class ReferenceTypeSpec(TypeSpec):
     name: str
-    generics: List["TypeSpec"]
+    generics: list[TypeSpec]
 
 
 @dataclass
 class ObjectTypeSpec(TypeSpec):
-    fields: List[Tuple[str, TypeSpec, bool, bool]] = field(default_factory=list)
+    fields: list[tuple[str, TypeSpec, bool, bool]] = field(default_factory=list)
     is_open: bool = True
 
 
 @dataclass
 class UnionTypeSpec(TypeSpec):
-    options: List[TypeSpec]
+    options: list[TypeSpec]
 
 
 @dataclass
 class IntersectionTypeSpec(TypeSpec):
-    options: List[TypeSpec]
+    options: list[TypeSpec]
 
 
 @dataclass
 class FunctionTypeSpec(TypeSpec):
-    parameters: List["TypeSpec"]
+    parameters: list[TypeSpec]
     return_type: TypeSpec
 
 
@@ -100,32 +101,32 @@ class LiteralTypeSpec(TypeSpec):
 @dataclass
 class Parameter:
     name: str
-    default: Optional["Expression"] = None
-    type_annotation: Optional["TypeSpec"] = None
+    default: Expression | None = None
+    type_annotation: TypeSpec | None = None
 
 
 @dataclass
 class TypeCoercion(Expression):
-    expression: "Expression"
+    expression: Expression
     target: TypeSpec
-    options: Optional["Expression"]
+    options: Expression | None
 
 
 @dataclass
 class TypeCheck(Expression):
-    expression: "Expression"
+    expression: Expression
     target: TypeSpec
 
 
 @dataclass
 class LambdaExpression(Expression):
-    parameters: List[Parameter]
-    body: "Expression"
+    parameters: list[Parameter]
+    body: Expression
 
 
 @dataclass
 class ObjectLiteral(Expression):
-    fields: List[Tuple[Optional[Expression], Expression]]
+    fields: list[tuple[Expression | None, Expression]]
 
 
 @dataclass
@@ -154,7 +155,7 @@ class TemporalLiteral(Expression):
 
 @dataclass
 class InterpolatedString(Expression):
-    parts: List[Expression]  # Mix of StringLiteral and other expressions
+    parts: list[Expression]  # Mix of StringLiteral and other expressions
 
 
 @dataclass
@@ -174,13 +175,13 @@ class NullLiteral(Expression):
 
 @dataclass
 class ListLiteral(Expression):
-    elements: List[Expression]
+    elements: list[Expression]
 
 
 @dataclass
 class PropertyAccess(Expression):
     value: Expression
-    attribute: Optional[str]
+    attribute: str | None
     null_safe: bool = False
     recursive: bool = False
     multi_value: bool = False
@@ -215,7 +216,7 @@ class SelectorModifier(Expression):
 @dataclass
 class FunctionCall(Expression):
     function: Expression
-    arguments: List[Expression]
+    arguments: list[Expression]
 
 
 @dataclass
@@ -234,45 +235,45 @@ class IfExpression(Expression):
 @dataclass
 class DoExpression(Expression):
     header: Header
-    body: "Expression"
+    body: Expression
 
 
 @dataclass
 class MatchPattern:
-    binding: Optional[str] = None
-    matcher: Optional[Expression] = None
-    guard: Optional[Expression] = None
+    binding: str | None = None
+    matcher: Expression | None = None
+    guard: Expression | None = None
 
 
 @dataclass
 class MatchCase:
-    pattern: Optional[MatchPattern]
+    pattern: MatchPattern | None
     expression: Expression
 
 
 @dataclass
 class MatchExpression(Expression):
     value: Expression
-    cases: List[MatchCase]
+    cases: list[MatchCase]
 
 
 @dataclass
 class UpdateCase:
     path_source: str
     expression: Expression
-    binding: Optional[str] = None
-    guard: Optional[Expression] = None
+    binding: str | None = None
+    guard: Expression | None = None
 
 
 @dataclass
 class UpdateExpression(Expression):
     value: Expression
-    cases: Optional[List[UpdateCase]] = None
-    selector: Optional[Expression] = None
-    replacement: Optional[Expression] = None
+    cases: list[UpdateCase] | None = None
+    selector: Expression | None = None
+    replacement: Expression | None = None
 
 
-Token = Tuple[str, Optional[str], int, int, int, int]
+Token = tuple[str, str | None, int, int, int, int]
 
 
 TOKEN_REGEX = re.compile(
@@ -327,8 +328,8 @@ class Tokenizer:
         self.line = 1
         self.column = 1
 
-    def tokens(self) -> List[Token]:
-        tokens: List[Token] = []
+    def tokens(self) -> list[Token]:
+        tokens: list[Token] = []
         length = len(self.source)
         while self.pos < length:
             if self.source.startswith("//", self.pos):
@@ -573,9 +574,9 @@ class Parser:
             replacement=replacement,
         )
 
-    def _parse_update_cases(self) -> List[UpdateCase]:
+    def _parse_update_cases(self) -> list[UpdateCase]:
         self.expect("LBRACE")
-        cases: List[UpdateCase] = []
+        cases: list[UpdateCase] = []
         while not self.match("RBRACE"):
             token = self.current()
             if token[0] != "IDENT" or token[1] != "case":
@@ -586,7 +587,7 @@ class Parser:
                 )
             self.advance()
 
-            binding: Optional[str] = None
+            binding: str | None = None
             if self.current()[0] == "IDENT" and self.peek(1)[0] == "IDENT" and self.peek(1)[1] == "at":
                 binding = self.current()[1] or ""
                 self.advance()
@@ -622,7 +623,7 @@ class Parser:
             path_end = self.tokens[self.index - 1]
             path_source = self.source[path_start[4] : path_end[5]].strip()
 
-            guard: Optional[Expression] = None
+            guard: Expression | None = None
             if self.current()[0] == "IDENT" and self.current()[1] == "if":
                 self.advance()
                 guard = self.parse_expression()
@@ -758,7 +759,7 @@ class Parser:
             if token_type == "IDENT" and token_value == "as":
                 self.advance()
                 target_type = self._parse_type_spec(consume_metadata=False)
-                options_expr: Optional[Expression] = None
+                options_expr: Expression | None = None
                 if self.current()[0] == "LBRACE":
                     options_expr = self.parse_object()
                 expr = TypeCoercion(expression=expr, target=target_type, options=options_expr)
@@ -932,7 +933,7 @@ class Parser:
             if ttype == "IDENT":
                 self.advance()
                 name = tvalue or ""
-                generics: List[TypeSpec] = []
+                generics: list[TypeSpec] = []
                 if self.current()[0] == "LT":
                     self.advance()
                     while True:
@@ -980,7 +981,7 @@ class Parser:
 
     def parse_call(self, function_expr: Expression) -> Expression:
         self.expect("LPAREN")
-        args: List[Expression] = []
+        args: list[Expression] = []
         if not self.match("RPAREN"):
             while True:
                 args.append(self.parse_expression())
@@ -991,7 +992,7 @@ class Parser:
 
     def parse_match_expression(self, value_expr: Expression) -> Expression:
         self.expect("LBRACE")
-        cases: List[MatchCase] = []
+        cases: list[MatchCase] = []
         while not self.match("RBRACE"):
             token = self.current()
             token_type = token[0]
@@ -1024,9 +1025,9 @@ class Parser:
         token = self.current()
         token_type = token[0]
         token_value = token[1]
-        binding: Optional[str] = None
-        matcher: Optional[Expression] = None
-        guard: Optional[Expression] = None
+        binding: str | None = None
+        matcher: Expression | None = None
+        guard: Expression | None = None
         if token_type == "IDENT" and token_value == "var":
             self.advance()
             name_token = self.expect("IDENT")
@@ -1040,7 +1041,7 @@ class Parser:
 
         return MatchPattern(binding=binding, matcher=matcher, guard=guard)
 
-    def _maybe_parse_lambda_expression(self) -> Optional[Expression]:
+    def _maybe_parse_lambda_expression(self) -> Expression | None:
         saved_index = self.index
         try:
             return self._parse_lambda_expression_simple()
@@ -1054,11 +1055,11 @@ class Parser:
 
     def _parse_lambda_expression_simple(self) -> Expression:
         self.expect("LPAREN")
-        parameters: List[Parameter] = []
+        parameters: list[Parameter] = []
         if not self.match("RPAREN"):
             while True:
                 name_token = self.expect("IDENT")
-                default_expr: Optional[Expression] = None
+                default_expr: Expression | None = None
                 if self.match("EQUAL"):
                     default_expr = self.parse_expression()
                 parameters.append(Parameter(name=name_token[1] or "", default=default_expr))  # type: ignore[index]
@@ -1078,14 +1079,14 @@ class Parser:
         self.expect("RPAREN")
         return LambdaExpression(parameters=params, body=body)
 
-    def _parse_parameter_list(self) -> List[Parameter]:
+    def _parse_parameter_list(self) -> list[Parameter]:
         self.expect("LPAREN")
-        parameters: List[Parameter] = []
+        parameters: list[Parameter] = []
         if self.match("RPAREN"):
             return parameters
         while True:
             name_token = self.expect("IDENT")
-            default_expr: Optional[Expression] = None
+            default_expr: Expression | None = None
             if self.match("EQUAL"):
                 default_expr = self.parse_expression()
             parameters.append(Parameter(name=name_token[1] or "", default=default_expr))  # type: ignore[index]
@@ -1210,7 +1211,7 @@ class Parser:
 
         depth = 1
         scan_index = self.index
-        closing_token: Optional[Token] = None
+        closing_token: Token | None = None
         while scan_index < len(self.tokens):
             token = self.tokens[scan_index]
             kind = token[0]
@@ -1237,7 +1238,7 @@ class Parser:
 
     def parse_object(self) -> Expression:
         self.expect("LBRACE")
-        fields: List[Tuple[Optional[Expression], Expression]] = []
+        fields: list[tuple[Expression | None, Expression]] = []
         if not self.match("RBRACE"):
             while True:
                 key_token = self.current()
@@ -1276,7 +1277,7 @@ class Parser:
 
     def parse_list(self) -> Expression:
         self.expect("LBRACKET")
-        elements: List[Expression] = []
+        elements: list[Expression] = []
         if not self.match("RBRACKET"):
             while True:
                 elements.append(self.parse_expression())
@@ -1287,7 +1288,7 @@ class Parser:
 
     def _parse_interpolated_string(self, content: str) -> Expression:
         """Parse a string with $(expression) interpolations."""
-        parts: List[Expression] = []
+        parts: list[Expression] = []
         pos = 0
         
         while pos < len(content):
@@ -1365,18 +1366,18 @@ def parse_script(source: str) -> Script:
     return Script(header=header, body=body_expr)
 
 
-def _find_top_level_script_delimiter_line(source: str) -> Optional[int]:
+def _find_top_level_script_delimiter_line(source: str) -> int | None:
     delimiter_span = _find_top_level_script_delimiter_span(source)
     if delimiter_span is None:
         return None
     return source[: delimiter_span[0]].count("\n")
 
 
-def _find_top_level_script_delimiter_span(source: str) -> Optional[Tuple[int, int]]:
+def _find_top_level_script_delimiter_span(source: str) -> tuple[int, int] | None:
     curly = 0
     square = 0
     paren = 0
-    quote: Optional[str] = None
+    quote: str | None = None
     escaped = False
     in_block_comment = False
 
@@ -1463,21 +1464,21 @@ def parse_expression_from_source(source: str) -> Expression:
 
 
 def _parse_header(header_source: str) -> Header:
-    version: Optional[str] = None
-    output: Optional[str] = None
-    imports: List[ImportDirective] = []
-    variables: List[VarDeclaration] = []
-    functions: List[FunctionDeclaration] = []
-    types: List[TypeDefinition] = []
+    version: str | None = None
+    output: str | None = None
+    imports: list[ImportDirective] = []
+    variables: list[VarDeclaration] = []
+    functions: list[FunctionDeclaration] = []
+    types: list[TypeDefinition] = []
 
     lines = header_source.splitlines()
     num_lines = len(lines)
 
-    def _compute_delimiter_balance(text: str) -> Tuple[int, int, int]:
+    def _compute_delimiter_balance(text: str) -> tuple[int, int, int]:
         curly = 0
         square = 0
         paren = 0
-        quote: Optional[str] = None
+        quote: str | None = None
         escaped = False
         in_block_comment = False
         i = 0
@@ -1556,7 +1557,7 @@ def _parse_header(header_source: str) -> Header:
             or stripped.startswith("fun ")
         )
 
-    def _next_significant_line_index(start_idx: int) -> Optional[int]:
+    def _next_significant_line_index(start_idx: int) -> int | None:
         current_idx = start_idx
         while current_idx < num_lines:
             stripped = lines[current_idx].strip()
@@ -1598,7 +1599,7 @@ def _parse_header(header_source: str) -> Header:
             return "invalid"
         return "complete"
 
-    def _read_multiline_expression(start_line_idx: int, initial_expression: str) -> Tuple[str, int]:
+    def _read_multiline_expression(start_line_idx: int, initial_expression: str) -> tuple[str, int]:
         expression = initial_expression
         total_lines_consumed = 1
         current_idx = start_line_idx + 1
@@ -1613,9 +1614,9 @@ def _parse_header(header_source: str) -> Header:
     def _read_header_expression_block(
         start_line_idx: int,
         initial_expression: str,
-    ) -> Tuple[str, int]:
+    ) -> tuple[str, int]:
         declaration_indent = _line_indent(lines[start_line_idx])
-        expression_parts: List[str] = [initial_expression] if initial_expression else []
+        expression_parts: list[str] = [initial_expression] if initial_expression else []
         current_idx = start_line_idx + 1
 
         while True:
@@ -1658,7 +1659,7 @@ def _parse_header(header_source: str) -> Header:
         expression_source = "\n".join(expression_parts).strip()
         return expression_source, current_idx - start_line_idx
 
-    def _read_multiline_definition(start_line_idx: int, start_col: int, start_char: str, end_char: str) -> Tuple[str, int]:
+    def _read_multiline_definition(start_line_idx: int, start_col: int, start_char: str, end_char: str) -> tuple[str, int]:
         definition_parts = [lines[start_line_idx][start_col:]]
         balance = definition_parts[0].count(start_char) - definition_parts[0].count(end_char)
         total_lines_consumed = 1
@@ -1839,19 +1840,19 @@ def _parse_do_block_content(content_source: str) -> DoExpression:
     return DoExpression(header=script.header, body=script.body)
 
 
-def _parse_header_function_parameters(params_source: str) -> List[Parameter]:
+def _parse_header_function_parameters(params_source: str) -> list[Parameter]:
     params_source = params_source.strip()
     if not params_source:
         return []
     parts = _split_top_level(params_source, ",")
-    parameters: List[Parameter] = []
+    parameters: list[Parameter] = []
     for part in parts:
         segment = part.strip()
         if not segment:
             continue
         name_section = segment
-        default_expr: Optional[Expression] = None
-        type_annotation: Optional[TypeSpec] = None
+        default_expr: Expression | None = None
+        type_annotation: TypeSpec | None = None
         equals_split = _split_top_level(segment, "=", maxsplit=1)
         if len(equals_split) == 2:
             name_section = equals_split[0].strip()
@@ -1872,11 +1873,11 @@ def _parse_header_function_parameters(params_source: str) -> List[Parameter]:
     return parameters
 
 
-def _split_top_level(source: str, delimiter: str, *, maxsplit: int = -1) -> List[str]:
+def _split_top_level(source: str, delimiter: str, *, maxsplit: int = -1) -> list[str]:
     if delimiter not in source:
         return [source]
-    result: List[str] = []
-    current: List[str] = []
+    result: list[str] = []
+    current: list[str] = []
     depth = 0
     splits_done = 0
     for char in source:
@@ -1925,18 +1926,18 @@ class _TypeSpecParser:
     def at_end(self) -> bool:
         return self.index >= len(self.source)
 
-    def current(self) -> Optional[str]:
+    def current(self) -> str | None:
         if self.at_end():
             return None
         return self.source[self.index]
 
-    def peek(self, offset: int) -> Optional[str]:
+    def peek(self, offset: int) -> str | None:
         idx = self.index + offset
         if idx >= len(self.source):
             return None
         return self.source[idx]
 
-    def advance(self) -> Optional[str]:
+    def advance(self) -> str | None:
         if self.at_end():
             return None
         char = self.source[self.index]
@@ -2001,7 +2002,7 @@ class _TypeSpecParser:
 
     def parse_reference_type(self) -> ReferenceTypeSpec:
         name = self.parse_identifier()
-        generics: List[TypeSpec] = []
+        generics: list[TypeSpec] = []
         self.skip_whitespace()
         if self.current() == "<":
             self.advance()
@@ -2039,7 +2040,7 @@ class _TypeSpecParser:
         self.advance()  # Consume '('
         self.skip_whitespace()
 
-        params: List[TypeSpec] = []
+        params: list[TypeSpec] = []
         if self.current() != ")":
             while True:
                 self.skip_whitespace()
@@ -2134,7 +2135,7 @@ class _TypeSpecParser:
             self.advance()
             self.skip_whitespace()
 
-        fields: List[Tuple[str, TypeSpec, bool, bool]] = []
+        fields: list[tuple[str, TypeSpec, bool, bool]] = []
         while not self.at_end():
             self.skip_whitespace()
             if self.current() in {"|", "}"}:

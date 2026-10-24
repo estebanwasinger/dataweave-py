@@ -6,7 +6,7 @@ import pytest
 
 from dwpy.runtime import DataWeaveRuntime
 
-CASE_MATRIX: List[Dict[str, Any]] = [
+CASE_MATRIX: list[dict[str, Any]] = [
     {
         "id": "extract_data",
         "title": "Extract Data",
@@ -344,7 +344,7 @@ CASE_MATRIX: List[Dict[str, Any]] = [
 
 
 @pytest.mark.parametrize("case", CASE_MATRIX, ids=[case["id"] for case in CASE_MATRIX])
-def test_cookbook_code_examples(case: Dict[str, Any]) -> None:
+def test_cookbook_code_examples(case: dict[str, Any]) -> None:
     runtime = DataWeaveRuntime()
     render_output = bool(case.get("render_output", False))
 

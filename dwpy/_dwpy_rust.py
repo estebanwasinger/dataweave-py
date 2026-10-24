@@ -27,10 +27,10 @@ class RustDataWeaveRuntime:
         self,
         script_source: str,
         payload: Any,
-        vars: Optional[dict[str, Any]] = None,
+        vars: dict[str, Any] | None = None,
         *,
-        payload_format: Optional[str] = None,
-        payload_format_options: Optional[dict[str, Any]] = None,
+        payload_format: str | None = None,
+        payload_format_options: dict[str, Any] | None = None,
         render_output: bool = True,
     ) -> Any:
         if not self._allow_legacy_fallback:

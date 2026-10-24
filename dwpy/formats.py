@@ -5,10 +5,10 @@ import io
 import json
 import re
 import xml.etree.ElementTree as ET
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Dict, Optional
 
 import yaml
 from tabulate import tabulate
@@ -18,8 +18,8 @@ class FormatError(ValueError):
     pass
 
 
-Reader = Callable[[Any, Dict[str, Any]], Any]
-Writer = Callable[[Any, Dict[str, Any]], Any]
+Reader = Callable[[Any, dict[str, Any]], Any]
+Writer = Callable[[Any, dict[str, Any]], Any]
 
 
 class XMLNodeList(list):
@@ -33,7 +33,7 @@ class XMLNodeDict(dict):
 class FormattedNumber(float):
     """Numeric value that preserves DataWeave formatting metadata for string writers."""
 
-    def __new__(cls, value: Any, formatted_text: str) -> "FormattedNumber":
+    def __new__(cls, value: Any, formatted_text: str) -> FormattedNumber:
         instance = float.__new__(cls, float(value))
         instance.formatted_text = str(formatted_text)
         return instance
@@ -49,7 +49,7 @@ class FormattedNumber(float):
 class DWObject(dict):
     """Dictionary-like object that preserves duplicate key entries."""
 
-    def __init__(self, entries: Optional[list[tuple[str, Any]]] = None) -> None:
+    def __init__(self, entries: list[tuple[str, Any]] | None = None) -> None:
         super().__init__()
         self._entries: list[tuple[str, Any]] = []
         if entries:
@@ -70,20 +70,20 @@ class DWObject(dict):
 class FormatDefinition:
     id: str
     mime_type: str
-    reader: Optional[Reader]
-    writer: Optional[Writer]
+    reader: Reader | None
+    writer: Writer | None
 
 
 class FormatRegistry:
-    _FORMATS: Dict[str, FormatDefinition] = {}
-    _ALIASES: Dict[str, str] = {}
+    _FORMATS: dict[str, FormatDefinition] = {}
+    _ALIASES: dict[str, str] = {}
 
     @classmethod
     def register(
         cls,
         definition: FormatDefinition,
         *,
-        aliases: Optional[Any] = None,
+        aliases: Any | None = None,
     ) -> None:
         cls._FORMATS[definition.id] = definition
         cls._ALIASES[definition.id.lower()] = definition.id
@@ -93,7 +93,7 @@ class FormatRegistry:
                 cls._ALIASES[alias.lower()] = definition.id
 
     @classmethod
-    def get(cls, name: Optional[str]) -> Optional[FormatDefinition]:
+    def get(cls, name: str | None) -> FormatDefinition | None:
         if not name:
             return None
         key = cls._ALIASES.get(name.lower())
@@ -102,7 +102,7 @@ class FormatRegistry:
         return cls._FORMATS.get(key)
 
     @classmethod
-    def read(cls, value: Any, format_name: str, options: Dict[str, Any]) -> Any:
+    def read(cls, value: Any, format_name: str, options: dict[str, Any]) -> Any:
         definition = cls.get(format_name)
         if definition is None:
             raise FormatError(f"Unsupported input format '{format_name}'")
@@ -114,7 +114,7 @@ class FormatRegistry:
             raise FormatError(f"Failed to parse input as {definition.id}: {err}") from err
 
     @classmethod
-    def write(cls, value: Any, format_name: str, options: Dict[str, Any]) -> Any:
+    def write(cls, value: Any, format_name: str, options: dict[str, Any]) -> Any:
         definition = cls.get(format_name)
         if definition is None:
             raise FormatError(f"Unsupported output format '{format_name}'")
@@ -201,7 +201,7 @@ def _register_builtin_formats() -> None:
     )
 
 
-def _ensure_text(value: Any, options: Dict[str, Any]) -> str:
+def _ensure_text(value: Any, options: dict[str, Any]) -> str:
     if isinstance(value, str):
         return value
     encoding = options.get("encoding", "utf-8")
@@ -212,7 +212,7 @@ def _ensure_text(value: Any, options: Dict[str, Any]) -> str:
     raise FormatError("Expected textual input for this format")
 
 
-def _json_reader(value: Any, options: Dict[str, Any]) -> Any:
+def _json_reader(value: Any, options: dict[str, Any]) -> Any:
     if isinstance(value, (dict, list)):
         return value
     text = _ensure_text(value, options)
@@ -224,7 +224,7 @@ def _json_object_from_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return DWObject(pairs) if len(result) != len(pairs) else result
 
 
-def _json_writer(value: Any, options: Dict[str, Any]) -> str:
+def _json_writer(value: Any, options: dict[str, Any]) -> str:
     indent_opt = options.get("indent")
     indent = None
     if indent_opt is not None:
@@ -240,7 +240,7 @@ def _json_writer(value: Any, options: Dict[str, Any]) -> str:
     return encoder.encode(value)
 
 
-def _ndjson_reader(value: Any, options: Dict[str, Any]) -> Any:
+def _ndjson_reader(value: Any, options: dict[str, Any]) -> Any:
     if isinstance(value, (dict, list)):
         return value
     text = _ensure_text(value, options)
@@ -259,7 +259,7 @@ def _ndjson_reader(value: Any, options: Dict[str, Any]) -> Any:
     return records
 
 
-def _ndjson_writer(value: Any, options: Dict[str, Any]) -> str:
+def _ndjson_writer(value: Any, options: dict[str, Any]) -> str:
     rows = value if isinstance(value, list) else [value]
     skip_null_on = options.get("skipNullOn")
     normalized_mode = str(skip_null_on).lower() if skip_null_on is not None else ""
@@ -291,7 +291,7 @@ def _normalize_ndjson_value(value: Any, *, write_attributes: bool) -> Any:
     if isinstance(value, timedelta):
         return _format_timedelta_iso(value)
     if isinstance(value, XMLNodeDict):
-        normalized_children: Dict[str, Any] = {}
+        normalized_children: dict[str, Any] = {}
         text_value = None
         for key, child in value.items():
             if key.startswith("@") and not write_attributes:
@@ -318,7 +318,7 @@ def _normalize_ndjson_value(value: Any, *, write_attributes: bool) -> Any:
             _normalize_ndjson_value(item, write_attributes=write_attributes) for item in value
         ]
     if isinstance(value, Mapping):
-        normalized: Dict[str, Any] = {}
+        normalized: dict[str, Any] = {}
         for key, item in value.items():
             normalized_key = "__text" if write_attributes and str(key) == "#text" else str(key)
             normalized[normalized_key] = _normalize_ndjson_value(
@@ -344,14 +344,14 @@ def _skip_ndjson_nulls(value: Any, mode: str) -> Any:
     return value
 
 
-def _yaml_reader(value: Any, options: Dict[str, Any]) -> Any:
+def _yaml_reader(value: Any, options: dict[str, Any]) -> Any:
     if isinstance(value, (dict, list)):
         return value
     text = _ensure_text(value, options)
     return yaml.safe_load(text)
 
 
-def _yaml_writer(value: Any, options: Dict[str, Any]) -> str:
+def _yaml_writer(value: Any, options: dict[str, Any]) -> str:
     skip_null_on = options.get("skipNullOn")
     normalized = _normalize_yaml_value(value)
     if skip_null_on is not None:
@@ -380,7 +380,7 @@ def _normalize_yaml_value(value: Any) -> Any:
         return _format_timedelta_iso(value)
     if isinstance(value, XMLNodeDict):
         text_value = None
-        normalized_children: Dict[str, Any] = {}
+        normalized_children: dict[str, Any] = {}
         for key, child in value.items():
             if key == "#text":
                 text_value = _normalize_yaml_value(child)
@@ -455,7 +455,7 @@ def _format_timedelta_iso(value: timedelta) -> str:
 
 
 class _JSONEncoder:
-    def __init__(self, indent: Optional[int], ensure_ascii: bool, sort_keys: bool) -> None:
+    def __init__(self, indent: int | None, ensure_ascii: bool, sort_keys: bool) -> None:
         self.indent = indent if indent is not None and indent >= 0 else None
         self.ensure_ascii = ensure_ascii
         self.sort_keys = sort_keys
@@ -585,7 +585,7 @@ class _JSONEncoder:
             return _format_timedelta_iso(value)
         if isinstance(value, XMLNodeDict):
             text_value = None
-            normalized_children: Dict[str, Any] = {}
+            normalized_children: dict[str, Any] = {}
             for key, child in value.items():
                 if key == "#text":
                     text_value = self._normalize_value(child)
@@ -612,7 +612,7 @@ class _JSONEncoder:
         return value
 
 
-def _csv_reader(value: Any, options: Dict[str, Any]) -> Any:
+def _csv_reader(value: Any, options: dict[str, Any]) -> Any:
     if isinstance(value, list):
         return value
     text = _ensure_text(value, options)
@@ -627,7 +627,7 @@ def _csv_reader(value: Any, options: Dict[str, Any]) -> Any:
     return [row for row in reader]
 
 
-def _markdown_reader(value: Any, options: Dict[str, Any]) -> Any:
+def _markdown_reader(value: Any, options: dict[str, Any]) -> Any:
     if isinstance(value, list):
         return value
     if isinstance(value, Mapping):
@@ -698,7 +698,7 @@ def _markdown_cells_to_row(headers: list[str], row: list[str]) -> list[str]:
     return row + [""] * (len(headers) - len(row))
 
 
-def _csv_writer(value: Any, options: Dict[str, Any]) -> str:
+def _csv_writer(value: Any, options: dict[str, Any]) -> str:
     delimiter = str(options.get("separator", ",")) or ","
     quote = options.get("quote", '"')
     header = _to_bool(options.get("header", True))
@@ -743,7 +743,7 @@ def _csv_writer(value: Any, options: Dict[str, Any]) -> str:
     return output.getvalue()
 
 
-def _plain_writer(value: Any, options: Dict[str, Any]) -> str:
+def _plain_writer(value: Any, options: dict[str, Any]) -> str:
     del options
     if isinstance(value, (date, datetime, time)):
         return value.isoformat().replace("+00:00", "Z")
@@ -756,7 +756,7 @@ def _plain_writer(value: Any, options: Dict[str, Any]) -> str:
     return value
 
 
-def _markdown_writer(value: Any, options: Dict[str, Any]) -> str:
+def _markdown_writer(value: Any, options: dict[str, Any]) -> str:
     if not _to_bool(options.get("header", True)):
         raise FormatError("Markdown writer requires header=true")
     rows = value
@@ -771,7 +771,7 @@ def _markdown_writer(value: Any, options: Dict[str, Any]) -> str:
     return _markdown_table_from_sequence_rows(rows)
 
 
-def _markdown_table_from_mapping_rows(rows: list[Any], options: Dict[str, Any]) -> str:
+def _markdown_table_from_mapping_rows(rows: list[Any], options: dict[str, Any]) -> str:
     if not all(isinstance(row, Mapping) for row in rows):
         raise FormatError(
             "Markdown writer expects all rows to be dictionaries when the first row is a dictionary"
@@ -838,7 +838,7 @@ def _normalize_markdown_cell(value: Any) -> str:
     return text.replace("\n", "<br>")
 
 
-def _xml_reader(value: Any, options: Dict[str, Any]) -> Any:
+def _xml_reader(value: Any, options: dict[str, Any]) -> Any:
     text = _ensure_text(value, options)
     try:
         root = ET.fromstring(text)
@@ -874,7 +874,7 @@ def _element_to_value(element: ET.Element) -> Any:
     return result
 
 
-def _xml_writer(value: Any, options: Dict[str, Any]) -> str:
+def _xml_writer(value: Any, options: dict[str, Any]) -> str:
     if isinstance(value, Mapping) and len(value) == 1 and "root" not in options:
         root_name, root_value = next(iter(value.items()))
     else:
