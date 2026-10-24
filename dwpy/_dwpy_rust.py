@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any
 
 from ._python_runtime import DataWeaveRuntime as _PythonDataWeaveRuntime
 
@@ -65,3 +65,18 @@ class RustDataWeaveRuntime:
         raise NotImplementedError(
             "Rust evaluator does not yet support this DataWeave feature"
         )
+
+
+if TYPE_CHECKING:
+    # Provided by the compiled extension; absent in the source fallback.
+    def function_catalog_json() -> str: ...
+
+    def complete_symbols_json(
+        script: str, line: int, column: int, module_sources_json: str | None = None
+    ) -> str: ...
+
+    def complete_fields_json(
+        script: str, line: int, column: int, context_json: str
+    ) -> str: ...
+
+    def module_signatures_json(source: str) -> str: ...

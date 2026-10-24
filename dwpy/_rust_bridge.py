@@ -6,9 +6,11 @@ from typing import Any
 from .formats import DWObject
 
 try:
-    import pandas as pd
-except Exception:  # pragma: no cover - optional dependency
-    pd = None  # type: ignore[assignment]
+    import pandas as _pandas
+except ImportError:  # pragma: no cover - optional dependency
+    pd = None
+else:
+    pd = _pandas
 
 
 def json_default(value: Any) -> Any:
@@ -20,7 +22,7 @@ def json_default(value: Any) -> Any:
             return value.to_dict()
         try:
             missing = pd.isna(value)
-        except Exception:
+        except (TypeError, ValueError):
             missing = False
         if isinstance(missing, bool) and missing:
             return None

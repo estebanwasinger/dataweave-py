@@ -25,7 +25,7 @@ def _all_module_native_ids() -> set[str]:
 def test_native_registry_covers_all_module_native_identifiers() -> None:
     runtime = DataWeaveRuntime()
     module_ids = _all_module_native_ids()
-    missing = sorted(module_ids.difference(runtime._native_functions.keys()))  # noqa: SLF001
+    missing = sorted(module_ids.difference(runtime._native_functions.keys()))
     assert missing == []
 
 

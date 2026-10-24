@@ -81,7 +81,7 @@ def test_properties_require_string_values(backend: str) -> None:
             runtime.execute(
                 'p("env")',
                 {},
-                properties={"env": 1},  # type: ignore[dict-item]
+                properties={"env": 1},  # ty: ignore[invalid-argument-type] - validates runtime rejection
                 render_output=False,
             )
     except RuntimeError as error:

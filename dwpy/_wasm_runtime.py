@@ -5,9 +5,10 @@ import json
 import os
 import subprocess
 import threading
+from collections.abc import Callable
 from datetime import date, datetime, time
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any
 
 from . import parser
 from ._python_runtime import DataWeaveEvaluationError
@@ -56,7 +57,7 @@ class _WasmNodeBridge:
 
     def execute(
         self,
-        request: Dict[str, Any],
+        request: dict[str, Any],
         log_callback: Callable[[dict], None] | None = None,
     ) -> Any:
         encoded = json.dumps(request, separators=(",", ":"), allow_nan=False)
@@ -236,10 +237,10 @@ def _validate_properties(properties: dict[str, str] | None) -> None:
     if properties is None:
         return
     if not isinstance(properties, dict):
-        raise ValueError("properties must be a JSON object with string values")
+        raise ValueError("properties must be a JSON object with string values")  # noqa: TRY004 - public validation contract
     for key, value in properties.items():
         if not isinstance(value, str):
-            raise ValueError(f"property '{key}' must be a string value")
+            raise ValueError(f"property '{key}' must be a string value")  # noqa: TRY004 - public validation contract
 
 
 def _parse_error_location(request: dict[str, Any]) -> tuple[int | None, int | None]:

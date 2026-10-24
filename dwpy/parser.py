@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, List, Optional, Tuple
+from typing import Any
 
 
 class ParseError(ValueError):
@@ -421,8 +421,7 @@ class Parser:
 
     def peek(self, offset: int) -> Token:
         index = self.index + offset
-        if index < 0:
-            index = 0
+        index = max(index, 0)
         if index >= len(self.tokens):
             return self.tokens[-1]
         return self.tokens[index]
@@ -543,7 +542,11 @@ class Parser:
             function = Identifier(name=target_name, line=token[2], column=token[3])
             # A parenthesized lambda ends the collection argument; a subsequent
             # concatenation applies to the collection result, not the lambda.
-            def bind_lambda_concat(node: Expression) -> Optional[Expression]:
+            def bind_lambda_concat(
+                node: Expression,
+                function: Identifier = function,
+                expr: Expression = expr,
+            ) -> Expression | None:
                 if isinstance(node, LambdaExpression):
                     return FunctionCall(function=function, arguments=[expr, node])
                 if (
@@ -620,9 +623,7 @@ class Parser:
                     depth += 1
                 elif token_type in {"RPAREN", "RBRACKET", "RBRACE"}:
                     depth -= 1
-                elif depth == 0 and token_type == "ARROW":
-                    break
-                elif depth == 0 and token_type == "IDENT" and token_value == "if":
+                elif depth == 0 and token_type == "ARROW" or depth == 0 and token_type == "IDENT" and token_value == "if":
                     break
                 self.advance()
 
@@ -1159,7 +1160,9 @@ class Parser:
             return self._parse_temporal_literal()
         if token_type == "NUMBER":
             self.advance()
-            return NumberLiteral(value=float(value))  # type: ignore[arg-type]
+            if value is None:
+                raise ParseError("Expected a numeric literal")
+            return NumberLiteral(value=float(value))
         if token_type == "BOOLEAN":
             self.advance()
             return BooleanLiteral(value=(value == "true"))
@@ -1562,14 +1565,7 @@ def _parse_header(header_source: str) -> Header:
 
     def _is_header_directive_line(raw_line: str) -> bool:
         stripped = raw_line.strip()
-        return (
-            stripped.startswith("%dw")
-            or stripped.startswith("output")
-            or stripped.startswith("import ")
-            or stripped.startswith("type ")
-            or stripped.startswith("var ")
-            or stripped.startswith("fun ")
-        )
+        return stripped.startswith(("%dw", "output", "import ", "type ", "var ", "fun "))
 
     def _next_significant_line_index(start_idx: int) -> int | None:
         current_idx = start_idx
@@ -1659,9 +1655,7 @@ def _parse_header(header_source: str) -> Header:
                 should_continue = True
             elif next_is_directive:
                 should_continue = False
-            elif next_indent > declaration_indent:
-                should_continue = True
-            elif combined_status in {"complete", "incomplete"}:
+            elif next_indent > declaration_indent or combined_status in {"complete", "incomplete"}:
                 should_continue = True
 
             if not should_continue:
@@ -1897,9 +1891,8 @@ def _split_top_level(source: str, delimiter: str, *, maxsplit: int = -1) -> list
     for char in source:
         if char in "({[":
             depth += 1
-        elif char in ")}]":
-            if depth > 0:
-                depth -= 1
+        elif char in ")}]" and depth > 0:
+            depth -= 1
         if char == delimiter and depth == 0 and (maxsplit < 0 or splits_done < maxsplit):
             result.append("".join(current))
             current = []
@@ -1915,9 +1908,8 @@ def _find_top_level_char(source: str, char_to_find: str, *, start_index: int = 0
     for i, char in enumerate(source[start_index:], start=start_index):
         if char in "({[":
             depth += 1
-        elif char in ")]}":
-            if depth > 0:
-                depth -= 1
+        elif char in ")]}" and depth > 0:
+            depth -= 1
         if char == char_to_find and depth == 0:
             return i
     return -1
@@ -2060,7 +2052,7 @@ class _TypeSpecParser:
                 self.skip_whitespace()
                 save_index = self.index
                 try:
-                    maybe_name = self.parse_identifier()
+                    self.parse_identifier()
                     self.skip_whitespace()
                     if self.current() == ":":
                         self.advance()
@@ -2117,11 +2109,11 @@ class _TypeSpecParser:
         start = self.index
         if self.current() == "-":
             self.advance()
-        while not self.at_end() and self.current().isdigit():
+        while (current := self.current()) is not None and current.isdigit():
             self.advance()
         if self.current() == ".":
             self.advance()
-            while not self.at_end() and self.current().isdigit():
+            while (current := self.current()) is not None and current.isdigit():
                 self.advance()
         number_str = self.source[start : self.index]
         try:
