@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import inspect
 import json
+import logging
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from .. import builtins, parser
 from ..type_inference import (
@@ -26,6 +27,8 @@ from ..typesystem import (
     UnionType,
     union_types,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 DW_KEYWORDS: tuple[str, ...] = (
     "and",
@@ -390,7 +393,7 @@ class DataWeaveLanguageEngine:
                     symbol_types.update(inferencer.context.env)
             except Exception:
                 # Completion/hover should stay resilient to parser/type inference failures.
-                pass
+                LOGGER.debug("Type inference failed during editor analysis", exc_info=True)
 
         header = parsed_header or (parsed_script.header if parsed_script is not None else None)
         if header is not None:
@@ -429,16 +432,16 @@ class DataWeaveLanguageEngine:
     def _safe_parse(self, script: str) -> tuple[parser.Script | None, parser.Header | None]:
         try:
             return parser.parse_script(script), None
-        except Exception:
-            pass
+        except parser.ParseError:
+            LOGGER.debug("Could not parse editor buffer", exc_info=True)
 
         # Useful recovery for files being edited before delimiter/body is complete.
         if "---" not in script and script.strip():
             synthetic = script.rstrip() + "\n---\nnull\n"
             try:
                 return parser.parse_script(synthetic), None
-            except Exception:
-                pass
+            except parser.ParseError:
+                LOGGER.debug("Could not parse synthetic editor buffer", exc_info=True)
 
         header_parser = getattr(parser, "_parse_header", None)
         if callable(header_parser):
@@ -449,8 +452,8 @@ class DataWeaveLanguageEngine:
             try:
                 parsed_header = header_parser(header_source.strip())
                 return None, parsed_header
-            except Exception:
-                pass
+            except parser.ParseError:
+                LOGGER.debug("Could not parse editor header", exc_info=True)
 
         return None, None
 
@@ -524,7 +527,7 @@ class DataWeaveLanguageEngine:
             if prefix and not function_name.lower().startswith(prefix_lower):
                 continue
             signatures = self._builtin_signatures.get(function_name, ())
-            signature = signatures[0] if signatures else FunctionSignature(name=function_name, parameters=tuple())
+            signature = signatures[0] if signatures else FunctionSignature(name=function_name, parameters=())
             items.append(
                 EngineCompletionItem(
                     label=function_name,
@@ -689,14 +692,17 @@ class DataWeaveLanguageEngine:
         try:
             from .._dwpy_rust import RustDataWeaveRuntime
 
-            descriptor = RustDataWeaveRuntime().infer_type_descriptor(
+            infer_descriptor = getattr(RustDataWeaveRuntime(), "infer_type_descriptor", None)
+            if not callable(infer_descriptor):
+                return None
+            descriptor = infer_descriptor(
                 expression,
                 payload=payload_value,
                 vars=vars_value,
                 attributes=attributes_value,
                 properties=properties_value,
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 - Rust inference is an optional editor enhancement
             return None
         return _dw_type_from_rust_descriptor(descriptor)
 
@@ -846,7 +852,7 @@ class DataWeaveLanguageEngine:
                 module_functions[fn_name] = [
                     FunctionSignature(
                         name=fn_name,
-                        parameters=tuple(),
+                        parameters=(),
                         origin=f"module:{module_name}",
                     )
                 ]
@@ -884,7 +890,7 @@ def _signature_from_callable(name: str, func: Any, origin: str) -> FunctionSigna
 def _safe_repr(value: Any) -> str:
     try:
         text = repr(value)
-    except Exception:
+    except Exception:  # noqa: BLE001 - user objects may raise arbitrary errors from __repr__
         return "..."
     if len(text) > 30:
         return text[:27] + "..."
@@ -1145,7 +1151,7 @@ def _load_json_file(path: Path) -> Any:
         if not raw.strip():
             return _MISSING
         return json.loads(raw)
-    except Exception:
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return _MISSING
 
 

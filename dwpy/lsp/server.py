@@ -70,7 +70,7 @@ def _uri_to_path(uri: str) -> str | None:
 def _read_document(uri: str) -> str:
     try:
         document = server.workspace.get_text_document(uri)
-    except Exception:
+    except KeyError:
         document = None
 
     if document is not None:
@@ -81,7 +81,7 @@ def _read_document(uri: str) -> str:
         return ""
     try:
         return Path(path).read_text(encoding="utf-8")
-    except Exception:
+    except (OSError, UnicodeError):
         return ""
 
 

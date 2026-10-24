@@ -324,7 +324,7 @@ payload.user.<cursor>name
 def test_lsp_field_resolution_can_use_rust_type_descriptors(monkeypatch) -> None:
     import dwpy.lsp.engine as lsp_engine
 
-    def fail_python_property_resolution(*args, **kwargs):  # noqa: ANN002, ANN003
+    def fail_python_property_resolution(*args, **kwargs):
         raise AssertionError("Python property resolver should not be needed")
 
     monkeypatch.setattr(lsp_engine, "_resolve_property_type", fail_python_property_resolution)
@@ -352,7 +352,7 @@ payload.user.<cursor>
 def test_lsp_index_resolution_can_use_rust_type_descriptors(monkeypatch) -> None:
     import dwpy.lsp.engine as lsp_engine
 
-    def fail_python_index_resolution(*args, **kwargs):  # noqa: ANN002, ANN003
+    def fail_python_index_resolution(*args, **kwargs):
         raise AssertionError("Python index resolver should not be needed")
 
     monkeypatch.setattr(lsp_engine, "_resolve_index_type", fail_python_index_resolution)
