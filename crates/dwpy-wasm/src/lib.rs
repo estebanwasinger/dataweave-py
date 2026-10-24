@@ -639,3 +639,37 @@ mod tests {
         );
     }
 }
+
+/// DAP messages over a host-selected transport. Keep the adapter alive between
+/// dispatch/poll calls; each poll yields after a bounded continuation budget.
+#[wasm_bindgen]
+pub struct DataWeaveDebugAdapter {
+    inner: dwpy_core::dap::DebugAdapter,
+}
+#[wasm_bindgen]
+impl DataWeaveDebugAdapter {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        Self {
+            inner: dwpy_core::dap::DebugAdapter::new(),
+        }
+    }
+    pub fn dispatch(&mut self, request_json: &str) -> Result<String, JsValue> {
+        let request =
+            serde_json::from_str(request_json).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        serde_json::to_string(&self.inner.dispatch(request))
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+    pub fn poll(&mut self, fuel: u32) -> Result<String, JsValue> {
+        serde_json::to_string(&self.inner.poll(fuel as usize))
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+    pub fn is_running(&self) -> bool {
+        self.inner.is_running()
+    }
+}
+impl Default for DataWeaveDebugAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}

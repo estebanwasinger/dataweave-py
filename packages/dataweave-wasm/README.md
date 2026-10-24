@@ -47,3 +47,12 @@ npm run test:rust -- -- infix
 These tests cover the WASM entry points, including dependency analysis before
 execution. They require the build prerequisites above and do not require Python.
 They test the Node.js host; Deno and browser integration need separate checks.
+
+## Debug Adapter Protocol
+
+`DebugAdapter` exposes `dispatch(request)`, `poll(fuel = 200)`, `running`, and
+`dispose()`. Requests and returned messages use standard DAP objects. Launch
+with inline `source` and the same execution inputs as `execute`; configure the
+session with `configurationDone`, then poll cooperatively while `running`.
+See [the debugger guide](../../docs/DEBUGGER.md) for the supported protocol,
+language subset, inspection APIs, and output event extensions.

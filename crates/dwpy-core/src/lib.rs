@@ -11,6 +11,8 @@ mod calls;
 mod collections;
 mod compiled;
 mod csv;
+pub mod dap;
+pub mod debug;
 mod evaluator;
 mod functions;
 mod json;
@@ -84,7 +86,7 @@ use selectors::{
     evaluate_local_path, evaluate_payload_path, parse_path_segments, parse_postfix_path_access,
     select_path_segment, unwrap_metadata_value, PathSegment, DW_METADATA_MARKER,
 };
-use strings::replace_with;
+use strings::replace_with_scoped;
 use syntax::{
     find_matching_delimiter, is_binary_operator_position, is_identifier, is_top_level_index,
     parse_if_expression, parse_index_access, split_top_level_arrow, split_top_level_char,
@@ -502,6 +504,7 @@ fn rendered_text_output(directive: Option<&str>, render_output: bool) -> bool {
 pub fn engine_capabilities() -> Vec<&'static str> {
     vec![
         "rust-core-evaluator",
+        "debugger-dap",
         "workspace-source-backed",
         "wasm-crate",
         "dw-value-model",
@@ -1172,11 +1175,10 @@ pub(crate) fn evaluate_expression_scoped(
     }
 
     if let Some((before_colon, _)) = split_top_level_char(source, ':') {
-        if let Some((left, operator, right)) =
-            split_top_level_keyword_or_call_operator(source, COLLECTION_OPERATORS)
+        if let Some((left, operator, right)) = functions::split_collection_operator(source, locals)
         {
             if left.len() < before_colon.len() {
-                return evaluate_collection_operator(left, operator, right, payload, locals);
+                return evaluate_collection_operator(left, &operator, right, payload, locals);
             }
         }
         return evaluate_object_literal_scoped(&format!("{{{source}}}"), payload, locals);
@@ -1192,7 +1194,9 @@ pub(crate) fn evaluate_expression_scoped(
     if let Some((left, operator, right)) =
         split_top_level_sequence_operator_before_arrow(source, &["++", "--"])
     {
-        if has_top_level_collection_operator(left) || has_top_level_collection_operator(right) {
+        if has_top_level_collection_operator(left, locals)
+            || has_top_level_collection_operator(right, locals)
+        {
             let left_value = if operator == "--" {
                 evaluate_index_base(left, payload, locals)?
             } else {
@@ -1203,10 +1207,8 @@ pub(crate) fn evaluate_expression_scoped(
         }
     }
 
-    if let Some((left, operator, right)) =
-        split_top_level_keyword_or_call_operator(source, COLLECTION_OPERATORS)
-    {
-        return evaluate_collection_operator(left, operator, right, payload, locals);
+    if let Some((left, operator, right)) = functions::split_collection_operator(source, locals) {
+        return evaluate_collection_operator(left, &operator, right, payload, locals);
     }
 
     if let Some((left, right)) = split_top_level_keyword(source, "mask") {
@@ -1226,7 +1228,7 @@ pub(crate) fn evaluate_expression_scoped(
                 let input = evaluate_expression_scoped(argument_sources[0], payload, locals)?;
                 let target = evaluate_expression_scoped(argument_sources[1], payload, locals)?;
                 let replacement = evaluate_expression_scoped(replacement_source, payload, locals)?;
-                return replace_with(&input, &target, &replacement);
+                return replace_with_scoped(&input, &target, &replacement, payload, locals);
             }
         }
     }
@@ -1239,7 +1241,7 @@ pub(crate) fn evaluate_expression_scoped(
         let input = evaluate_expression_scoped(left, payload, locals)?;
         let target = evaluate_expression_scoped(target_source, payload, locals)?;
         let replacement = evaluate_expression_scoped(replacement_source, payload, locals)?;
-        return replace_with(&input, &target, &replacement);
+        return replace_with_scoped(&input, &target, &replacement, payload, locals);
     }
 
     if let Some((left, right)) = split_top_level_keyword(source, "or") {
@@ -1406,6 +1408,20 @@ pub(crate) fn evaluate_expression_scoped(
         return Ok(current);
     }
 
+    if let Some((target, arguments)) = syntax::parse_computed_call(source) {
+        let function = evaluate_expression_scoped(target, payload, locals)?;
+        if let Some(value) =
+            functions::evaluate_lambda_value_call(&function, &arguments, payload, locals)?
+        {
+            return Ok(value);
+        }
+        if let Some(name) = function.get("__function_ref").and_then(Value::as_str) {
+            return evaluate_function_call(name, &arguments, payload, locals);
+        }
+        return Err(DwError::Parse(
+            "computed call target is not a function".into(),
+        ));
+    }
     if let Some((function_name, argument_sources)) = parse_call_args(source) {
         return evaluate_function_call(function_name, &argument_sources, payload, locals);
     }
@@ -1554,8 +1570,8 @@ fn evaluate_collection_operator(
     }
 }
 
-fn has_top_level_collection_operator(source: &str) -> bool {
-    split_top_level_keyword_or_call_operator(source, COLLECTION_OPERATORS).is_some()
+fn has_top_level_collection_operator(source: &str, locals: &Map<String, Value>) -> bool {
+    functions::split_collection_operator(source, locals).is_some()
 }
 
 fn split_top_level_sequence_operator_before_arrow<'a>(
@@ -1922,6 +1938,7 @@ fn evaluate_update_cases(
         }
         let path_source = resolve_update_path_source(path_source, locals);
         let path_segments = parse_path_segments(&path_source)?;
+        selectors::validate_update_case_segments(&path_segments)?;
         let selected = select_update_path_value(&current, &path_segments);
         let mut scoped = locals.clone();
         scoped.insert(binding.to_string(), selected.clone());
@@ -1963,40 +1980,20 @@ fn resolve_update_path_source(source: &str, locals: &Map<String, Value>) -> Stri
 }
 
 fn split_update_cases(source: &str) -> Vec<&str> {
-    let mut cases = Vec::new();
+    let mut cases = vec![];
     let mut start = None;
-    let mut depth = 0i32;
-    let mut in_string = None;
-    let mut escaped = false;
-    for (index, ch) in source.char_indices() {
-        if let Some(quote) = in_string {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == quote {
-                in_string = None;
-            }
-            continue;
-        }
-        match ch {
-            '/' if starts_regex_literal(source, index) => in_string = Some('/'),
-            '"' | '\'' | '`' | '|' => in_string = Some(ch),
-            '{' | '[' | '(' => depth += 1,
-            '}' | ']' | ')' => depth -= 1,
-            _ if depth == 0 && starts_update_case(source, index) => {
-                if let Some(case_start) = start.replace(index) {
-                    let case = source[case_start..index].trim();
-                    if !case.is_empty() {
-                        cases.push(case);
-                    }
+    syntax::visit_top_level(source, |index, _| {
+        if starts_update_case(source, index) {
+            if let Some(begin) = start.replace(index) {
+                let case = source[begin..index].trim();
+                if !case.is_empty() {
+                    cases.push(case);
                 }
             }
-            _ => {}
         }
-    }
-    if let Some(case_start) = start {
-        let case = source[case_start..].trim();
+    });
+    if let Some(begin) = start {
+        let case = source[begin..].trim();
         if !case.is_empty() {
             cases.push(case);
         }
@@ -2010,19 +2007,6 @@ fn starts_update_case(source: &str, index: usize) -> bool {
             .chars()
             .last()
             .is_none_or(|ch| ch.is_whitespace() || ch == ',')
-}
-
-fn starts_regex_literal(source: &str, index: usize) -> bool {
-    source[index..].starts_with('/')
-        && source[index + '/'.len_utf8()..]
-            .chars()
-            .next()
-            .is_some_and(|next| next != '/' && next != '*')
-        && source[..index]
-            .chars()
-            .rev()
-            .find(|ch| !ch.is_whitespace())
-            .is_none_or(|ch| matches!(ch, '(' | '[' | '{' | ':' | ',' | '='))
 }
 
 fn split_top_level_arrow_like(source: &str) -> Option<(&str, &str)> {

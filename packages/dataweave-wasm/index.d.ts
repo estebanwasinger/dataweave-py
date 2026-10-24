@@ -48,3 +48,13 @@ declare const executeWithLogs: (request: ExecuteRequest | string) => ExecutionWi
 
 export {analyze, execute, executeWithLogs};
 export type {AnalyzeRequest, AnalyzeResult, ExecuteRequest, JsonValue, LogEntry, DataWeaveLogger, ExecutionWithLogs};
+
+/** Standard DAP messages; launch accepts source, sourcePath, stopOnEntry and ExecuteRequest inputs. */
+export type DapMessage = {seq: number; type: "request" | "response" | "event"; command?: string; arguments?: Record<string, unknown>; [key: string]: unknown};
+export declare class DebugAdapter {
+  constructor();
+  dispatch(request: DapMessage | string): DapMessage[];
+  poll(fuel?: number): DapMessage[];
+  readonly running: boolean;
+  dispose(): void;
+}

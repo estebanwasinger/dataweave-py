@@ -10,78 +10,17 @@ pub fn parse_script_boundary(source: &str) -> Option<usize> {
 }
 
 pub fn parse_script_boundary_span(source: &str) -> Option<(usize, usize)> {
-    let mut in_string: Option<char> = None;
-    let mut escaped = false;
-    let mut block_comment_depth = 0usize;
-    let mut delimiter_depth = 0i32;
-
-    let bytes = source.as_bytes();
-    let mut index = 0usize;
-    while index < bytes.len() {
-        let ch = bytes[index] as char;
-        let next = bytes.get(index + 1).copied().map(char::from);
-
-        if block_comment_depth > 0 {
-            if ch == '/' && next == Some('*') {
-                block_comment_depth += 1;
-                index += 2;
-                continue;
-            }
-            if ch == '*' && next == Some('/') {
-                block_comment_depth -= 1;
-                index += 2;
-                continue;
-            }
-            index += 1;
-            continue;
-        }
-
-        if let Some(quote) = in_string {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == quote {
-                in_string = None;
-            }
-            index += 1;
-            continue;
-        }
-
-        if ch == '/' && next == Some('/') {
-            let Some(newline_offset) = source[index..].find('\n') else {
-                break;
-            };
-            index += newline_offset + 1;
-            continue;
-        }
-        if ch == '/' && next == Some('*') {
-            block_comment_depth = 1;
-            index += 2;
-            continue;
-        }
-
-        if bytes[index..].starts_with(b"---")
-            && delimiter_depth == 0
+    let mut boundary = None;
+    crate::syntax::visit_top_level(source, |index, ch| {
+        if boundary.is_none()
+            && ch == '-'
+            && source[index..].starts_with("---")
             && has_delimiter_boundary(source, index)
         {
-            return Some((index, index + 3));
+            boundary = Some((index, index + 3));
         }
-
-        if ch == '"' || ch == '\'' || ch == '`' {
-            in_string = Some(ch);
-            index += 1;
-            continue;
-        }
-
-        match ch {
-            '{' | '[' | '(' => delimiter_depth += 1,
-            '}' | ']' | ')' => delimiter_depth -= 1,
-            _ => {}
-        }
-        index += 1;
-    }
-    None
+    });
+    boundary
 }
 
 pub(crate) fn split_script(script: &str) -> ParsedScript {
@@ -126,90 +65,6 @@ fn output_directive_from_header(header: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn strip_dataweave_comments(source: &str) -> String {
-    let mut output = String::with_capacity(source.len());
-    let mut chars = source.chars().peekable();
-    let mut in_string: Option<char> = None;
-    let mut escaped = false;
-    let mut block_depth = 0usize;
-    let mut previous_significant: Option<char> = None;
-
-    while let Some(ch) = chars.next() {
-        if block_depth > 0 {
-            if ch == '/' && chars.peek() == Some(&'*') {
-                chars.next();
-                block_depth += 1;
-                output.push(' ');
-                output.push(' ');
-            } else if ch == '*' && chars.peek() == Some(&'/') {
-                chars.next();
-                block_depth -= 1;
-                output.push(' ');
-                output.push(' ');
-            } else if ch == '\n' {
-                output.push('\n');
-            } else {
-                output.push(' ');
-            }
-            continue;
-        }
-
-        if let Some(quote) = in_string {
-            output.push(ch);
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == quote {
-                in_string = None;
-                previous_significant = Some(quote);
-            }
-            continue;
-        }
-
-        if ch == '/'
-            && chars
-                .peek()
-                .is_some_and(|next| *next != '/' && *next != '*')
-            && previous_significant
-                .is_none_or(|prev| matches!(prev, '(' | '[' | '{' | ':' | ',' | '='))
-        {
-            in_string = Some('/');
-            output.push(ch);
-            previous_significant = Some(ch);
-            continue;
-        }
-
-        if ch == '/' && chars.peek() == Some(&'/') && previous_significant != Some(':') {
-            chars.next();
-            output.push(' ');
-            output.push(' ');
-            for comment_ch in chars.by_ref() {
-                if comment_ch == '\n' {
-                    output.push('\n');
-                    break;
-                }
-                output.push(' ');
-            }
-            continue;
-        }
-
-        if ch == '/' && chars.peek() == Some(&'*') {
-            chars.next();
-            block_depth = 1;
-            output.push(' ');
-            output.push(' ');
-            continue;
-        }
-
-        if ch == '"' || ch == '\'' || ch == '`' {
-            in_string = Some(ch);
-        }
-        output.push(ch);
-        if !ch.is_whitespace() {
-            previous_significant = Some(ch);
-        }
-    }
-
-    output
+pub(crate) fn strip_dataweave_comments(source: &str) -> String {
+    crate::syntax::mask_comments(source).unwrap_or_else(|_| source.to_owned())
 }

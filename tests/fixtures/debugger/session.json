@@ -1,0 +1,10 @@
+[
+  {"seq":1,"type":"request","command":"initialize","arguments":{"linesStartAt1":true,"columnsStartAt1":true}},
+  {"seq":2,"type":"request","command":"launch","arguments":{"source":"%dw 2.0\noutput application/json\nvar factor = 2\n---\npayload map ((item,index) -> item*factor)","payload":[1,2,3],"stopOnEntry":true}},
+  {"seq":3,"type":"request","command":"setBreakpoints","arguments":{"source":{"sourceReference":1},"breakpoints":[]}},
+  {"seq":4,"type":"request","command":"configurationDone","arguments":{}},
+  {"seq":5,"type":"request","command":"stackTrace","arguments":{"threadId":1}},
+  {"seq":6,"type":"request","command":"evaluate","arguments":{"frameId":1,"expression":"payload[1]","context":"watch"}},
+  {"seq":7,"type":"request","command":"stepIn","arguments":{"threadId":1}},
+  {"seq":8,"type":"request","command":"continue","arguments":{"threadId":1}}
+]

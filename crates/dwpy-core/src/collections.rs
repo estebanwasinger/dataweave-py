@@ -289,7 +289,7 @@ fn evaluate_tree_lambda(
     evaluate_expression_scoped(lambda.body, payload, &locals)
 }
 
-fn path_with_segment(path: &Value, kind: &str, selector: &str) -> Value {
+pub(crate) fn path_with_segment(path: &Value, kind: &str, selector: &str) -> Value {
     let mut items = path.as_array().cloned().unwrap_or_default();
     items.push(Value::Object(Map::from_iter([
         ("kind".to_string(), Value::String(kind.to_string())),
@@ -1510,12 +1510,12 @@ fn parse_lambda_parameter(source: &str) -> Option<LambdaParameter<'_>> {
     }
     if let Some((name, default)) = split_top_level_char(source, '=') {
         return Some(LambdaParameter {
-            name: name.trim(),
+            name: name.split(':').next().unwrap().trim(),
             default: Some(default.trim()),
         });
     }
     Some(LambdaParameter {
-        name: source,
+        name: source.split(':').next().unwrap().trim(),
         default: None,
     })
 }

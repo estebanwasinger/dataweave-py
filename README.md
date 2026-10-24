@@ -756,3 +756,13 @@ For questions, issues, or contributions:
 ---
 
 **Note**: This is an independent Python implementation and is not officially supported by MuleSoft. For production use cases requiring full DataWeave compatibility, please use the official JVM-based runtime.
+
+### Live debugger
+
+The Rust engine and browser/WASM runtime include live debugging through the
+Debug Adapter Protocol (DAP). The native CLI starts an adapter with `dw dap`.
+The playground provides breakpoints, stepping, stack and variable inspection,
+read-only watches, and live execution logs. See [Debugger usage and supported
+language features](docs/DEBUGGER.md) for client setup, embedding APIs, and v1
+limitations, and the [support tracker](docs/DEBUGGER_SUPPORT_TRACKER.md) for
+progress toward full debugger coverage.

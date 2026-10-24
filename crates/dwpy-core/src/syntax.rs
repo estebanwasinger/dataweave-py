@@ -19,25 +19,25 @@ pub(crate) fn split_top_level_keyword<'a>(
     None
 }
 
-pub(crate) fn split_top_level_keyword_operator<'a>(
+pub(crate) fn split_top_level_keyword_operator<'a, 'b>(
     source: &'a str,
-    keywords: &[&'static str],
-) -> Option<(&'a str, &'static str, &'a str)> {
+    keywords: &[&'b str],
+) -> Option<(&'a str, &'b str, &'a str)> {
     split_top_level_keyword_operator_with_call(source, keywords, false)
 }
 
-pub(crate) fn split_top_level_keyword_or_call_operator<'a>(
+pub(crate) fn split_top_level_keyword_or_call_operator<'a, 'b>(
     source: &'a str,
-    keywords: &[&'static str],
-) -> Option<(&'a str, &'static str, &'a str)> {
+    keywords: &[&'b str],
+) -> Option<(&'a str, &'b str, &'a str)> {
     split_top_level_keyword_operator_with_call(source, keywords, true)
 }
 
-fn split_top_level_keyword_operator_with_call<'a>(
+fn split_top_level_keyword_operator_with_call<'a, 'b>(
     source: &'a str,
-    keywords: &[&'static str],
+    keywords: &[&'b str],
     allow_call: bool,
-) -> Option<(&'a str, &'static str, &'a str)> {
+) -> Option<(&'a str, &'b str, &'a str)> {
     let mut match_value = None;
     for keyword in keywords {
         for (index, _) in source.match_indices(keyword) {
@@ -147,42 +147,94 @@ pub(crate) fn find_matching_delimiter(
     open: char,
     close: char,
 ) -> Option<usize> {
-    let mut depth = 0i32;
-    let mut in_string: Option<char> = None;
-    let mut escaped = false;
-    for (index, ch) in source
-        .char_indices()
-        .skip_while(|(index, _)| *index < open_index)
-    {
-        if let Some(quote) = in_string {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == quote {
-                in_string = None;
+    if source.as_bytes().get(open_index).copied() != Some(open as u8) {
+        return None;
+    }
+    matching_end(source, open_index, close as u8, false)
+}
+fn matching_end(source: &str, start: usize, close: u8, quote: bool) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let mut frames = vec![(close, quote)];
+    let mut i = start + 1;
+    while i < bytes.len() {
+        let c = bytes[i];
+        let (end, literal) = *frames.last()?;
+        if literal {
+            if c == b'\\' {
+                i += 2;
+                continue;
+            }
+            if c == end {
+                frames.pop();
+                if frames.is_empty() {
+                    return Some(i);
+                }
+                i += 1;
+                continue;
+            }
+            if matches!(end, b'"' | b'\'' | b'`') && bytes[i..].starts_with(b"$(") {
+                frames.push((b')', false));
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+        if starts_line_comment(source, i) {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
             }
             continue;
         }
-        if ch == '/' && starts_regex_literal(source, index) {
-            in_string = Some('/');
+        if bytes[i..].starts_with(b"/*") {
+            i = comment_end(source, i)?;
             continue;
         }
-        if ch == '"'
-            || ch == '\''
-            || ch == '`'
-            || (ch == '|' && starts_temporal_literal(source, index))
+        if matches!(c, b'"' | b'\'' | b'`')
+            || (c == b'/' && starts_regex_literal(source, i))
+            || (c == b'|' && starts_temporal_literal(source, i))
         {
-            in_string = Some(ch);
+            frames.push((c, true));
+            i += 1;
             continue;
         }
-        if ch == open {
-            depth += 1;
-        } else if ch == close {
-            depth -= 1;
-            if depth == 0 {
-                return Some(index);
+        if c == end {
+            frames.pop();
+            if frames.is_empty() {
+                return Some(i);
             }
+            i += 1;
+            continue;
+        }
+        match c {
+            b'(' => frames.push((b')', false)),
+            b'[' => frames.push((b']', false)),
+            b'{' => frames.push((b'}', false)),
+            _ => (),
+        }
+        if frames.len() > 10000 {
+            return None;
+        }
+        i += 1;
+    }
+    None
+}
+fn comment_end(source: &str, start: usize) -> Option<usize> {
+    let b = source.as_bytes();
+    let mut i = start + 2;
+    let mut depth = 1;
+    while i < b.len() {
+        if b[i..].starts_with(b"/*") {
+            depth += 1;
+            i += 2;
+        } else if b[i..].starts_with(b"*/") {
+            depth -= 1;
+            i += 2;
+            if depth == 0 {
+                return Some(i);
+            }
+        } else {
+            i += 1;
         }
     }
     None
@@ -219,72 +271,154 @@ pub(crate) fn split_top_level(source: &str, delimiter: char) -> Vec<&str> {
 }
 
 pub(crate) fn is_top_level_index(source: &str, target: usize) -> bool {
+    let bytes = source.as_bytes();
+    let mut i = 0;
     let mut depth = 0i32;
-    let mut angle_depth = 0i32;
-    let mut in_string: Option<char> = None;
-    let mut escaped = false;
-    for (index, ch) in source.char_indices() {
-        if index >= target {
-            return depth == 0 && angle_depth == 0 && in_string.is_none();
-        }
-        if let Some(quote) = in_string {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == quote {
-                in_string = None;
+    let mut angle = 0;
+    while i < target && i < bytes.len() {
+        let c = bytes[i];
+        if starts_line_comment(source, i) {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            if i >= target {
+                return false;
             }
             continue;
         }
-        match ch {
-            '/' if starts_regex_literal(source, index) => in_string = Some('/'),
-            '"' | '\'' | '`' => in_string = Some(ch),
-            '|' if starts_temporal_literal(source, index) => in_string = Some(ch),
-            '<' if starts_type_argument_list(source, index) => angle_depth += 1,
-            '>' if angle_depth > 0 => angle_depth -= 1,
-            '{' | '[' | '(' => depth += 1,
-            '}' | ']' | ')' => depth -= 1,
-            _ => {}
+        if bytes[i..].starts_with(b"/*") {
+            let Some(end) = comment_end(source, i) else {
+                return false;
+            };
+            if end > target {
+                return false;
+            }
+            i = end;
+            continue;
         }
+        if matches!(c, b'"' | b'\'' | b'`')
+            || (c == b'/' && starts_regex_literal(source, i))
+            || (c == b'|' && starts_temporal_literal(source, i))
+        {
+            let Some(end) = matching_end(source, i, c, true) else {
+                return false;
+            };
+            if end >= target {
+                return false;
+            }
+            i = end + 1;
+            continue;
+        }
+        match c {
+            b'<' if starts_type_argument_list(source, i) => angle += 1,
+            b'>' if angle > 0 => angle -= 1,
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            _ => (),
+        };
+        i += 1;
     }
-    depth == 0 && angle_depth == 0 && in_string.is_none()
+    depth == 0 && angle == 0
 }
 
-fn starts_temporal_literal(source: &str, index: usize) -> bool {
-    source[index..].starts_with('|')
-        && source[index + '|'.len_utf8()..]
-            .chars()
-            .next()
-            .is_some_and(|next| next.is_ascii_digit() || matches!(next, 'P' | 'T' | '+' | '-'))
+pub(crate) fn starts_temporal_literal(source: &str, index: usize) -> bool {
+    let Some(rest) = source.get(index..).and_then(|s| s.strip_prefix('|')) else {
+        return false;
+    };
+    let mut chars = rest.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_digit() => true,
+        Some('P') => chars.next().is_some_and(|c| c.is_ascii_digit() || c == 'T'),
+        Some('T') => chars.next().is_some_and(|c| c.is_ascii_digit()),
+        Some('+' | '-') => chars.next().is_some_and(|c| c.is_ascii_digit() || c == 'P'),
+        Some('Z') => chars.next() == Some('|'),
+        _ => false,
+    }
 }
 
-fn starts_regex_literal(source: &str, index: usize) -> bool {
-    source[index..].starts_with('/')
-        && source[index + '/'.len_utf8()..]
+pub(crate) fn starts_regex_literal(source: &str, index: usize) -> bool {
+    if !source[index..].starts_with('/')
+        || !source[index + 1..]
             .chars()
             .next()
             .is_some_and(|next| next != '/' && next != '*')
-        && source[..index]
-            .chars()
-            .rev()
-            .find(|ch| !ch.is_whitespace())
-            .is_none_or(|ch| matches!(ch, '(' | '[' | '{' | ':' | ',' | '='))
+    {
+        return false;
+    }
+    let before = source[..index].trim_end();
+    before
+        .chars()
+        .last()
+        .is_none_or(|ch| matches!(ch, '(' | '[' | '{' | ':' | ',' | '='))
+        || before
+            .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+            .next_back()
+            .is_some_and(|word| matches!(word, "matches" | "replace" | "with" | "case"))
 }
 
 fn starts_type_argument_list(source: &str, index: usize) -> bool {
-    source[index..].starts_with('<')
-        && source[index + '<'.len_utf8()..]
+    if !source[index..].starts_with('<')
+        || !source[index + 1..]
             .chars()
             .next()
-            .is_some_and(|next| next.is_ascii_alphabetic() || next == '_')
-        && source[..index]
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        || !source[..index]
             .chars()
             .rev()
-            .find(|ch| !ch.is_whitespace())
-            .is_some_and(|previous| {
-                previous.is_ascii_alphabetic() || previous == '_' || previous == '>'
-            })
+            .find(|c| !c.is_whitespace())
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_' || c == '>')
+    {
+        return false;
+    }
+    let bytes = source.as_bytes();
+    let mut i = index + 1;
+    let mut angles = 1;
+    let mut groups = vec![];
+    while i < bytes.len() {
+        let c = bytes[i];
+        if matches!(c, b'"' | b'\'' | b'`') {
+            let Some(end) = matching_end(source, i, c, true) else {
+                return false;
+            };
+            i = end + 1;
+            continue;
+        }
+        if bytes[i..].starts_with(b"->") {
+            i += 2;
+            continue;
+        }
+        match c {
+            b'<' => angles += 1,
+            b'>' => {
+                angles -= 1;
+                if angles == 0 {
+                    let inside = &source[index + 1..i];
+                    if inside
+                        .split_whitespace()
+                        .any(|w| matches!(w, "and" | "or" | "default" | "else" | "if"))
+                    {
+                        return false;
+                    }
+                    return !source[i + 1..]
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+                }
+            }
+            b'(' => groups.push(b')'),
+            b'[' => groups.push(b']'),
+            b'{' => groups.push(b'}'),
+            b')' | b']' | b'}' => {
+                if groups.pop() != Some(c) {
+                    return false;
+                }
+            }
+            b';' | b'=' => return false,
+            _ => (),
+        }
+        i += 1;
+    }
+    false
 }
 
 pub(crate) fn strip_wrapping_parens(source: &str) -> &str {
@@ -296,20 +430,7 @@ pub(crate) fn strip_wrapping_parens(source: &str) -> &str {
 }
 
 pub(crate) fn matching_outer_parens(source: &str) -> bool {
-    let mut depth = 0i32;
-    for (index, ch) in source.char_indices() {
-        match ch {
-            '(' => depth += 1,
-            ')' => {
-                depth -= 1;
-                if depth == 0 && index != source.len() - 1 {
-                    return false;
-                }
-            }
-            _ => {}
-        }
-    }
-    depth == 0
+    find_matching_delimiter(source, 0, '(', ')') == Some(source.len() - 1)
 }
 
 pub(crate) fn is_identifier(source: &str) -> bool {
@@ -319,4 +440,188 @@ pub(crate) fn is_identifier(source: &str) -> bool {
     };
     (first.is_ascii_alphabetic() || first == '_')
         && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
+/// A call whose target is an expression, rather than a qualified function name.
+/// Returned slices remain borrowed from the original source.
+pub(crate) fn parse_computed_call(source: &str) -> Option<(&str, Vec<&str>)> {
+    if !source.ends_with(')') {
+        return None;
+    }
+    for (open, ch) in source.char_indices() {
+        if ch != '(' || open == 0 || !is_top_level_index(source, open) {
+            continue;
+        }
+        if find_matching_delimiter(source, open, '(', ')') != Some(source.len() - 1) {
+            continue;
+        }
+        let target = source[..open].trim();
+        let name = target.split('<').next().unwrap_or(target);
+        if name.split("::").all(is_identifier) && (name == target || target.ends_with('>')) {
+            return None;
+        }
+        let inner = source[open + 1..source.len() - 1].trim();
+        let args = if inner.is_empty() {
+            vec![]
+        } else {
+            split_top_level(inner, ',')
+                .into_iter()
+                .map(str::trim)
+                .collect()
+        };
+        return Some((target, args));
+    }
+    None
+}
+
+/// Visit code positions at delimiter depth zero, skipping complete literals,
+/// including interpolated strings, in one pass. Shared by source-aware grammars.
+pub(crate) fn visit_top_level(source: &str, mut visit: impl FnMut(usize, char)) {
+    let bytes = source.as_bytes();
+    let mut i = 0;
+    let mut depth = 0i32;
+    let mut angle = 0;
+    while i < bytes.len() {
+        if starts_line_comment(source, i) {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if bytes[i..].starts_with(b"/*") {
+            let Some(end) = comment_end(source, i) else {
+                return;
+            };
+            i = end;
+            continue;
+        }
+        let ch = source[i..].chars().next().unwrap();
+        let root = depth == 0 && angle == 0;
+        if matches!(ch, '"' | '\'' | '`')
+            || (ch == '/' && starts_regex_literal(source, i))
+            || (ch == '|' && starts_temporal_literal(source, i))
+        {
+            if root {
+                visit(i, ch);
+            }
+            let Some(end) = matching_end(source, i, ch as u8, true) else {
+                return;
+            };
+            i = end + 1;
+            continue;
+        }
+        if root {
+            visit(i, ch);
+        }
+        match ch {
+            '<' if starts_type_argument_list(source, i) => angle += 1,
+            '>' if angle > 0 => angle -= 1,
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            _ => (),
+        };
+        i += ch.len_utf8();
+    }
+}
+
+/// Replace comments byte-for-byte, preserving newlines and UTF-8 offsets.
+pub(crate) fn mask_comments(source: &str) -> Result<String, crate::DwError> {
+    enum Mode {
+        Code(usize),
+        Literal(u8),
+    }
+    let bytes = source.as_bytes();
+    let mut out = bytes.to_vec();
+    let mut modes = vec![Mode::Code(0)];
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        let next = bytes.get(i + 1).copied();
+        if let Some(Mode::Literal(quote)) = modes.last() {
+            let quote = *quote;
+            if c == b'\\' {
+                i += 2;
+                continue;
+            }
+            if c == quote {
+                modes.pop();
+                i += 1;
+                continue;
+            }
+            if matches!(quote, b'"' | b'\'' | b'`') && c == b'$' && next == Some(b'(') {
+                modes.push(Mode::Code(1));
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+        if c == b'/' && next == Some(b'/') && starts_line_comment(source, i) {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                out[i] = b' ';
+                i += 1;
+            }
+            continue;
+        }
+        if c == b'/' && next == Some(b'*') {
+            let mut depth = 1;
+            out[i] = b' ';
+            out[i + 1] = b' ';
+            i += 2;
+            while i < bytes.len() && depth > 0 {
+                if bytes[i..].starts_with(b"/*") {
+                    depth += 1;
+                    out[i] = b' ';
+                    out[i + 1] = b' ';
+                    i += 2;
+                } else if bytes[i..].starts_with(b"*/") {
+                    depth -= 1;
+                    out[i] = b' ';
+                    out[i + 1] = b' ';
+                    i += 2;
+                } else {
+                    if !matches!(bytes[i], b'\n' | b'\r') {
+                        out[i] = b' ';
+                    }
+                    i += 1;
+                }
+            }
+            if depth > 0 {
+                return Err(crate::DwError::Parse("Debug: unterminated comment".into()));
+            }
+            continue;
+        }
+        if matches!(c, b'"' | b'\'' | b'`')
+            || (c == b'|' && starts_temporal_literal(source, i))
+            || (c == b'/' && starts_regex_literal(source, i))
+        {
+            modes.push(Mode::Literal(c));
+            i += 1;
+            continue;
+        }
+        if let Some(Mode::Code(depth)) = modes.last_mut() {
+            if *depth > 0 {
+                if c == b'(' {
+                    *depth += 1;
+                } else if c == b')' {
+                    *depth -= 1;
+                    if *depth == 0 {
+                        modes.pop();
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    if modes.len() != 1 {
+        return Err(crate::DwError::Parse(
+            "Debug: unterminated comment or literal".into(),
+        ));
+    }
+    Ok(String::from_utf8(out).expect("masked source is UTF-8"))
+}
+
+fn starts_line_comment(source: &str, index: usize) -> bool {
+    source.as_bytes()[index..].starts_with(b"//")
+        && source[..index].chars().rev().find(|c| !c.is_whitespace()) != Some(':')
 }

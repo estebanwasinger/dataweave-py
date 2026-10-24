@@ -287,3 +287,74 @@ fn rsa_jwt_uses_wasm_randomness_and_matches_openssl_signature() {
         expected["RS256"]
     );
 }
+
+#[wasm_bindgen_test]
+fn debugger_shared_protocol_transcript() {
+    run_debugger_transcript(
+        include_str!("../../../tests/fixtures/debugger/session.json"),
+        json!([2, 4, 6]),
+    );
+}
+#[wasm_bindgen_test]
+fn debugger_m1_protocol_transcript() {
+    run_debugger_transcript(
+        include_str!("../../../tests/fixtures/debugger/m1.json"),
+        json!({"result":{"k2":"3"},"filtered":[2,3],"replaced":"a10b221","closure":5}),
+    );
+}
+#[wasm_bindgen_test]
+fn debugger_m2_protocol_transcript() {
+    run_debugger_transcript(
+        include_str!("../../../tests/fixtures/debugger/m2.json"),
+        serde_json::from_str(include_str!(
+            "../../../tests/fixtures/debugger/m2.expected.json"
+        ))
+        .unwrap(),
+    );
+}
+fn run_debugger_transcript(source: &str, expected: Value) {
+    let requests: Vec<Value> = serde_json::from_str(source).unwrap();
+    let mut adapter = dwpy_wasm::DataWeaveDebugAdapter::new();
+    for request in requests {
+        let messages: Vec<Value> =
+            serde_json::from_str(&adapter.dispatch(&request.to_string()).unwrap()).unwrap();
+        assert_eq!(messages[0]["success"], true, "{messages:?}");
+        if request["command"] == "evaluate" {
+            assert_eq!(messages[0]["body"]["result"], "2");
+        }
+        if request["command"] == "configurationDone" || request["command"] == "stepIn" {
+            let mut stopped = false;
+            for _ in 0..1000 {
+                let messages: Vec<Value> = serde_json::from_str(&adapter.poll(7).unwrap()).unwrap();
+                if messages.iter().any(|m| m["event"] == "stopped") {
+                    stopped = true;
+                    break;
+                }
+            }
+            assert!(stopped);
+        }
+        if request["command"] == "continue" {
+            let mut result = None;
+            let mut terminated = false;
+            for _ in 0..1000 {
+                let messages: Vec<Value> = serde_json::from_str(&adapter.poll(7).unwrap()).unwrap();
+                for message in messages {
+                    if message["body"]["data"]["kind"] == "result" {
+                        result = Some(message["body"]["data"]["result"].clone());
+                    }
+                    if message["event"] == "terminated" {
+                        terminated = true;
+                    }
+                }
+                if terminated {
+                    break;
+                }
+            }
+            assert!(terminated);
+            assert_eq!(
+                serde_json::from_str::<Value>(result.unwrap().as_str().unwrap()).unwrap(),
+                expected
+            );
+        }
+    }
+}

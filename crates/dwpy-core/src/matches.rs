@@ -36,7 +36,10 @@ pub(crate) fn evaluate_match_expression(
         };
 
         let (pattern_without_guard, guard_source) = split_top_level_keyword(pattern_source, "when")
-            .or_else(|| split_top_level_keyword(pattern_source, "if"))
+            .or_else(|| {
+                crate::syntax::split_top_level_keyword_or_call_operator(pattern_source, &["if"])
+                    .map(|(a, _, b)| (a, b))
+            })
             .map(|(pattern, guard)| (pattern.trim(), Some(guard.trim())))
             .unwrap_or((pattern_source, None));
 
@@ -115,7 +118,10 @@ fn match_pattern(
     Ok(match_values(value, &expected))
 }
 
-fn regex_match_captures(value: &Value, pattern: &Value) -> Result<Option<Vec<Value>>, DwError> {
+pub(crate) fn regex_match_captures(
+    value: &Value,
+    pattern: &Value,
+) -> Result<Option<Vec<Value>>, DwError> {
     if value.is_null() || pattern.is_null() {
         return Ok(None);
     }
@@ -158,43 +164,22 @@ fn bind_match_value(
     Ok(())
 }
 
-fn split_match_cases(source: &str) -> Vec<&str> {
-    let mut cases = Vec::new();
+pub(crate) fn split_match_cases(source: &str) -> Vec<&str> {
+    let mut cases = vec![];
     let mut start = None;
-    let mut depth = 0i32;
-    let mut in_string = None;
-    let mut escaped = false;
-    for (index, ch) in source.char_indices() {
-        if let Some(quote) = in_string {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == quote {
-                in_string = None;
+    crate::syntax::visit_top_level(source, |index, ch| {
+        if ch == ',' {
+            if let Some(begin) = start.take() {
+                push_match_case(&mut cases, &source[begin..index]);
             }
-            continue;
-        }
-        match ch {
-            '"' | '\'' | '`' | '|' => in_string = Some(ch),
-            '{' | '[' | '(' => depth += 1,
-            '}' | ']' | ')' => depth -= 1,
-            ',' if depth == 0 => {
-                if let Some(case_start) = start.take() {
-                    push_match_case(&mut cases, &source[case_start..index]);
-                }
-            }
-            _ => {
-                if depth == 0 && starts_match_case(source, index) {
-                    if let Some(case_start) = start.replace(index) {
-                        push_match_case(&mut cases, &source[case_start..index]);
-                    }
-                }
+        } else if starts_match_case(source, index) {
+            if let Some(begin) = start.replace(index) {
+                push_match_case(&mut cases, &source[begin..index]);
             }
         }
-    }
-    if let Some(case_start) = start {
-        push_match_case(&mut cases, &source[case_start..]);
+    });
+    if let Some(begin) = start {
+        push_match_case(&mut cases, &source[begin..]);
     }
     cases
 }
@@ -220,6 +205,9 @@ fn push_match_case<'a>(cases: &mut Vec<&'a str>, source: &'a str) {
 
 pub(crate) fn parse_match_expression_source(source: &str) -> Option<(&str, &str)> {
     let (value_source, cases_source) = split_top_level_keyword(source, "match")?;
+    if split_top_level_arrow(source).is_some_and(|(params, _)| params.len() < value_source.len()) {
+        return None;
+    }
     if !cases_source.starts_with('{') || !cases_source.ends_with('}') {
         return None;
     }
