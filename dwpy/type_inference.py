@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable
 from datetime import date, datetime, time, timedelta
-from typing import Any, Dict, List, Optional, Tuple, Union, get_args, get_origin
+from typing import Any, Union, cast
 
 from . import parser
 from .parser import FunctionTypeSpec as ParserFunctionTypeSpec
@@ -148,13 +148,16 @@ def _infer_script_type_rust(
     try:
         from ._dwpy_rust import RustDataWeaveRuntime
 
-        descriptor = RustDataWeaveRuntime().infer_type_descriptor(
+        infer_descriptor = getattr(RustDataWeaveRuntime(), "infer_type_descriptor", None)
+        if not callable(infer_descriptor):
+            return None
+        descriptor = infer_descriptor(
             script_source,
             payload=payload_arg,
             vars=vars_arg,
             attributes=attributes_arg,
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 - Python inference falls back on any Rust failure
         return None
     return _dw_type_from_rust_descriptor(descriptor)
 
@@ -243,10 +246,10 @@ def _python_value_to_type(value: Any) -> DWType:
         return object_type(fields, is_open_flag=True)
     # Pydantic BaseModel (or similar) support: treat model fields as an object type
     try:
-        from pydantic import BaseModel  # type: ignore
-    except Exception:  # pragma: no cover
-        BaseModel = None  # type: ignore
-    if BaseModel is not None and isinstance(value, BaseModel):  # type: ignore
+        from pydantic import BaseModel
+    except ImportError:  # pragma: no cover
+        return ANY
+    if isinstance(value, BaseModel):
         data = value.model_dump()  # type: ignore[attr-defined]
         return _python_value_to_type(data)
     return ANY
@@ -264,7 +267,7 @@ def infer_script_pydantic_model(
     Infer the script type and return a dynamic Pydantic model that represents the output shape.
     """
     try:
-        from pydantic import BaseModel, create_model  # type: ignore
+        from pydantic import BaseModel, create_model
     except Exception as exc:  # pragma: no cover - optional dependency
         raise RuntimeError("pydantic is required for infer_script_pydantic_model") from exc
 
@@ -276,12 +279,12 @@ def infer_script_pydantic_model(
     )
 
     def to_annotation(dw_type: DWType) -> Any:
-        if isinstance(dw_type, AnyType) or isinstance(dw_type, NothingType):
+        if isinstance(dw_type, (AnyType, NothingType)):
             return Any
         if isinstance(dw_type, StringType):
             return str
         if isinstance(dw_type, NumberType):
-            return Union[int, float]
+            return int | float
         if isinstance(dw_type, BooleanType):
             return bool
         if isinstance(dw_type, NullType):
@@ -293,10 +296,10 @@ def infer_script_pydantic_model(
         if isinstance(dw_type, LiteralType):
             return type(dw_type.value)
         if isinstance(dw_type, ArrayType):
-            return list[to_annotation(dw_type.element)]
+            return list.__class_getitem__(to_annotation(dw_type.element))
         if isinstance(dw_type, UnionType):
             annos = [to_annotation(opt) for opt in dw_type.options]
-            return Union[tuple(annos)]  # type: ignore
+            return Union[tuple(annos)]  # noqa: UP007 - runtime list of inferred types
         if isinstance(dw_type, ObjectType):
             fields_def: dict[str, tuple[Any, Any]] = {}
             for name, f_type, is_optional, is_repeat in dw_type.fields:
@@ -309,18 +312,18 @@ def infer_script_pydantic_model(
                     nullable = True
                 annotation = to_annotation(field_type)
                 if is_repeat:
-                    annotation = list[annotation]  # type: ignore
+                    annotation = list[annotation]
                 if is_optional or nullable or isinstance(field_type, NullType):
-                    annotation = Optional[annotation]
+                    annotation = annotation | None
                     default = None
                 else:
                     default = ...
                 fields_def[name] = (annotation, default)
             # Config: allow extra fields if object is open
             extra_mode = "allow" if dw_type.is_open else "forbid"
-            return create_model(
+            dynamic_create_model = cast(Callable[..., type[BaseModel]], create_model)
+            return dynamic_create_model(
                 f"{model_name}_{id(dw_type)}",
-                __base__=BaseModel,
                 __module__="dwpy.dynamic_models",
                 __config__={"extra": extra_mode},
                 **fields_def,
@@ -331,7 +334,7 @@ def infer_script_pydantic_model(
     if isinstance(inferred, ObjectType) and isinstance(root_annotation, type):
         return root_annotation
     # Wrap non-object roots into a model with a single field `value`
-    from pydantic import create_model  # type: ignore
+    from pydantic import create_model
 
     return create_model(model_name, value=(root_annotation, ...))
 
@@ -719,9 +722,8 @@ class TypeInferencer:
             return NUMBER
         if is_string(left) and is_string(right):
             return STRING
-        if is_array(left) and is_array(right):
-            if isinstance(left, ArrayType) and isinstance(right, ArrayType):
-                return merge_array_types(left, right)
+        if is_array(left) and is_array(right) and isinstance(left, ArrayType) and isinstance(right, ArrayType):
+            return merge_array_types(left, right)
         return ANY
 
     def _infer_binary_concat(self, left: DWType, right: DWType) -> DWType:
@@ -731,9 +733,8 @@ class TypeInferencer:
             or (is_number(left) and is_number(right))
         ):
             return STRING
-        if is_array(left) and is_array(right):
-            if isinstance(left, ArrayType) and isinstance(right, ArrayType):
-                return merge_array_types(left, right)
+        if is_array(left) and is_array(right) and isinstance(left, ArrayType) and isinstance(right, ArrayType):
+            return merge_array_types(left, right)
         if isinstance(left, ObjectType) and isinstance(right, ObjectType):
             return merge_object_types(left, right)
         if isinstance(left, UnionType):
@@ -762,7 +763,7 @@ class TypeInferencer:
             if isinstance(right_expr, parser.StringLiteral):
                 key_name = right_expr.value
             elif isinstance(right_expr, parser.InterpolatedString):
-                key_name = self._extract_constant_string(right_expr, None)
+                key_name = self._extract_constant_string(right_expr, self.context) if self.context is not None else None
 
             if key_name is not None:
                 new_fields = left.field_dict().copy()
