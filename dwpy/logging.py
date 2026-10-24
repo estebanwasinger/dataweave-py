@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Callable, Iterable, Iterator
 
 
 @dataclass(frozen=True)
@@ -50,7 +50,7 @@ def emit_log(entry: LogEntry) -> None:
     configured = _active.get()
     if configured is None:
         # Preserve the legacy Python default, including its WARNING threshold.
-        logging.log(_levels[entry.level], entry.message)
+        logging.getLogger(__name__).log(_levels[entry.level], entry.message)
         return
     for logger in configured:
         if isinstance(logger, logging.Logger):
