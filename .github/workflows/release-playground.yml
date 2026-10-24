@@ -187,7 +187,8 @@ jobs:
         working-directory: playground
         run: |
           corepack enable
-          corepack prepare pnpm@9 --activate
+          # pnpm >=10.5 accepts settings-only pnpm-workspace.yaml files.
+          corepack prepare pnpm@10 --activate
           pnpm install --frozen-lockfile
           pnpm build
 
