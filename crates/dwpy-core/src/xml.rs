@@ -2,7 +2,7 @@ use crate::value::DwMap as Map;
 use crate::value::DwValue as Value;
 use std::collections::HashMap;
 
-use crate::selectors::{unwrap_metadata_value, value_with_metadata};
+use crate::selectors::{duplicate_object_pairs, unwrap_metadata_value, value_with_metadata};
 use crate::{as_dataweave_string, output_option, DwError};
 
 const XML_LIST_KEY: &str = "__dwpy_xml_list";
@@ -440,7 +440,11 @@ fn collapse_xsi_nil_nodes(value: &mut Value) {
 
 pub(crate) fn render_xml_output(value: &Value, directive: &str) -> Result<String, DwError> {
     let (root_name, root_value) = match value {
-        Value::Object(map) if map.len() == 1 && output_option(directive, "root").is_none() => {
+        Value::Object(map)
+            if map.len() == 1
+                && duplicate_object_pairs(value).is_none()
+                && output_option(directive, "root").is_none() =>
+        {
             map.iter().next().expect("checked one item")
         }
         _ => {
@@ -467,30 +471,11 @@ fn render_xml_element(name: &str, value: &Value) -> String {
             .map(|item| render_xml_element(name, item))
             .collect::<String>();
     }
+    if let Some(pairs) = duplicate_object_pairs(value) {
+        return render_xml_object(name, pairs.iter().map(|(key, value)| (key, value)));
+    }
     match value {
-        Value::Object(map) => {
-            let mut attributes = String::new();
-            let mut text = String::new();
-            let mut children = String::new();
-            for (key, child_value) in map {
-                if let Some(attribute) = key.strip_prefix('@') {
-                    attributes.push(' ');
-                    attributes.push_str(attribute);
-                    attributes.push_str("=\"");
-                    attributes.push_str(&escape_xml_attr(&as_dataweave_string(child_value)));
-                    attributes.push('"');
-                } else if key == "#text" {
-                    text.push_str(&escape_xml_text(&as_dataweave_string(child_value)));
-                } else {
-                    children.push_str(&render_xml_element(key, child_value));
-                }
-            }
-            if text.is_empty() && children.is_empty() {
-                format!("<{name}{attributes} />")
-            } else {
-                format!("<{name}{attributes}>{text}{children}</{name}>")
-            }
-        }
+        Value::Object(map) => render_xml_object(name, map.iter()),
         Value::Array(items) => {
             let children = items
                 .iter()
@@ -503,6 +488,33 @@ fn render_xml_element(name: &str, value: &Value) -> String {
             "<{name}>{}</{name}>",
             escape_xml_text(&as_dataweave_string(other))
         ),
+    }
+}
+
+fn render_xml_object<'a>(
+    name: &str,
+    entries: impl Iterator<Item = (&'a String, &'a Value)>,
+) -> String {
+    let mut attributes = String::new();
+    let mut text = String::new();
+    let mut children = String::new();
+    for (key, child_value) in entries {
+        if let Some(attribute) = key.strip_prefix('@') {
+            attributes.push(' ');
+            attributes.push_str(attribute);
+            attributes.push_str("=\"");
+            attributes.push_str(&escape_xml_attr(&as_dataweave_string(child_value)));
+            attributes.push('"');
+        } else if key == "#text" {
+            text.push_str(&escape_xml_text(&as_dataweave_string(child_value)));
+        } else {
+            children.push_str(&render_xml_element(key, child_value));
+        }
+    }
+    if text.is_empty() && children.is_empty() {
+        format!("<{name}{attributes} />")
+    } else {
+        format!("<{name}{attributes}>{text}{children}</{name}>")
     }
 }
 

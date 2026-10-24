@@ -2883,6 +2883,27 @@ output application/xml
     }
 
     #[test]
+    fn renders_duplicate_object_keys_as_xml_siblings() {
+        for expression in [
+            r#"root: {test2: {array: 1}, test2: {array: 2}, test2: {array: 3}}"#,
+            r#"{root: read(payload, "application/json").test}"#,
+            r#"read(payload, "application/json").test"#,
+        ] {
+            let result = execute_json(
+                &format!("%dw 2.0\noutput application/xml\n---\n{expression}"),
+                json!(r#"{"test":{"test2":{"array":1},"test2":{"array":2},"test2":{"array":3}}}"#),
+                true,
+            )
+            .unwrap();
+            assert_eq!(
+                result,
+                json!("<root><test2><array>1</array></test2><test2><array>2</array></test2><test2><array>3</array></test2></root>"),
+                "expression: {expression}"
+            );
+        }
+    }
+
+    #[test]
     fn collapses_xml_like_text_node_on_property_selection() {
         let result = execute_json(
             "%dw 2.0\n---\npayload.root.name",

@@ -875,7 +875,7 @@ def _element_to_value(element: ET.Element) -> Any:
 
 
 def _xml_writer(value: Any, options: Dict[str, Any]) -> str:
-    if isinstance(value, Mapping) and len(value) == 1 and "root" not in options:
+    if isinstance(value, Mapping) and len(value.items()) == 1 and "root" not in options:
         root_name, root_value = next(iter(value.items()))
     else:
         root_name = options.get("root", "root")
