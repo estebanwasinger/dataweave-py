@@ -6,7 +6,6 @@ import pytest
 
 from dwpy.runtime import DataWeaveRuntime
 
-
 CASE_MATRIX: List[Dict[str, Any]] = [
     {
         "id": "extract_data",

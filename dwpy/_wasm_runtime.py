@@ -14,7 +14,6 @@ from ._python_runtime import DataWeaveEvaluationError
 from ._rust_bridge import encode_bridge_value, json_default
 from .formats import DWObject
 
-
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent / "packages" / "dataweave-wasm"
 
 

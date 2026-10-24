@@ -5,7 +5,6 @@ from typing import Any
 
 from .formats import DWObject
 
-
 try:
     import pandas as pd
 except Exception:  # pragma: no cover - optional dependency

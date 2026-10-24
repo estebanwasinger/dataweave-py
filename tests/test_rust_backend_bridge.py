@@ -12,8 +12,7 @@ import yaml
 
 from dwpy.runtime import DataWeaveRuntime
 from dwpy.type_inference import infer_script_type
-from dwpy.typesystem import ArrayType, ObjectType, STRING
-
+from dwpy.typesystem import STRING, ArrayType, ObjectType
 
 BACKEND_CONTRACT_TEST = pytest.mark.skipif(
     os.environ.get("DWPY_TEST_BACKEND") is not None,

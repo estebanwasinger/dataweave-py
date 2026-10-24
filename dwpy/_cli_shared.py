@@ -7,8 +7,12 @@ from typing import Any, Optional
 
 from . import parser
 from .formats import (
-    DWObject, FormatRegistry, XMLNodeDict, XMLNodeList, _JSONEncoder,
+    DWObject,
+    FormatRegistry,
+    XMLNodeDict,
+    XMLNodeList,
     _json_object_from_pairs,
+    _JSONEncoder,
 )
 
 

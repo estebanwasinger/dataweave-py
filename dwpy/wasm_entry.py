@@ -11,7 +11,6 @@ from .lsp.engine import DataWeaveLanguageEngine
 from .runtime import DataWeaveRuntime
 from .logging import Logger
 
-
 _LANGUAGE_ENGINE = DataWeaveLanguageEngine()
 
 

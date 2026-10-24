@@ -1,23 +1,23 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple, Type, Union, List, get_args
+from typing import Any, Dict, List, Optional, Tuple, Type, Union, get_args
 
 from pydantic import BaseModel, create_model
 
 from .type_inference import infer_script_type
 from .typesystem import (
-    DWType,
-    AnyType,
-    StringType,
-    NumberType,
-    BooleanType,
-    NullType,
-    BinaryType,
-    ArrayType,
-    ObjectType,
-    UnionType,
-    FunctionType,
     ANY,
+    AnyType,
+    ArrayType,
+    BinaryType,
+    BooleanType,
+    DWType,
+    FunctionType,
+    NullType,
+    NumberType,
+    ObjectType,
+    StringType,
+    UnionType,
 )
 
 

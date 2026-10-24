@@ -4,14 +4,14 @@ import csv
 import io
 import json
 import re
+import xml.etree.ElementTree as ET
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Any, Callable, Dict, Optional
-import xml.etree.ElementTree as ET
 
-from tabulate import tabulate
 import yaml
+from tabulate import tabulate
 
 
 class FormatError(ValueError):

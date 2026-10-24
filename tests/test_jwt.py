@@ -4,9 +4,9 @@ import json
 import os
 
 import pytest
+from jwt_support import FIXTURES, RSA_PRIVATE_KEY, decode_segment, verify_rsa_token
 
 from dwpy.runtime import DataWeaveEvaluationError, DataWeaveRuntime
-from jwt_support import FIXTURES, RSA_PRIVATE_KEY, decode_segment, verify_rsa_token
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("DWPY_TEST_BACKEND") == "python",

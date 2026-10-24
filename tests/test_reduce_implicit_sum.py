@@ -4,7 +4,6 @@ import pytest
 
 from dwpy.runtime import DataWeaveRuntime
 
-
 RANGE_REDUCE = "1 to 1000000 reduce $ + $$"
 
 

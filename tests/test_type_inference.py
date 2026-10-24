@@ -12,9 +12,9 @@ from dwpy.typesystem import (
     LiteralType,
     ObjectType,
     UnionType,
-    union_types,
     array_type,
     object_type,
+    union_types,
 )
 
 

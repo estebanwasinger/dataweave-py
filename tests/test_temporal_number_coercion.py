@@ -4,7 +4,6 @@ import pytest
 
 from dwpy.runtime import DataWeaveRuntime
 
-
 DATETIME_NUMBER_SCRIPT = """%dw 2.0
 output application/python
 ---

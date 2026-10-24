@@ -12,7 +12,6 @@ from dwpy.runtime import DataWeaveRuntime
 from dwpy.type_inference import TypeInferencer
 from dwpy.typesystem import ANY, BOOLEAN
 
-
 SCRIPT = """%dw 2.0
 output application/json
 ---

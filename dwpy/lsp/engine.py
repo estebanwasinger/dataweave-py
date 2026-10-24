@@ -9,7 +9,11 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .. import builtins, parser
-from ..type_inference import TypeInferencer, _dw_type_from_rust_descriptor, _python_value_to_type
+from ..type_inference import (
+    TypeInferencer,
+    _dw_type_from_rust_descriptor,
+    _python_value_to_type,
+)
 from ..typesystem import (
     ANY,
     NUMBER,
@@ -22,7 +26,6 @@ from ..typesystem import (
     UnionType,
     union_types,
 )
-
 
 DW_KEYWORDS: Tuple[str, ...] = (
     "and",

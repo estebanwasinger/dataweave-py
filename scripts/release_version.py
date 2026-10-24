@@ -6,10 +6,10 @@ import argparse
 import json
 import os
 import re
-import tomllib
 from pathlib import Path
 from typing import Mapping
 
+import tomllib
 
 _SEMVER = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 

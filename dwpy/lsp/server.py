@@ -8,7 +8,6 @@ from pygls.lsp.server import LanguageServer
 
 from .engine import DataWeaveLanguageEngine
 
-
 SERVER_NAME = "dwpy-lsp"
 SERVER_VERSION = "0.1.0"
 
