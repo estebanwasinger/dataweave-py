@@ -846,3 +846,19 @@ fn collect_descendant_key_value_pairs(value: &Value, attribute: &str, output: &m
         _ => {}
     }
 }
+
+/// Case updates currently mutate property/index paths only. Reject selectors
+/// that otherwise silently pass through apply_update_path without any mutation.
+pub(crate) fn validate_update_case_segments(segments: &[PathSegment]) -> Result<(), DwError> {
+    if segments.is_empty()
+        || segments
+            .iter()
+            .any(|s| !matches!(s, PathSegment::Property { .. } | PathSegment::Index { .. }))
+    {
+        return Err(DwError::UnsupportedFeature(
+            "update-case selector: only property and index paths are supported by this engine"
+                .into(),
+        ));
+    }
+    Ok(())
+}

@@ -81,6 +81,7 @@ pub(crate) fn evaluate_string_literal_scoped(
         }
         if ch == '$' && chars.get(index + 1) == Some(&'(') {
             let (expression, next_index) = read_interpolation_expression(&chars, index + 2)?;
+            let expression = crate::script::strip_dataweave_comments(&expression);
             let value = evaluate_expression_scoped(expression.trim(), payload, locals)?;
             output.push_str(&as_dataweave_string(&value));
             index = next_index;
@@ -187,51 +188,14 @@ fn is_identifier_part(ch: &char) -> bool {
     ch.is_ascii_alphanumeric() || *ch == '_'
 }
 
-fn read_interpolation_expression(
-    chars: &[char],
-    mut index: usize,
-) -> Result<(String, usize), DwError> {
-    let mut depth = 1i32;
-    let mut expression = String::new();
-    let mut in_string: Option<char> = None;
-    let mut escaped = false;
-    while index < chars.len() {
-        let ch = chars[index];
-        if let Some(quote) = in_string {
-            expression.push(ch);
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == quote {
-                in_string = None;
-            }
-            index += 1;
-            continue;
-        }
-        match ch {
-            '"' | '\'' | '`' => {
-                in_string = Some(ch);
-                expression.push(ch);
-            }
-            '(' => {
-                depth += 1;
-                expression.push(ch);
-            }
-            ')' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Ok((expression, index + 1));
-                }
-                expression.push(ch);
-            }
-            _ => expression.push(ch),
-        }
-        index += 1;
-    }
-    Err(DwError::Parse(
-        "unterminated string interpolation".to_string(),
-    ))
+fn read_interpolation_expression(chars: &[char], index: usize) -> Result<(String, usize), DwError> {
+    let tail = chars[index..].iter().collect::<String>();
+    let source = format!("({tail}");
+    let close = crate::syntax::find_matching_delimiter(&source, 0, '(', ')')
+        .ok_or_else(|| DwError::Parse("unterminated string interpolation".into()))?;
+    let expression = &source[1..close];
+    let next = index + expression.chars().count() + 1;
+    Ok((expression.to_owned(), next))
 }
 
 pub(crate) fn parse_object_key(source: &str) -> Result<String, DwError> {
