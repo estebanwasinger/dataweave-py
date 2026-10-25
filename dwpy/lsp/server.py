@@ -120,6 +120,16 @@ def completion(
                     else types.InsertTextFormat.PlainText
                 ),
                 sort_text=item.sort_text,
+                text_edit=(
+                    types.TextEdit(
+                        range=types.Range(
+                            start=types.Position(line=item.replacement_range[0], character=item.replacement_range[1]),
+                            end=types.Position(line=item.replacement_range[2], character=item.replacement_range[3]),
+                        ),
+                        new_text=item.insert_text or item.label,
+                    )
+                    if item.replacement_range is not None else None
+                ),
             )
         )
 

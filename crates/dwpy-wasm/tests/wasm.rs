@@ -358,3 +358,58 @@ fn run_debugger_transcript(source: &str, expected: Value) {
         }
     }
 }
+
+#[wasm_bindgen_test]
+fn completions_are_source_only_and_support_overloads() {
+    let script = "%dw 2.0\nfun multiply(n, factor: Number) = n * factor\nfun multiply(n) = n\nvar message = fail(\"never run\")\n---\nm";
+    let output = dwpy_wasm::complete_dataweave_request(
+        &json!({"script": script, "line": 5, "column": 1}).to_string(),
+    )
+    .unwrap();
+    let result: Value = serde_json::from_str(&output).unwrap();
+    let items = result["items"].as_array().unwrap();
+    assert_eq!(
+        items
+            .iter()
+            .filter(|i| i["label"] == "multiply" || i["label"] == "message")
+            .count(),
+        3
+    );
+    assert_eq!(items.iter().filter(|i| i["label"] == "multiply").count(), 2);
+    assert!(items
+        .iter()
+        .any(|i| i["insertText"] == "multiply(${1:n}, ${2:factor})"));
+    assert!(dwpy_wasm::complete_dataweave_request(r#"{"script":42,"line":0,"column":0}"#).is_err());
+}
+
+#[wasm_bindgen_test]
+fn completion_reads_input_formats_without_executing_source() {
+    let request = json!({
+        "script": "%dw 2.0\nvar mustNotRun = fail(\"completion ran source\")\n---\npayload[0].",
+        "line": 3, "column": 11,
+        "payload": "name;city\nAda;London", "payload_format": "application/csv",
+        "payload_format_options": {"separator": ";"}
+    });
+    let output = dwpy_wasm::complete_dataweave_request(&request.to_string()).unwrap();
+    let result: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(result["items"][0]["label"], "name");
+    assert_eq!(result["items"][1]["label"], "city");
+    assert_eq!(result["items"][0]["kind"], "field");
+}
+
+#[wasm_bindgen_test]
+fn every_engine_function_is_available_to_completion() {
+    let catalog: Value =
+        serde_json::from_str(&dwpy_wasm::get_dataweave_function_catalog().unwrap()).unwrap();
+    let result: Value = serde_json::from_str(
+        &dwpy_wasm::complete_dataweave_request(r#"{"script":"","line":0,"column":0}"#).unwrap(),
+    )
+    .unwrap();
+    for function in catalog.as_array().unwrap() {
+        assert!(result["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["label"] == function["name"]));
+    }
+}

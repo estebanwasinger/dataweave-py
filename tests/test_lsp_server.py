@@ -41,3 +41,23 @@ def test_completion_handler_maps_engine_items(monkeypatch) -> None:
     assert result.items
     assert result.items[0].label == "name"
     assert result.items[0].kind == types.CompletionItemKind.Field
+
+
+def test_completion_handler_preserves_explicit_namespace_replacement(monkeypatch) -> None:
+    monkeypatch.setattr(lsp_server, "_read_document", lambda _uri: "Text::up")
+    fake_ls = SimpleNamespace(engine=SimpleNamespace(complete=lambda **_kwargs: [
+        EngineCompletionItem(
+            label="Text::upper", kind="function", insert_text="Text::upper(${1:text})",
+            insert_text_format="snippet", replacement_range=(0, 0, 0, 8),
+        ),
+    ]))
+    params = types.CompletionParams(
+        text_document=types.TextDocumentIdentifier(uri="file:///tmp/sample.dwl"),
+        position=types.Position(line=0, character=8),
+    )
+    item = lsp_server.completion(fake_ls, params).items[0]
+    assert item.text_edit == types.TextEdit(
+        range=types.Range(start=types.Position(line=0, character=0), end=types.Position(line=0, character=8)),
+        new_text="Text::upper(${1:text})",
+    )
+    assert item.insert_text_format == types.InsertTextFormat.Snippet

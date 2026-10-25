@@ -2,6 +2,66 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use wasm_bindgen::prelude::*;
 
+/// Query capabilities from the actual engine build, never a client-side function list.
+#[wasm_bindgen]
+pub fn get_dataweave_function_catalog() -> Result<String, JsValue> {
+    serde_json::to_string(dwpy_core::function_catalog::functions())
+        .map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+/// Source/input language service; reads input formats but never evaluates the script.
+#[wasm_bindgen]
+pub fn complete_dataweave_request(request_json: &str) -> Result<String, JsValue> {
+    #[derive(serde::Deserialize)]
+    struct Request {
+        script: String,
+        #[serde(default)]
+        module_sources: BTreeMap<String, String>,
+        line: usize,
+        column: usize,
+        #[serde(default)]
+        payload: serde_json::Value,
+        payload_format: Option<String>,
+        payload_format_options: Option<serde_json::Value>,
+        #[serde(default)]
+        vars: serde_json::Value,
+        #[serde(default)]
+        attributes: serde_json::Value,
+    }
+    let request: Request = serde_json::from_value(decode_request_context(request_json)?)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let items = dwpy_core::completion::complete_fields(
+        &request.script,
+        request.line,
+        request.column,
+        |root| match root {
+            "payload" => dwpy_core::parse_native_payload_format_with_options(
+                request.payload.clone().into(),
+                request.payload_format.as_deref(),
+                request
+                    .payload_format_options
+                    .clone()
+                    .map(dwpy_core::DwValue::from)
+                    .as_ref(),
+            )
+            .ok(),
+            "vars" => Some(request.vars.clone().into()),
+            "attributes" => Some(request.attributes.clone().into()),
+            _ => None,
+        },
+    )
+    .unwrap_or_else(|| {
+        dwpy_core::completion::complete_with_modules(
+            &request.script,
+            request.line,
+            request.column,
+            &request.module_sources,
+        )
+    });
+    serde_json::to_string(&serde_json::json!({ "items": items }))
+        .map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
 #[wasm_bindgen]
 pub fn run_dataweave_smoke(script_source: &str, payload_json: &str) -> Result<String, JsValue> {
     let payload = decode_json_input(payload_json)?;

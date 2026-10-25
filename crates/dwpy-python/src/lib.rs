@@ -912,8 +912,56 @@ fn is_supported_markdown_output_line(line: &str) -> bool {
     tokens.all(|token| token.starts_with("header=") || token.starts_with("columns="))
 }
 
+#[pyfunction]
+fn function_catalog_json() -> PyResult<String> {
+    serde_json::to_string(dwpy_core::function_catalog::functions())
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+}
+#[pyfunction]
+#[pyo3(signature = (script, line, column, module_sources_json = None))]
+fn complete_symbols_json(
+    script: &str,
+    line: usize,
+    column: usize,
+    module_sources_json: Option<&str>,
+) -> PyResult<String> {
+    let modules = module_sources_json
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
+        .unwrap_or_default();
+    serde_json::to_string(&dwpy_core::completion::complete_with_modules(
+        script, line, column, &modules,
+    ))
+    .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+}
+#[pyfunction]
+fn complete_fields_json(
+    script: &str,
+    line: usize,
+    column: usize,
+    context_json: &str,
+) -> PyResult<String> {
+    let context: serde_json::Value = serde_json::from_str(context_json)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let items = dwpy_core::completion::complete_fields(script, line, column, |root| {
+        context.get(root).cloned().map(dwpy_core::DwValue::from)
+    });
+    serde_json::to_string(&items)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+}
+#[pyfunction]
+fn module_signatures_json(source: &str) -> PyResult<String> {
+    serde_json::to_string(&dwpy_core::language::module_signatures(source))
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+}
+
 #[pymodule]
 fn _dwpy_rust(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<RustDataWeaveRuntime>()?;
+    module.add_function(wrap_pyfunction!(function_catalog_json, module)?)?;
+    module.add_function(wrap_pyfunction!(complete_symbols_json, module)?)?;
+    module.add_function(wrap_pyfunction!(complete_fields_json, module)?)?;
+    module.add_function(wrap_pyfunction!(module_signatures_json, module)?)?;
     Ok(())
 }

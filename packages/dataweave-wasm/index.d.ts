@@ -58,3 +58,16 @@ export declare class DebugAdapter {
   readonly running: boolean;
   dispose(): void;
 }
+
+/** Source and input-field completions. Positions are zero-based UTF-16; source is never executed. */
+export type CompletionRequest = {script: string; line: number; column: number;
+  payload?: JsonValue; payload_format?: string; payload_format_options?: Record<string, JsonValue>;
+  vars?: JsonValue; attributes?: JsonValue; module_sources?: Record<string, string>};
+export type CompletionItem = {label: string; kind: "function" | "variable" | "field"; detail: string;
+  insertText: string; insertTextFormat: "plain" | "snippet"; sortText: string};
+export declare const complete: (request: CompletionRequest | string) => {items: CompletionItem[]};
+
+/** Automatically discovered from the active engine build; no manually maintained name list. */
+export type FunctionDescriptor = {name: string; arities: number[]; modules: string[];
+  signatures: {name: string; parameters: string[]; returnType: string | null; documentation: string | null}[]};
+export declare const getFunctionCatalog: () => FunctionDescriptor[];
