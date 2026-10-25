@@ -143,8 +143,24 @@ payload group<cursor>
         vars={},
     )
     group_by = next(item for item in items if item.label == "groupBy")
-    assert group_by.insert_text == "groupBy ((value, key) -> ${1})"
+    assert group_by.insert_text == "groupBy ((item, index) -> ${1})"
     assert group_by.insert_text_format == "snippet"
+
+
+def test_completion_chooses_prefix_or_infix_from_expression_context() -> None:
+    engine = DataWeaveLanguageEngine()
+    for source, label, expected in [
+        ('{name: up<cursor>}', 'upper', 'upper('),
+        ('{values: ma<cursor>}', 'map', 'map('),
+        ('{values: payload ma<cursor>}', 'map', 'map ((item, index) -> ${1})'),
+        ('payload map ma<cursor>', 'map', 'map('),
+        ('payload jo<cursor>', 'joinBy', 'joinBy ${1:separator}'),
+        ('payload ma<cursor> $.name', 'map', 'map'),
+    ]:
+        script, line, column = _cursor(source)
+        items = [item for item in engine.complete(script=script, line=line, column=column) if item.label == label]
+        assert items, source
+        assert all(item.insert_text.startswith(expected) for item in items), source
 
 
 def test_completion_uses_lambda_snippets_for_higher_order_operators() -> None:
@@ -164,11 +180,11 @@ payload <cursor>
     )
     by_label = {item.label: item for item in items}
 
-    assert by_label["map"].insert_text == "map ((value, index) -> ${1})"
-    assert by_label["filter"].insert_text == "filter ((value, index) -> ${1})"
-    assert by_label["reduce"].insert_text == "reduce ((value, accumulator = ${1}) -> ${2})"
-    assert by_label["orderBy"].insert_text == "orderBy ((value, index) -> ${1})"
-    assert by_label["groupBy"].insert_text == "groupBy ((value, key) -> ${1})"
+    assert by_label["map"].insert_text == "map ((item, index) -> ${1})"
+    assert by_label["filter"].insert_text == "filter ((item, index) -> ${1})"
+    assert by_label["reduce"].insert_text == "reduce ((item, accumulator) -> ${1})"
+    assert any(item.label == "orderBy" and item.insert_text == "orderBy ((item, index) -> ${1})" for item in items)
+    assert any(item.label == "groupBy" and item.insert_text == "groupBy ((value, key) -> ${1})" for item in items)
     assert by_label["map"].insert_text_format == "snippet"
     assert by_label["reduce"].insert_text_format == "snippet"
 
@@ -558,3 +574,30 @@ def test_nested_implicit_callbacks_rebind_dollar_and_refresh_after_input_changes
     for source in ["$.<cursor>", "payload map $$.<cursor>", "[payload map $.name, $.<cursor>]"]:
         script, line, column = _cursor(source)
         assert engine.complete(script=script, line=line, column=column, payload=[{"name": "E"}]) == []
+
+
+def test_inline_object_literal_field_completion_requires_no_payload() -> None:
+    engine = DataWeaveLanguageEngine()
+    for source, labels in [
+        ('{\n  "name": "name"\n}.<cursor>', {"name"}),
+        ('({person: {name: fail("never"), lastName: "W"}}).person.<cursor>', {"name", "lastName"}),
+        ('[{name: "E"}, {lastName: "W"}].<cursor>', {"name", "lastName"}),
+    ]:
+        script, line, column = _cursor("%dw 2.0\n---\n" + source)
+        assert _labels(engine.complete(script=script, line=line, column=column)) == labels
+    script, line, column = _cursor('{"emoji": "😀", name: "E"}.na<cursor>me')
+    column += 1
+    item = engine.complete(script=script, line=line, column=column)[0]
+    assert item.insert_text == "name"
+    assert item.replacement_range == (line, column - 2, line, column + 2)
+
+
+def test_then_callback_completion_uses_whole_value_and_projected_shapes() -> None:
+    engine = DataWeaveLanguageEngine()
+    for source in [
+        '%dw 2.0\nimport hashWith from dw::Crypto\noutput application/json\n---\n{\n  "name": "name"\n} then $.<cursor>',
+        '{person: {name: "E"}} then $.person then $.<cursor>',
+        '{name: "E"} then ((value) -> value.<cursor>)',
+    ]:
+        script, line, column = _cursor(source)
+        assert _labels(engine.complete(script=script, line=line, column=column)) == {"name"}

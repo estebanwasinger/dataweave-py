@@ -3,15 +3,23 @@ use crate::selectors::{parse_path_segments, PathSegment};
 use crate::syntax::{editor_tokens, is_identifier, split_top_level, CodeToken};
 use std::ops::Range;
 
+pub(super) enum Root {
+    Context(String),
+    /// Structural field information only. Unknown expressions are opaque nulls;
+    /// values, initializers, and interpolated keys are never evaluated.
+    Shape(crate::DwValue),
+}
+
 #[derive(Clone)]
 pub(super) enum Projection {
     Selector(PathSegment),
     ArrayItems,
     ObjectValues,
     Array,
+    WholeValue,
 }
 pub(super) struct Reference {
-    pub root: String,
+    pub root: Root,
     pub projections: Vec<Projection>,
 }
 struct Callback {
@@ -35,6 +43,7 @@ fn item_projection(operator: &str) -> Option<Projection> {
         "map" | "filter" | "flatMap" | "reduce" | "distinctBy" | "groupBy" | "orderBy" | "some"
         | "every" | "takeWhile" | "dropWhile" => Some(Projection::ArrayItems),
         "mapObject" | "filterObject" | "pluck" => Some(Projection::ObjectValues),
+        "then" => Some(Projection::WholeValue),
         _ => None,
     }
 }
@@ -283,7 +292,7 @@ impl<'a> Analysis<'a> {
             }
         }
         matches!(name, "payload" | "vars" | "attributes").then(|| Reference {
-            root: name.into(),
+            root: Root::Context(name.into()),
             projections: vec![],
         })
     }
@@ -313,7 +322,7 @@ impl<'a> Analysis<'a> {
         if let Some(callback) = self
             .callbacks
             .iter()
-            .filter(|c| c.input.start == start && c.input.end < end && c.body.end <= end)
+            .filter(|c| c.input.start == start && c.input.end < end && c.body.end <= range.end)
             .max_by_key(|c| c.input.end)
         {
             return match callback.operator.as_str() {
@@ -328,8 +337,31 @@ impl<'a> Analysis<'a> {
                     result.projections.push(Projection::Array);
                     Some(result)
                 }
+                "then" => self.expression(callback.body.clone(), depth + 1),
                 _ => None,
             };
+        }
+        if matches!(self.tokens[first].text, "{" | "[" | "(") && !self.tokens[first].literal {
+            let close = self.matching[first]?;
+            if close > last {
+                return None;
+            }
+            let mut reference = if self.tokens[first].text == "(" {
+                self.expression(self.tokens[first].end..self.tokens[close].start, depth + 1)?
+            } else {
+                Reference {
+                    root: Root::Shape(self.literal_shape(first, close, depth, &mut 10_000)?),
+                    projections: vec![],
+                }
+            };
+            let tail = &self.source[self.tokens[close].end..end];
+            reference.projections.extend(
+                parse_path_segments(tail)
+                    .ok()?
+                    .into_iter()
+                    .map(Projection::Selector),
+            );
+            return Some(reference);
         }
         let name = self.tokens[first].text;
         if self.tokens[first].literal
@@ -345,6 +377,111 @@ impl<'a> Analysis<'a> {
             .extend(segments.into_iter().map(Projection::Selector));
         Some(reference)
     }
+
+    fn literal_shape(
+        &self,
+        open: usize,
+        close: usize,
+        depth: usize,
+        budget: &mut usize,
+    ) -> Option<crate::DwValue> {
+        use crate::DwValue;
+        if depth > 32 || *budget == 0 {
+            return None;
+        }
+        *budget -= 1;
+        let object = self.tokens[open].text == "{";
+        if !object && self.tokens[open].text != "[" {
+            return None;
+        }
+        let mut pairs = vec![];
+        let mut items = vec![];
+        let mut first = open + 1;
+        for boundary in (open + 1..=close).filter(|i| {
+            *i == close
+                || (self.parent[*i] == Some(open)
+                    && !self.tokens[*i].literal
+                    && self.tokens[*i].text == ",")
+        }) {
+            if *budget == 0 {
+                break;
+            }
+            let entry = first..boundary;
+            first = boundary + 1;
+            if entry.is_empty() {
+                continue;
+            }
+            *budget -= 1;
+            let value_start = if object {
+                let Some(colon) = entry.clone().find(|i| {
+                    self.parent[*i] == Some(open)
+                        && !self.tokens[*i].literal
+                        && self.tokens[*i].text == ":"
+                }) else {
+                    continue;
+                };
+                // Only literal and bare keys have statically known names.
+                if colon != entry.start + 1 {
+                    continue;
+                }
+                let token = self.tokens[entry.start];
+                if token.literal {
+                    let mut escaped = false;
+                    let dynamic = token.text.chars().any(|ch| {
+                        if escaped {
+                            escaped = false;
+                            false
+                        } else if ch == '\\' {
+                            escaped = true;
+                            false
+                        } else {
+                            ch == '$'
+                        }
+                    });
+                    if dynamic {
+                        continue;
+                    }
+                } else if !is_identifier(token.text) {
+                    continue;
+                }
+                let Ok(key) = crate::literals::parse_object_key(token.text) else {
+                    continue;
+                };
+                pairs.push((key, DwValue::Null));
+                colon + 1
+            } else {
+                entry.start
+            };
+            if value_start >= boundary {
+                continue;
+            }
+            let mut start = value_start;
+            let mut end = boundary - 1;
+            while self.tokens[start].text == "(" && self.matching[start] == Some(end) {
+                start += 1;
+                if start >= end {
+                    break;
+                }
+                end -= 1;
+            }
+            let value = if self.matching[start] == Some(end) {
+                self.literal_shape(start, end, depth + 1, budget)
+                    .unwrap_or(DwValue::Null)
+            } else {
+                DwValue::Null
+            };
+            if object {
+                pairs.last_mut().unwrap().1 = value;
+            } else {
+                items.push(value);
+            }
+        }
+        Some(if object {
+            crate::selectors::duplicate_object_value(pairs)
+        } else {
+            DwValue::Array(items)
+        })
+    }
 }
 
 pub(super) fn resolve(source: &str, dot: usize) -> Option<(Reference, String)> {
@@ -356,16 +493,34 @@ pub(super) fn resolve(source: &str, dot: usize) -> Option<(Reference, String)> {
         .rev()
         .filter(|(_, t)| t.end <= dot)
     {
-        if token.literal || !(is_identifier(token.text) || matches!(token.text, "$" | "$$" | "$$$"))
+        if token.literal
+            || !(is_identifier(token.text)
+                || matches!(token.text, "$" | "$$" | "$$$" | "{" | "[" | "("))
         {
             continue;
         }
         if i > 0 && matches!(analysis.tokens[i - 1].text, "." | "::" | "@") {
             continue;
         }
+        // A call's arguments and an index expression are not the result's
+        // shape. Only consider standalone grouping/literal openers here.
+        if i > 0 && matches!(token.text, "(" | "[") {
+            let previous = analysis.tokens[i - 1];
+            if previous.literal
+                || is_identifier(previous.text)
+                || matches!(previous.text, "$" | "$$" | "$$$" | ")" | "]" | "}")
+            {
+                continue;
+            }
+        }
         let end = source[..dot].strip_suffix('?').map_or(dot, str::len);
         if let Some(reference) = analysis.expression(token.start..end, 0) {
-            return Some((reference, token.text.into()));
+            let label = if matches!(reference.root, Root::Shape(_)) {
+                "Literal"
+            } else {
+                token.text
+            };
+            return Some((reference, label.into()));
         }
     }
     None
