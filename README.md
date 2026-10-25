@@ -585,7 +585,44 @@ The project now includes a stdio Language Server for DataWeave:
 
 - Command: `dwpy-lsp`
 - Module: `dwpy.lsp.server`
-- Engine shared with Monaco + WASM completion bridge: `dwpy.lsp.engine`
+- Python LSP engine: `dwpy.lsp.engine`
+- Browser/Node source completions: `dwpy_core::completion` via `complete_dataweave_request`
+
+Both completion paths preserve local function overloads, show signatures, and insert
+argument-name snippets. Local declarations take precedence over builtin names.
+The browser recovers header functions and variables even when the body is incomplete,
+using the runtime lexer for comment, delimiter, and multiline boundaries. It also
+suggests parameters within their header function body. Completion never runs script
+initializers or function bodies. Cursor positions use zero-based UTF-16 units.
+
+The playground and Python LSP query the active native/WASM engine for function
+completions. No frontend builtin list or manually regenerated function catalog is
+used. Cargo automatically discovers callable names and arities from Rust dispatch
+syntax and enriches signatures from bundled module declarations on every engine
+build. A new supported Rust builtin appears after rebuilding the engine; no
+catalog-maintenance command is required.
+
+Completion also discovers keyword operators handled directly by the expression
+evaluator, including `update`. These appear as operators without function-call
+parentheses, using the same native/WASM source of truth.
+
+Document functions are discovered on every completion request, including nested
+`do` blocks, closures, lambda-valued variables, overloads, and lexical shadowing.
+Imports support wildcard/selective forms, function aliases, module aliases and
+qualified calls. The host may pass `module_sources` (module name → current DW
+source) to discover imported declarations without rebuilding WASM. The Python LSP
+reads referenced module files again on each request and invalidates cached module
+metadata when files change or are added. No initializer or function body is run.
+
+Selector completion also follows collection callback inputs: `payload map $.`
+suggests fields from the payload's array elements, and named parameters such as
+`item` work too. Nested callbacks use their nearest input; fields are combined
+across sampled records, including CSV rows. Selectors and shape-preserving
+collection pipelines are inspected without running callbacks or initializers.
+
+The browser still uses Monaco for keyword/snippet presentation and input-field
+completion through Rust's format readers. Full hover and signature-help parity
+between browser and Python LSP remains separate language-service work.
 
 ### Install
 

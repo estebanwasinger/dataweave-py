@@ -56,3 +56,59 @@ with inline `source` and the same execution inputs as `execute`; configure the
 session with `configurationDone`, then poll cooperatively while `running`.
 See [the debugger guide](../../docs/DEBUGGER.md) for the supported protocol,
 language subset, inspection APIs, and output event extensions.
+
+## Source completions
+
+```js
+const {complete} = require("@estebanwasinger/dataweave-wasm");
+const {items} = complete({
+  script: "%dw 2.0\nfun multiply(number) = number * 2\n---\nm",
+  line: 3,
+  column: 1,
+});
+// multiply(${1:number}), with a function kind and signature detail
+```
+
+Positions are zero-based UTF-16. Results contain runtime context roots (`payload`,
+`attributes`, `vars`), header functions (one item per signature), header
+variables/named inputs, and parameters in the current header
+function body. The service does not execute the source and tolerates an incomplete
+body. It is a completion API rather than a full LSP transport.
+
+Supply `payload` with `payload_format` (and optional `payload_format_options`) for
+field completions using the same Rust input readers as execution. This covers CSV,
+JSON, XML, YAML, NDJSON and Markdown tables. For example, completing `payload.` or
+`payload[0].` with CSV input suggests its column names. Arrays contribute the union
+of record fields; traversal samples up to 10,000 value nodes at a depth of 64.
+Scalars and invalid input have no object fields. Invalid input does not block
+source-symbol suggestions. `vars` and `attributes` accept structured JSON values.
+
+Callback selectors use those same parsed inputs: `payload map $.` offers the
+array elements' fields; `payload map ((item) -> item.)` and nested callbacks are
+also supported. Completion follows selectors and known collection shapes without
+executing callbacks. Unknown transformed shapes do not produce guessed fields.
+
+## Dynamic function discovery
+
+`getFunctionCatalog()` queries the actual WASM engine's callable descriptors
+(names, arities, module exports and signatures). The catalog is discovered
+**automatically during the engine build**, using Rust syntax and module source;
+there is no handwritten name list or regeneration step. New Rust implementations
+require a rebuilt engine, as execution itself does.
+
+`complete()` resolves the supplied document anew on each request. It handles
+nested `do` functions, overload shadowing, lexical closures, lambda-valued vars,
+wildcard/selective imports, aliases and qualified names. Add `module_sources` to
+supply live module documents, for example:
+
+```js
+complete({
+  script: "%dw 2.0\nimport * from custom::Tools\n---\nnew",
+  line: 3, column: 3,
+  module_sources: {"custom::Tools": "fun newFunction(value) = value"},
+});
+```
+
+Changing source or module declarations changes the next response without
+restarting or rebuilding the engine. Discovering external module declarations
+for tooling does not add external-module execution support to the Rust runtime.

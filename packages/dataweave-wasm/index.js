@@ -5,6 +5,11 @@ const bindings = require("./dist/dwpy_wasm.js");
 const parseResult = value => JSON.parse(value);
 const encodeRequest = request => typeof request === "string" ? request : JSON.stringify(request);
 
+const getFunctionCatalog = () => parseResult(bindings.get_dataweave_function_catalog());
+
+const complete = request =>
+  parseResult(bindings.complete_dataweave_request(encodeRequest(request)));
+
 const analyze = request =>
   parseResult(bindings.analyze_dataweave_request(encodeRequest(request)));
 
@@ -38,4 +43,4 @@ class DebugAdapter {
   get running() { return this.adapter.is_running(); }
   dispose() { this.adapter.free(); }
 }
-module.exports = {analyze, execute, executeWithLogs, DebugAdapter};
+module.exports = {getFunctionCatalog, complete, analyze, execute, executeWithLogs, DebugAdapter};

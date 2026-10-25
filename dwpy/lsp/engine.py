@@ -4,7 +4,7 @@ import inspect
 import json
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -138,6 +138,7 @@ class EngineCompletionItem:
     documentation: Optional[str] = None
     insert_text_format: str = "plain"
     sort_text: Optional[str] = None
+    replacement_range: Optional[Tuple[int, int, int, int]] = None
 
 
 @dataclass(frozen=True)
@@ -184,6 +185,7 @@ class _AnalysisContext:
 class DataWeaveLanguageEngine:
     def __init__(self, module_base_path: Optional[Path] = None) -> None:
         self._module_base_path = module_base_path or (Path(__file__).resolve().parent.parent / "modules")
+        self._module_catalog_fingerprint = None
         self._module_catalog: Optional[Dict[str, Dict[str, Tuple[FunctionSignature, ...]]]] = None
         self._builtin_signatures = self._build_builtin_catalog()
 
@@ -215,6 +217,10 @@ class DataWeaveLanguageEngine:
         for name, type_ in lambda_symbols.items():
             ctx.symbol_types[name] = type_
 
+        native_fields = self._native_field_completions(script, line, column, offset, ctx)
+        if native_fields:
+            return native_fields
+
         chain_info = _extract_property_chain(script[:offset])
         if chain_info is not None:
             root_expr, prefix = chain_info
@@ -238,8 +244,90 @@ class DataWeaveLanguageEngine:
                     if str(key).startswith(property_prefix)
                 ]
 
+        native_items = self._native_completions(script, line, column, document_path)
+        if native_items is not None:
+            qualified = re.search(r"[A-Za-z_][A-Za-z0-9_]*::[A-Za-z0-9_:]*$", script[:offset])
+            prefix = qualified.group(0) if qualified else _extract_current_word(script[:offset])
+            suffix = re.match(r"[A-Za-z0-9_]*", script[offset:]).group(0)
+            replacement_range = (line, max(column - len(prefix), 0), line, column + len(suffix))
+            native_items = [replace(item, replacement_range=replacement_range) for item in native_items]
+            selector = script[:offset - len(_extract_current_word(script[:offset]))].rstrip().endswith(".")
+            extras = [] if qualified or selector else [item for item in self._complete_global(
+                prefix=_extract_current_word(script[:offset]), ctx=ctx,
+            ) if item.kind in {"keyword", "snippet"}
+                and not any(native.label == item.label for native in native_items)]
+            return sorted(native_items + extras, key=lambda item: item.sort_text or item.label)
+
         prefix = _extract_current_word(script[:offset])
-        return self._complete_global(prefix=prefix, ctx=ctx)
+        items = self._complete_global(prefix=prefix, ctx=ctx)
+        # Accepting a suggestion in front of an existing call keeps its arguments.
+        suffix = re.sub(r"^[A-Za-z0-9_]*", "", script[offset:])
+        if suffix.lstrip().startswith("("):
+            items = [
+                replace(item, insert_text=item.label, insert_text_format="plain")
+                if item.kind == "function" else item
+                for item in items
+            ]
+        return items
+
+    def _native_field_completions(self, script: str, line: int, column: int,
+                                  offset: int, ctx: _AnalysisContext) -> Optional[List[EngineCompletionItem]]:
+        try:
+            from .._dwpy_rust import complete_fields_json
+            context = {name: value for name, value in (
+                ("payload", ctx.payload_value), ("vars", ctx.vars_value),
+                ("attributes", ctx.attributes_value),
+            ) if value is not _MISSING}
+            response = json.loads(complete_fields_json(script, max(line, 0), max(column, 0), json.dumps(context)))
+        except (ImportError, AttributeError, TypeError, ValueError):
+            return None
+        if response is None:
+            return None
+        prefix = re.search(r"[@A-Za-z0-9_]*$", script[:offset]).group(0)
+        suffix = re.match(r"[A-Za-z0-9_]*", script[offset:]).group(0)
+        return [EngineCompletionItem(
+            label=item["label"], kind=item["kind"], insert_text=item["insertText"],
+            detail=item["detail"], sort_text=item["sortText"],
+            replacement_range=(line, column - len(prefix), line, column + len(suffix)),
+        ) for item in response]
+
+    def _native_completions(self, script: str, line: int, column: int,
+                            document_path: Optional[str]) -> Optional[List[EngineCompletionItem]]:
+        try:
+            from .._dwpy_rust import complete_symbols_json
+        except (ImportError, AttributeError):
+            return None
+        modules: Dict[str, str] = {}
+        parsed, header = self._safe_parse(script)
+        header = header or (parsed.header if parsed is not None else None)
+        if header is not None:
+            for directive in header.imports:
+                raw = directive.raw.strip()
+                module = raw.rsplit(" from ", 1)[-1].split(" as ", 1)[0].strip()
+                if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*", module):
+                    continue
+                relative = Path(*module.split("::")).with_suffix(".dwl")
+                roots = [Path(document_path).parent] if document_path else []
+                roots.append(self._module_base_path)
+                for root in roots:
+                    candidate = root / relative
+                    try:
+                        modules[module] = candidate.read_text(encoding="utf-8")
+                        break
+                    except (OSError, UnicodeError):
+                        continue
+        response = json.loads(complete_symbols_json(script, max(line, 0), max(column, 0), json.dumps(modules)))
+        items: List[EngineCompletionItem] = []
+        for item in response:
+            insert = item["insertText"]
+            # Preserve LSP's established infix HOF snippets for native builtins.
+            if item["sortText"].startswith("4_") and item["insertTextFormat"] == "snippet":
+                insert = _FUNCTION_SNIPPET_OVERRIDES.get(item["label"], insert)
+            items.append(EngineCompletionItem(
+                label=item["label"], kind=item["kind"], insert_text=insert,
+                detail=item.get("detail"), insert_text_format=item["insertTextFormat"], sort_text=item["sortText"],
+            ))
+        return items
 
     def hover(
         self,
@@ -430,7 +518,8 @@ class DataWeaveLanguageEngine:
             pass
 
         # Useful recovery for files being edited before delimiter/body is complete.
-        if "---" not in script and script.strip():
+        delimiter_span = parser._find_top_level_script_delimiter_span(script)
+        if delimiter_span is None and script.strip():
             synthetic = script.rstrip() + "\n---\nnull\n"
             try:
                 return parser.parse_script(synthetic), None
@@ -440,9 +529,8 @@ class DataWeaveLanguageEngine:
         header_parser = getattr(parser, "_parse_header", None)
         if callable(header_parser):
             header_source = script
-            delimiter_index = script.find("\n---")
-            if delimiter_index != -1:
-                header_source = script[:delimiter_index]
+            if delimiter_span is not None:
+                header_source = script[:delimiter_span[0]]
             try:
                 parsed_header = header_parser(header_source.strip())
                 return None, parsed_header
@@ -536,11 +624,11 @@ class DataWeaveLanguageEngine:
         return items
 
     def _complete_global(self, *, prefix: str, ctx: _AnalysisContext) -> List[EngineCompletionItem]:
-        suggestions: Dict[Tuple[str, str], EngineCompletionItem] = {}
+        suggestions: Dict[Tuple[str, str, Optional[str]], EngineCompletionItem] = {}
         prefix_lower = prefix.lower()
 
         def add_item(item: EngineCompletionItem) -> None:
-            key = (item.label, item.kind)
+            key = (item.label, item.kind, item.detail if item.kind == "function" else None)
             existing = suggestions.get(key)
             if existing is None:
                 suggestions[key] = item
@@ -557,6 +645,8 @@ class DataWeaveLanguageEngine:
             return name.lower().startswith(prefix_lower)
 
         for name in sorted(ctx.symbol_types):
+            if name in ctx.local_signatures or name in ctx.imported_signatures:
+                continue
             if not matches(name):
                 continue
             if name in {"payload", "vars", "attributes"}:
@@ -575,53 +665,32 @@ class DataWeaveLanguageEngine:
                 )
             )
 
-        for name, signatures in sorted(ctx.local_signatures.items()):
-            if not matches(name):
-                continue
-            signature = signatures[0]
-            add_item(
-                EngineCompletionItem(
-                    label=name,
-                    kind="function",
-                    insert_text=_snippet_insert_text(signature),
-                    detail=signature.label,
-                    documentation=signature.documentation,
-                    insert_text_format="snippet",
-                    sort_text=f"2_{name}",
-                )
-            )
-
-        for name, signatures in sorted(ctx.imported_signatures.items()):
-            if not matches(name):
-                continue
-            signature = signatures[0]
-            add_item(
-                EngineCompletionItem(
-                    label=name,
-                    kind="function",
-                    insert_text=_snippet_insert_text(signature),
-                    detail=signature.label,
-                    documentation=signature.documentation,
-                    insert_text_format="snippet",
-                    sort_text=f"3_{name}",
-                )
-            )
-
-        for name, signatures in sorted(ctx.builtin_signatures.items()):
-            if not matches(name):
-                continue
-            signature = signatures[0]
-            add_item(
-                EngineCompletionItem(
-                    label=name,
-                    kind="function",
-                    insert_text=_snippet_insert_text(signature),
-                    detail=signature.label,
-                    documentation=signature.documentation,
-                    insert_text_format="snippet",
-                    sort_text=f"4_{name}",
-                )
-            )
+        # Local declarations shadow imports, which in turn shadow builtin names.
+        seen_names: set[str] = set()
+        for rank, bucket in (
+            ("2", ctx.local_signatures),
+            ("3", ctx.imported_signatures),
+            ("4", ctx.builtin_signatures),
+        ):
+            for name, signatures in sorted(bucket.items()):
+                if name in seen_names:
+                    continue
+                seen_names.add(name)
+                if not matches(name):
+                    continue
+                # Preserve overloads with distinct signatures and argument counts.
+                for signature in signatures:
+                    add_item(
+                        EngineCompletionItem(
+                            label=name,
+                            kind="function",
+                            insert_text=_snippet_insert_text(signature),
+                            detail=signature.label,
+                            documentation=signature.documentation,
+                            insert_text_format="snippet",
+                            sort_text=f"{rank}_{name}_{len(signature.parameters):04}",
+                        )
+                    )
 
         for keyword in DW_KEYWORDS:
             if not matches(keyword):
@@ -769,9 +838,17 @@ class DataWeaveLanguageEngine:
 
     def _build_builtin_catalog(self) -> Dict[str, Tuple[FunctionSignature, ...]]:
         signatures: Dict[str, Tuple[FunctionSignature, ...]] = {}
-        for name, func in sorted(builtins.CORE_FUNCTIONS.items()):
-            signature = _signature_from_callable(name=name, func=func, origin="builtin")
-            signatures[name] = (signature,)
+        try:
+            from .._dwpy_rust import function_catalog_json
+            for function in json.loads(function_catalog_json()):
+                signatures[function["name"]] = tuple(FunctionSignature(
+                    name=function["name"], parameters=tuple(s["parameters"]),
+                    return_type=s.get("returnType"), documentation=s.get("documentation"), origin="builtin",
+                ) for s in function["signatures"])
+        except (ImportError, AttributeError):
+            for name, func in sorted(builtins.CORE_FUNCTIONS.items()):
+                signature = _signature_from_callable(name=name, func=func, origin="builtin")
+                signatures[name] = (signature,)
         signatures["p"] = (
             FunctionSignature(
                 name="p",
@@ -806,10 +883,24 @@ class DataWeaveLanguageEngine:
         return signatures
 
     def _module_function_catalog(self) -> Dict[str, Dict[str, Tuple[FunctionSignature, ...]]]:
-        if self._module_catalog is not None:
+        files = sorted(self._module_base_path.rglob("*.dwl")) if self._module_base_path.exists() else []
+        fingerprint = tuple((str(path), path.stat().st_mtime_ns, path.stat().st_size) for path in files)
+        if self._module_catalog is not None and self._module_catalog_fingerprint == fingerprint:
             return self._module_catalog
+        self._module_catalog_fingerprint = fingerprint
 
         catalog: Dict[str, Dict[str, List[FunctionSignature]]] = {}
+        try:
+            from .._dwpy_rust import function_catalog_json
+            for function in json.loads(function_catalog_json()):
+                name = function["name"].rsplit("::", 1)[-1]
+                for module in function["modules"]:
+                    catalog.setdefault(module, {})[name] = [FunctionSignature(
+                        name=name, parameters=tuple(s["parameters"]), return_type=s.get("returnType"),
+                        documentation=s.get("documentation"), origin=f"module:{module}",
+                    ) for s in function["signatures"]]
+        except (ImportError, AttributeError):
+            pass
         function_pattern = re.compile(
             r"^fun\s+([A-Za-z0-9_]+)(?:\s*<[^>]*>)?\s*\((.*?)\)\s*(?::([^=\n]+))?=",
             re.MULTILINE,
@@ -821,6 +912,21 @@ class DataWeaveLanguageEngine:
                 raw_text = module_file.read_text(encoding="utf-8", errors="ignore")
                 module_functions = catalog.setdefault(module_name, {})
 
+                try:
+                    from .._dwpy_rust import module_signatures_json
+                    found_names = set()
+                    for item in json.loads(module_signatures_json(raw_text)):
+                        if item["name"] not in found_names:
+                            module_functions[item["name"]] = []
+                            found_names.add(item["name"])
+                        signature = FunctionSignature(
+                            name=item["name"], parameters=tuple(item["parameters"]),
+                            return_type=item.get("returnType"), origin=f"module:{module_name}",
+                        )
+                        module_functions.setdefault(item["name"], []).append(signature)
+                    continue
+                except (ImportError, AttributeError):
+                    pass
                 for match in function_pattern.finditer(raw_text):
                     fn_name = match.group(1)
                     params_chunk = match.group(2) or ""
@@ -889,12 +995,14 @@ def _safe_repr(value: Any) -> str:
 
 
 def _snippet_insert_text(signature: FunctionSignature) -> str:
-    override = _FUNCTION_SNIPPET_OVERRIDES.get(signature.name)
+    override = _FUNCTION_SNIPPET_OVERRIDES.get(signature.name) if signature.origin != "local" else None
     if override is not None:
         return override
     if not signature.parameters:
         return f"{signature.name}()"
-    placeholders = [f"${idx + 1}:{param.split('=', 1)[0]}" for idx, param in enumerate(signature.parameters)]
+    names = [param.split("=", 1)[0].split(":", 1)[0].strip() for param in signature.parameters]
+    names = [name.replace("\\", "\\\\").replace("$", "\\$").replace("}", "\\}") for name in names]
+    placeholders = [f"${{{idx + 1}:{name}}}" for idx, name in enumerate(names)]
     return f"{signature.name}({', '.join(placeholders)})"
 
 
@@ -906,7 +1014,14 @@ def _line_col_to_offset(source: str, line: int, column: int) -> int:
         return 0
     if line >= len(lines):
         return len(source)
-    return min(sum(len(chunk) for chunk in lines[:line]) + max(column, 0), len(source))
+    start = sum(len(chunk) for chunk in lines[:line])
+    units = 0
+    for index, char in enumerate(lines[line]):
+        width = 2 if ord(char) > 0xFFFF else 1
+        if char in "\r\n" or units + width > max(column, 0):
+            return start + index
+        units += width
+    return start + len(lines[line])
 
 
 def _extract_current_word(prefix_source: str) -> str:

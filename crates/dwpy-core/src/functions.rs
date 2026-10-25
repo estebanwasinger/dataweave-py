@@ -117,38 +117,13 @@ fn split_header_var_without_equals(source: &str) -> Option<(&str, &str)> {
 }
 
 pub(crate) fn collect_header_declarations(header: &str) -> Vec<String> {
-    let mut candidates = vec![];
-    let mut offset = 0;
-    for line in header.split_inclusive('\n') {
-        let trimmed = line.trim_start();
-        if is_header_declaration_start(trimmed) {
-            candidates.push(offset + line.len() - trimmed.len());
-        }
-        offset += line.len();
-    }
-    let mut starts = vec![];
-    crate::syntax::visit_top_level(header, |index, _| {
-        if candidates.binary_search(&index).is_ok() {
-            starts.push(index);
-        }
-    });
-    if starts.is_empty() {
-        return if header.trim().is_empty() {
-            vec![]
-        } else {
-            vec![header.trim().into()]
-        };
-    }
-    let mut out = vec![];
-    if !header[..starts[0]].trim().is_empty() {
-        out.push(header[..starts[0]].trim().into());
-    }
-    starts.push(header.len());
-    for pair in starts.windows(2) {
-        out.push(header[pair[0]..pair[1]].trim().to_owned());
-    }
-    out
+    header_declaration_spans(header)
+        .into_iter()
+        .map(|span| header[span].trim().to_owned())
+        .collect()
 }
+
+pub(crate) use crate::declarations::header_declaration_spans;
 
 pub(crate) fn header_reference_sources(header: &str) -> Vec<HeaderReferenceSource> {
     collect_header_declarations(header)
@@ -193,18 +168,6 @@ pub(crate) fn header_reference_sources(header: &str) -> Vec<HeaderReferenceSourc
             })
         })
         .collect()
-}
-
-fn is_header_declaration_start(line: &str) -> bool {
-    let trimmed = line.trim();
-    trimmed.starts_with("%dw")
-        || trimmed.starts_with("output ")
-        || trimmed.starts_with("import ")
-        || trimmed.starts_with("input ")
-        || trimmed.starts_with("type ")
-        || trimmed.starts_with("ns ")
-        || trimmed.starts_with("var ")
-        || trimmed.starts_with("fun ")
 }
 
 fn register_namespace_alias(
@@ -433,6 +396,19 @@ pub(crate) fn register_import_aliases(
         .strip_prefix("import ")
         .ok_or_else(|| DwError::UnsupportedFeature(format!("import line {line}")))?;
     let declaration = declaration.trim();
+    let bindings = crate::function_catalog::import_bindings(declaration);
+    if !bindings.is_empty() {
+        let aliases = locals
+            .entry("__aliases".into())
+            .or_insert_with(|| Value::Object(Map::new()));
+        if let Value::Object(aliases) = aliases {
+            aliases.extend(
+                bindings
+                    .into_iter()
+                    .map(|(name, target)| (name, Value::String(target))),
+            );
+        }
+    }
     for module in ["HMAC", "RSA"] {
         let module_path = format!("dw::util::jwt::{module}");
         let canonical = format!("{module_path}::JWT");
@@ -590,19 +566,7 @@ fn register_header_function(
     Ok(())
 }
 
-pub(crate) fn strip_generic_function_type_parameters(source: &str) -> &str {
-    let Some(open) = source.find('<') else {
-        return source;
-    };
-    let Some(close) = source.rfind('>') else {
-        return source;
-    };
-    if close == source.len() - 1 {
-        source[..open].trim()
-    } else {
-        source
-    }
-}
+pub(crate) use crate::declarations::strip_generic_function_type_parameters;
 
 fn function_param_value(source: &str) -> Result<Value, DwError> {
     let source = source.trim();
@@ -640,25 +604,27 @@ pub(crate) fn resolve_invoked_function_name(
     {
         return Some(function_name.into());
     }
-    resolve_function_alias(function_name, locals).or_else(|| {
-        let (module, name) = function_name.rsplit_once("::")?;
-        ([
-            "Arrays",
-            "Objects",
-            "Strings",
-            "Tree",
-            "Core",
-            "dw::Core",
-            "dw::core::Arrays",
-            "dw::core::Objects",
-            "dw::core::Strings",
-            "dw::util::Tree",
-        ]
-        .contains(&module)
-            && (crate::COLLECTION_OPERATORS.contains(&name)
-                || ["join", "leftJoin", "outerJoin"].contains(&name)))
-        .then(|| name.to_owned())
-    })
+    resolve_function_alias(function_name, locals)
+        .or_else(|| crate::function_catalog::resolve_qualified(function_name))
+        .or_else(|| {
+            let (module, name) = function_name.rsplit_once("::")?;
+            ([
+                "Arrays",
+                "Objects",
+                "Strings",
+                "Tree",
+                "Core",
+                "dw::Core",
+                "dw::core::Arrays",
+                "dw::core::Objects",
+                "dw::core::Strings",
+                "dw::util::Tree",
+            ]
+            .contains(&module)
+                && (crate::COLLECTION_OPERATORS.contains(&name)
+                    || ["join", "leftJoin", "outerJoin"].contains(&name)))
+            .then(|| name.to_owned())
+        })
 }
 
 fn resolve_function_alias(function_name: &str, locals: &Map<String, Value>) -> Option<String> {

@@ -428,3 +428,133 @@ user.<cursor>
         vars={},
     )
     assert isinstance(items, list)
+
+
+def test_completion_preserves_typed_and_arity_overloads_with_valid_snippets() -> None:
+    engine = DataWeaveLanguageEngine()
+    script, line, column = _cursor('''%dw 2.0
+output application/json
+fun multiply(number, multiplier : Number) = number * multiplier * 2
+fun multiply(number, multiplier : String) = number * multiplier as Number
+fun multiply(number) = multiply(number,number)
+---
+{ value: m<cursor>
+''')
+    items = [i for i in engine.complete(script=script, line=line, column=column) if i.label == "multiply"]
+    assert len(items) == 3
+    assert all(i.kind == "function" for i in items)
+    assert {i.detail.replace(" : ", ": ") for i in items} == {"multiply(number)", "multiply(number, multiplier: Number)", "multiply(number, multiplier: String)"}
+    assert {i.insert_text for i in items} == {"multiply(${1:number})", "multiply(${1:number}, ${2:multiplier})"}
+
+
+def test_local_function_shadows_builtin_and_uses_its_own_signature() -> None:
+    engine = DataWeaveLanguageEngine()
+    script, line, column = _cursor("%dw 2.0\nfun map(custom: Number) = custom\n---\nma<cursor>")
+    items = [i for i in engine.complete(script=script, line=line, column=column) if i.label == "map"]
+    assert len(items) == 1
+    assert items[0].insert_text == "map(${1:custom})"
+
+
+def test_header_recovery_ignores_delimiters_in_comments_and_strings() -> None:
+    script, line, column = _cursor('''%dw 2.0
+/*
+---
+*/
+var marker = "---"
+fun multiply(number) = number
+---
+{ value: m<cursor>
+''')
+    items = DataWeaveLanguageEngine().complete(script=script, line=line, column=column)
+    multiply = next(i for i in items if i.label == "multiply")
+    assert multiply.kind == "function"
+    assert multiply.insert_text == "multiply(${1:number})"
+
+
+def test_completion_uses_utf16_columns_and_keeps_existing_call_arguments() -> None:
+    script, line, column = _cursor('%dw 2.0\r\nfun multiply(number) = number\r\n---\r\n{emoji: "😀", result: mu<cursor>ltiply(4)}')
+    # LSP positions count surrogate pairs as two UTF-16 units.
+    column += 1
+    items = DataWeaveLanguageEngine().complete(script=script, line=line, column=column)
+    multiply = next(i for i in items if i.label == "multiply")
+    assert multiply.insert_text == "multiply"
+    assert multiply.insert_text_format == "plain"
+    assert multiply.replacement_range == (line, column - 2, line, column + len("ltiply"))
+
+
+def test_native_catalog_covers_every_runtime_function() -> None:
+    from dwpy._dwpy_rust import function_catalog_json
+    items = DataWeaveLanguageEngine().complete(script="", line=0, column=0)
+    names = {i.label for i in items if i.kind == "function"}
+    assert {f["name"] for f in json.loads(function_catalog_json())} <= names
+    assert {"flatMap", "mapObject", "filterObject", "logInfo", "today"} <= names
+
+
+def test_nested_functions_and_lambda_variables_are_resolved_live() -> None:
+    engine = DataWeaveLanguageEngine()
+    script, line, column = _cursor("%dw 2.0\n---\ndo {\n fun helper(first, second) = first\n ---\n hel<cursor> }")
+    helper = next(i for i in engine.complete(script=script, line=line, column=column) if i.label == "helper")
+    assert helper.insert_text == "helper(${1:first}, ${2:second})"
+    script, line, column = _cursor("%dw 2.0\n---\n[do { fun helper(n) = n\n---\nhelper(1) }, hel<cursor>]")
+    assert "helper" not in _labels(engine.complete(script=script, line=line, column=column))
+
+
+def test_module_file_edits_and_added_functions_appear_without_restarting_engine(tmp_path: Path) -> None:
+    module = tmp_path / "tools" / "Math.dwl"
+    module.parent.mkdir()
+    module.write_text("%dw 2.0\nfun oldFunction(n) = n\n---\nnull")
+    engine = DataWeaveLanguageEngine(module_base_path=tmp_path)
+    script, line, column = _cursor("%dw 2.0\nimport tools::Math as Tools\n---\nTools::new<cursor>")
+    assert "Tools::newFunction" not in _labels(engine.complete(script=script, line=line, column=column))
+    module.write_text("%dw 2.0\nfun newFunction(first, second) = first\n---\nnull")
+    items = engine.complete(script=script, line=line, column=column)
+    item = next(i for i in items if i.label == "Tools::newFunction")
+    assert item.insert_text == "Tools::newFunction(${1:first}, ${2:second})"
+
+
+def test_qualified_completion_replaces_namespace_and_preserves_arguments() -> None:
+    script, line, column = _cursor('%dw 2.0\nimport dw::core::Strings as Text\n---\n{emoji: "😀", value: Text::up<cursor>per("hello")}')
+    column += 1  # UTF-16 surrogate pair before the identifier.
+    item = next(i for i in DataWeaveLanguageEngine().complete(
+        script=script, line=line, column=column,
+    ) if i.label == "Text::upper")
+    assert item.replacement_range == (line, column - len("Text::up"), line, column + len("per"))
+    assert item.insert_text == "Text::upper"
+    assert item.insert_text_format == "plain"
+
+
+def test_evaluator_operators_are_suggested_once_without_call_arguments() -> None:
+    engine = DataWeaveLanguageEngine()
+    for source, label in [("{numA: 2} up<cursor>", "update"), ("payload de<cursor>", "default")]:
+        script, line, column = _cursor("%dw 2.0\n---\n" + source)
+        items = [i for i in engine.complete(script=script, line=line, column=column) if i.label == label]
+        assert len(items) == 1
+        assert items[0].kind == "keyword"
+        assert items[0].insert_text == label
+        assert items[0].insert_text_format == "plain"
+
+
+def test_implicit_callback_selectors_complete_payload_element_fields() -> None:
+    engine = DataWeaveLanguageEngine()
+    payload = [{"name": "Esteban", "lastName": "Wasinger"}, {"email": "e@example.test"}]
+    for source in ["payload map $.<cursor>", "payload filter $.<cursor>", "payload map ((item) -> item.<cursor>)"]:
+        script, line, column = _cursor("%dw 2.0\n---\n" + source)
+        items = engine.complete(script=script, line=line, column=column, payload=payload)
+        assert _labels(items) == {"name", "lastName", "email"}
+        assert all(item.kind == "field" for item in items)
+    script, line, column = _cursor("payload map $.la<cursor>stName")
+    item = engine.complete(script=script, line=line, column=column, payload=payload)[0]
+    assert item.insert_text == "lastName"
+    assert item.replacement_range == (line, column - 2, line, column + len("stName"))
+
+
+def test_nested_implicit_callbacks_rebind_dollar_and_refresh_after_input_changes() -> None:
+    engine = DataWeaveLanguageEngine()
+    script, line, column = _cursor("payload map ($.children map $.<cursor>)")
+    items = engine.complete(script=script, line=line, column=column, payload=[{"parentOnly": 1, "children": [{"childOnly": 2}]}])
+    assert _labels(items) == {"childOnly"}
+    items = engine.complete(script=script, line=line, column=column, payload=[{"children": [{"newField": 2}]}])
+    assert _labels(items) == {"newField"}
+    for source in ["$.<cursor>", "payload map $$.<cursor>", "[payload map $.name, $.<cursor>]"]:
+        script, line, column = _cursor(source)
+        assert engine.complete(script=script, line=line, column=column, payload=[{"name": "E"}]) == []

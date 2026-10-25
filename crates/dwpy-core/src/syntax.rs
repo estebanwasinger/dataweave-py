@@ -152,6 +152,124 @@ pub(crate) fn find_matching_delimiter(
     }
     matching_end(source, open_index, close as u8, false)
 }
+
+/// Tokens for tolerant editor analysis. Uses the runtime literal/comment scanner;
+/// an unfinished token keeps all preceding declarations available.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CodeToken<'a> {
+    pub text: &'a str,
+    pub start: usize,
+    pub end: usize,
+    pub literal: bool,
+}
+
+pub(crate) fn editor_tokens(source: &str) -> Vec<CodeToken<'_>> {
+    fn scan<'a>(
+        source: &'a str,
+        start: usize,
+        limit: usize,
+        out: &mut Vec<CodeToken<'a>>,
+        depth: usize,
+    ) {
+        if depth > 128 {
+            return;
+        }
+        let bytes = source.as_bytes();
+        let mut i = start;
+        while i < limit {
+            let c = source[i..].chars().next().unwrap();
+            if c.is_whitespace() {
+                i += c.len_utf8();
+                continue;
+            }
+            if starts_line_comment(source, i) {
+                i = source[i..limit].find('\n').map_or(limit, |n| i + n);
+                continue;
+            }
+            if bytes[i..].starts_with(b"/*") {
+                i = comment_end(source, i).unwrap_or(limit).min(limit);
+                continue;
+            }
+            if matches!(c, '"' | '\'' | '`')
+                || (c == '/' && starts_regex_literal(source, i))
+                || (c == '|' && starts_temporal_literal(source, i))
+            {
+                let end = matching_end(source, i, c as u8, true)
+                    .map_or(limit, |n| n + 1)
+                    .min(limit);
+                out.push(CodeToken {
+                    text: &source[i..end],
+                    start: i,
+                    end,
+                    literal: true,
+                });
+                if matches!(c, '"' | '\'' | '`') {
+                    let mut p = i + 1;
+                    while p + 1 < end {
+                        if bytes[p] == b'\\' {
+                            p += 2;
+                            continue;
+                        }
+                        if bytes[p..].starts_with(b"$(") {
+                            let open = p + 1;
+                            let close = find_matching_delimiter(source, open, '(', ')')
+                                .filter(|n| *n < end);
+                            out.push(CodeToken {
+                                text: "(",
+                                start: open,
+                                end: open + 1,
+                                literal: false,
+                            });
+                            scan(source, open + 1, close.unwrap_or(end), out, depth + 1);
+                            if let Some(close) = close {
+                                out.push(CodeToken {
+                                    text: ")",
+                                    start: close,
+                                    end: close + 1,
+                                    literal: false,
+                                });
+                                p = close + 1;
+                            } else {
+                                break;
+                            }
+                        } else {
+                            p += 1;
+                        }
+                    }
+                }
+                i = end;
+                continue;
+            }
+            let start = i;
+            if c.is_ascii_alphabetic() || matches!(c, '_' | '$') {
+                i += 1;
+                while i < limit
+                    && (bytes[i].is_ascii_alphanumeric() || matches!(bytes[i], b'_' | b'$'))
+                {
+                    i += 1;
+                }
+            } else {
+                let width = if source[i..].starts_with("---") {
+                    3
+                } else if source[i..].starts_with("->") || source[i..].starts_with("::") {
+                    2
+                } else {
+                    c.len_utf8()
+                };
+                i += width;
+            }
+            out.push(CodeToken {
+                text: &source[start..i],
+                start,
+                end: i,
+                literal: false,
+            });
+        }
+    }
+    let mut out = vec![];
+    scan(source, 0, source.len(), &mut out, 0);
+    out
+}
 fn matching_end(source: &str, start: usize, close: u8, quote: bool) -> Option<usize> {
     let bytes = source.as_bytes();
     let mut frames = vec![(close, quote)];
