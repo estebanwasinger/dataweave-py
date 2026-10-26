@@ -232,6 +232,45 @@ fn infix_functions_pass_analysis_before_execution() {
 }
 
 #[wasm_bindgen_test]
+fn ranges_pass_formula_analysis_before_execution() {
+    for (expression, expected) in [
+        ("1 to 10 map $", json!([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])),
+        (
+            "{values: (1 to 3 map ($ * 2))}",
+            json!({"values": [2, 4, 6]}),
+        ),
+        ("(1\n/* bounds */ to\n3) map $", json!([1, 2, 3])),
+        ("(3 to -1) map $", json!([3, 2, 1, 0, -1])),
+        ("[1, 2, 3][0 to 1]", json!([1, 2])),
+        ("7 mod 4", json!(3)),
+        ("2 pow 3", json!(8)),
+    ] {
+        let result = analyze(json!({"expression": expression, "payload": {}}));
+        assert_eq!(result["references"], json!([]), "{expression}");
+        assert_eq!(result["unresolvedReferences"], json!([]), "{expression}");
+        assert_eq!(
+            execute(json!({"script": expression, "render_output": false})),
+            expected,
+            "{expression}"
+        );
+    }
+
+    let result = analyze(json!({
+        "expression": "record.start to record.end map $",
+        "payload": {"record": {"start": 1, "end": 3}}
+    }));
+    assert_eq!(result["references"], json!(["record.end", "record.start"]));
+    assert_eq!(result["unresolvedReferences"], json!([]));
+
+    let result = analyze(json!({"expression": "1 to missing", "payload": {}}));
+    assert_eq!(result["references"], json!(["missing"]));
+    assert_eq!(result["unresolvedReferences"], json!(["missing"]));
+    let result = analyze(json!({"expression": "to default 3", "payload": {}}));
+    assert_eq!(result["references"], json!(["to"]));
+    assert_eq!(result["unresolvedReferences"], json!(["to"]));
+}
+
+#[wasm_bindgen_test]
 fn analysis_keeps_real_dependencies_and_fields_named_after_functions() {
     let result = analyze(json!({
         "expression": "payload.names joinBy payload.separator",

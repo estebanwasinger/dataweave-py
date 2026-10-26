@@ -832,7 +832,10 @@ fn scan_reference_paths(expression: &str, local_bindings: &BTreeSet<String>) -> 
 // An infix function is syntax, while the same name used as an operand can
 // still be a payload field (for example, `joinBy default []`).
 fn is_infix_function_reference(expression: &str, start: usize, end: usize, name: &str) -> bool {
-    if !BINARY_BUILTIN_OPERATORS.contains(&name) && !COLLECTION_OPERATORS.contains(&name) {
+    if !matches!(name, "to" | "mod" | "pow")
+        && !BINARY_BUILTIN_OPERATORS.contains(&name)
+        && !COLLECTION_OPERATORS.contains(&name)
+    {
         return false;
     }
     let before = &expression[..start];
