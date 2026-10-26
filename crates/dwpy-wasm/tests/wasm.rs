@@ -452,3 +452,24 @@ fn every_engine_function_is_available_to_completion() {
             .any(|i| i["label"] == function["name"]));
     }
 }
+
+#[wasm_bindgen_test]
+fn audited_dependency_gaps_are_fixed_in_the_wasm_entry_point() {
+    let cases: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/dependency-analysis/gaps.json"
+    ))
+    .unwrap();
+    for case in cases.as_array().unwrap() {
+        let id = case["id"].as_str().unwrap();
+        let mut request = case["request"].clone();
+        let analysis = analyze(request.clone());
+        assert_eq!(analysis["references"], case["expectedReferences"], "{id}");
+        assert_eq!(
+            analysis["unresolvedReferences"], case["expectedUnresolvedReferences"],
+            "{id}"
+        );
+        request["script"] = request["expression"].clone();
+        request["render_output"] = json!(false);
+        assert_eq!(execute(request), case["expectedResult"], "{id}");
+    }
+}

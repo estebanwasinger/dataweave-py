@@ -1,0 +1,249 @@
+{
+  "date": "2026-10-26",
+  "pullRequest": "https://github.com/estebanwasinger/dataweave-py/pull/20",
+  "baselineAudit": "tests/fixtures/dependency-analysis/audit-2026-10-26.json",
+  "fixedFamilies": [
+    "Interpolation dependencies",
+    "Lexical bindings and defaults",
+    "Operators and grammar separators",
+    "Regex literal boundaries",
+    "Module, type, and function symbols",
+    "Multivalue/dynamic/XML selectors",
+    "Root context resolution",
+    "Inference boundaries for coercions and object spreads"
+  ],
+  "additionalBoundaryCoverage": [
+    "Sibling scopes and shadowing",
+    "External guard/default-expression dependencies",
+    "Input declarations retain payload/vars dependencies",
+    "Keyword-named fields remain visible",
+    "Malformed syntax remains an error",
+    "Static analysis does not execute headers or callbacks"
+  ],
+  "minimizedCases": {
+    "inputRecords": 15,
+    "checkedRequests": 15,
+    "distinctExpressions": 15,
+    "executionChecks": 15,
+    "executionFailures": 0,
+    "analysisErrors": 0,
+    "dependencyMismatches": 0,
+    "unresolvedCandidates": 0,
+    "casesWithFailures": 0
+  },
+  "rawCorpus": {
+    "inputRecords": 2135,
+    "checkedRequests": 1890,
+    "distinctExpressions": 1648,
+    "executionChecks": 0,
+    "executionFailures": 0,
+    "analysisErrors": 0,
+    "dependencyMismatches": 0,
+    "unresolvedCandidates": 24,
+    "casesWithFailures": 0
+  },
+  "parsedInputCorpus": {
+    "inputRecords": 2135,
+    "checkedRequests": 1890,
+    "distinctExpressions": 1648,
+    "executionChecks": 0,
+    "executionFailures": 0,
+    "analysisErrors": 0,
+    "dependencyMismatches": 0,
+    "unresolvedCandidates": 21,
+    "casesWithFailures": 0
+  },
+  "inputFormatNote": "The analyze API receives parsed JSON values. Three raw-corpus candidates supplied serialized JSON plus payload_format; parsing those inputs with the runtime identity expression removes those candidates without discarding duplicate keys. No production input-format API change was made.",
+  "inferenceOnlySupplement": {
+    "inputRecords": 39,
+    "checkedRequests": 34,
+    "distinctExpressions": 34,
+    "executionChecks": 0,
+    "executionFailures": 0,
+    "analysisErrors": 0,
+    "dependencyMismatches": 0,
+    "unresolvedCandidates": 0,
+    "casesWithFailures": 0
+  },
+  "remainingUnresolvedReferences": [
+    {
+      "sourceTest": "tests::evaluates_null_safe_and_quoted_selectors",
+      "references": [
+        "payload.user.address.city"
+      ],
+      "classification": "Missing input data, including default/null-safe/optional reads"
+    },
+    {
+      "sourceTest": "tests::evaluates_object_payload_paths_and_builtins",
+      "references": [
+        "payload.user.missing"
+      ],
+      "classification": "Missing input data, including default/null-safe/optional reads"
+    },
+    {
+      "sourceTest": "tests::evaluates_string_interpolation",
+      "references": [
+        "payload.missing"
+      ],
+      "classification": "Missing input data, including default/null-safe/optional reads"
+    },
+    {
+      "sourceTest": "tests::evaluates_vars_scope",
+      "references": [
+        "vars.missing"
+      ],
+      "classification": "Missing input data, including default/null-safe/optional reads"
+    },
+    {
+      "sourceTest": "tests::evaluates_match_expressions",
+      "references": [
+        "y"
+      ],
+      "classification": "Unbound name in an unselected match else branch"
+    },
+    {
+      "sourceTest": "tests::evaluates_match_expressions",
+      "references": [
+        "y"
+      ],
+      "classification": "Unbound name in an unselected match else branch"
+    },
+    {
+      "sourceTest": "tests/test_cookbook_use_cases.py::test_cookbook_code_examples[set_default_value] (call)",
+      "references": [
+        "payload.name"
+      ],
+      "classification": "Missing input data, including default/null-safe/optional reads"
+    },
+    {
+      "sourceTest": "tests/test_docs_examples.py::test_default_keyword_example_from_docs (call)",
+      "references": [
+        "payload.name"
+      ],
+      "classification": "Missing input data, including default/null-safe/optional reads"
+    },
+    {
+      "sourceTest": "tests/test_docs_examples.py::test_if_else_default_example_from_docs (call)",
+      "references": [
+        "payload.location"
+      ],
+      "classification": "Missing input data, including default/null-safe/optional reads"
+    },
+    {
+      "sourceTest": "tests/test_official_docs_examples.py::test_official_docs_json_examples[inline::dataweave-formats-java.adoc::3] (call)",
+      "references": [
+        "payload.lastName",
+        "payload.name"
+      ],
+      "classification": "Missing input data, including default/null-safe/optional reads"
+    },
+    {
+      "sourceTest": "tests/test_official_docs_examples.py::test_official_docs_json_examples[partial::cookbook-dw/defaults-ex2] (call)",
+      "references": [
+        "payload.name"
+      ],
+      "classification": "Missing input data, including default/null-safe/optional reads"
+    },
+    {
+      "sourceTest": "tests/test_official_docs_examples.py::test_official_docs_json_examples[partial::cookbook-dw/defaults-ex4] (call)",
+      "references": [
+        "payload.location"
+      ],
+      "classification": "Missing input data, including default/null-safe/optional reads"
+    },
+    {
+      "sourceTest": "tests/test_runtime_basic.py::test_executes_basic_object_transformation (call)",
+      "references": [
+        "payload.status"
+      ],
+      "classification": "Missing input data, including default/null-safe/optional reads"
+    },
+    {
+      "sourceTest": "tests/test_runtime_basic.py::test_transformation_with_payload_and_vars_defaults (call)",
+      "references": [
+        "vars.requestTime"
+      ],
+      "classification": "Missing input data, including default/null-safe/optional reads"
+    },
+    {
+      "sourceTest": "tests/test_runtime_basic.py::test_comments_are_ignored (call)",
+      "references": [
+        "payload.status"
+      ],
+      "classification": "Missing input data, including default/null-safe/optional reads"
+    },
+    {
+      "sourceTest": "tests/test_runtime_basic.py::test_null_safe_quoted_dot_selector_with_default (call)",
+      "references": [
+        "payload.user.value 2"
+      ],
+      "classification": "Missing input data, including default/null-safe/optional reads"
+    },
+    {
+      "sourceTest": "tests/test_runtime_basic.py::test_null_safe_selectors_fall_back_to_default (call)",
+      "references": [
+        "payload.user.address.city"
+      ],
+      "classification": "Missing input data, including default/null-safe/optional reads"
+    },
+    {
+      "sourceTest": "tests/test_rust_backend_bridge.py::test_rust_bridge_executes_string_interpolation_in_core (call)",
+      "references": [
+        "payload.missing"
+      ],
+      "classification": "Missing input data, including default/null-safe/optional reads"
+    },
+    {
+      "sourceTest": "tests/test_rust_backend_bridge.py::test_rust_bridge_executes_null_safe_selectors_in_core (call)",
+      "references": [
+        "payload.user.address.city",
+        "payload.user.value 2"
+      ],
+      "classification": "Missing input data, including default/null-safe/optional reads"
+    },
+    {
+      "sourceTest": "tests/test_string_interpolation.py::test_null_value_in_interpolation (call)",
+      "references": [
+        "payload.missing"
+      ],
+      "classification": "Missing input data, including default/null-safe/optional reads"
+    },
+    {
+      "sourceTest": "tests/test_string_interpolation.py::test_interpolation_with_default_operator (call)",
+      "references": [
+        "payload.name"
+      ],
+      "classification": "Missing input data, including default/null-safe/optional reads"
+    }
+  ],
+  "interpretation": "All 15 exact execution/reference-oracle cases pass. The captured corpus has zero analysis errors. The remaining unresolved references identify missing input data or truly unbound names in unexecuted branches; they are retained rather than suppressed. Full corpus replay is not an exact dependency oracle for every expression.",
+  "validation": {
+    "rustWorkspace": {
+      "passed": 243,
+      "failed": 0
+    },
+    "directWasm": {
+      "passed": 30,
+      "failed": 0
+    },
+    "nodePackage": {
+      "passed": 86,
+      "failed": 0
+    },
+    "pythonSuite": {
+      "passed": 1232,
+      "xfailed": 5,
+      "failed": 0
+    },
+    "build": "Local release WASM rebuilt; Python extension reinstalled from the same source"
+  },
+  "sourceSha256": {
+    "crates/dwpy-core/src/analysis.rs": "2b72ad66902f2dc5dd3c78a97593e1f9c1294dc26b6398c6bca38a18a5106435",
+    "crates/dwpy-core/src/language.rs": "21ae2af385ad31858e450bdeb50ac25ddc542f37ad4eab89c345afb846ee49e9",
+    "crates/dwpy-core/src/lib.rs": "46ff20531c6d31146c9fc9e76534765c4668d9b87574f03e17b0102de8d8587a",
+    "crates/dwpy-core/src/syntax.rs": "cb4a6ff167377a33f469ffcb7585f87094b85f92b83f543c7afe23d9fc5a0fa3",
+    "crates/dwpy-core/src/type_inference.rs": "0974f473fe7c71f8f117bbe9cebc7f8b272ad6ab3c5a55c1834e34de29bfc998",
+    "crates/dwpy-core/src/functions.rs": "8b438d71e07f9208e5bb520b9406cb051eb848dd08ec12c0a83fbe1594039280"
+  },
+  "releaseStatus": "Source fix and local verification only; no package published and no Deal API deployment performed"
+}

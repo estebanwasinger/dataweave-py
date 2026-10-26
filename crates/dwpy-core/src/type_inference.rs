@@ -3,8 +3,8 @@ use crate::value::{DwMap as Map, DwValue as Value};
 use crate::literals::{parse_call_args, parse_string_literal, string_literal_inner};
 use crate::selectors::{parse_path_segments, PathSegment};
 use crate::syntax::{
-    is_identifier, parse_index_access, split_top_level, split_top_level_char,
-    split_top_level_keyword, split_top_level_operator, strip_wrapping_parens,
+    editor_tokens, find_matching_delimiter, is_identifier, parse_index_access, split_top_level,
+    split_top_level_char, split_top_level_keyword, split_top_level_operator, strip_wrapping_parens,
 };
 use crate::types::{
     field_descriptor, type_any, type_array, type_boolean, type_kind, type_null, type_number,
@@ -65,16 +65,29 @@ pub(crate) fn infer_expression_type(
     }
 
     if let Some((_, target)) = split_top_level_keyword(source, "as") {
-        let name = target.split_whitespace().next().unwrap_or_default();
-        if matches!(
-            name,
-            "Date" | "DateTime" | "LocalDateTime" | "Time" | "LocalTime" | "Period"
-        ) {
-            return Ok(Value::Object(Map::from_iter([(
-                "kind".into(),
-                Value::String(name.into()),
-            )])));
+        let tokens = editor_tokens(target);
+        let (matching, _) = crate::language::groups(&tokens);
+        if tokens.is_empty() || crate::analysis::type_end(&tokens, &matching, 0) != tokens.len() {
+            return Err(DwError::UnsupportedFeature(format!(
+                "type inference {source}"
+            )));
         }
+        let name = target.split_whitespace().next().unwrap_or_default();
+        return match name {
+            "String" => Ok(type_string()),
+            "Number" => Ok(type_number()),
+            "Boolean" => Ok(type_boolean()),
+            "Null" => Ok(type_null()),
+            "Date" | "DateTime" | "LocalDateTime" | "Time" | "LocalTime" | "Period" => {
+                Ok(Value::Object(Map::from_iter([(
+                    "kind".into(),
+                    Value::String(name.into()),
+                )])))
+            }
+            _ => Err(DwError::UnsupportedFeature(format!(
+                "type inference {source}"
+            ))),
+        };
     }
     if let Some(value) = crate::literals::parse_literal(source)? {
         if value.temporal_type_name().is_some() {
@@ -82,11 +95,15 @@ pub(crate) fn infer_expression_type(
         }
     }
 
-    if source.starts_with('{') && source.ends_with('}') {
+    if source.starts_with('{')
+        && find_matching_delimiter(source, 0, '{', '}') == Some(source.len() - 1)
+    {
         return infer_object_literal_type(source, payload_type, vars_type, attributes_type);
     }
 
-    if source.starts_with('[') && source.ends_with(']') {
+    if source.starts_with('[')
+        && find_matching_delimiter(source, 0, '[', ']') == Some(source.len() - 1)
+    {
         return infer_array_literal_type(source, payload_type, vars_type, attributes_type);
     }
 
@@ -96,7 +113,11 @@ pub(crate) fn infer_expression_type(
         return Ok(infer_index_type(&base_type, &index_type));
     }
 
-    if string_literal_inner(source)?.is_some() {
+    if editor_tokens(source)
+        .first()
+        .is_some_and(|t| t.literal && t.end == source.len())
+        && string_literal_inner(source)?.is_some()
+    {
         return Ok(type_string());
     }
     if source == "null" {
@@ -174,6 +195,24 @@ fn infer_object_literal_type(
                 continue;
             }
             return Err(DwError::Parse("empty object entry".to_string()));
+        }
+        if entry.starts_with('(') {
+            if let Some(close) = find_matching_delimiter(entry, 0, '(', ')') {
+                let tail = entry[close + 1..].trim();
+                if tail.is_empty() || tail.starts_with("if ") || tail.starts_with("if(") {
+                    let spread = infer_expression_type(
+                        &entry[1..close],
+                        payload_type,
+                        vars_type,
+                        attributes_type,
+                    )?;
+                    if let Some(spread_fields) = spread.get("fields").and_then(Value::as_object) {
+                        fields.extend(spread_fields.clone());
+                    }
+                    open = true;
+                    continue;
+                }
+            }
         }
         let Some((key_source, value_source)) = split_top_level_char(entry, ':') else {
             return Err(DwError::Parse(format!(

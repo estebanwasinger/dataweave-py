@@ -2,9 +2,10 @@
 
 use crate::value::DwMap as Map;
 use crate::value::DwValue as Value;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::io::Write;
 
+mod analysis;
 mod api;
 mod builtins;
 mod calls;
@@ -62,8 +63,8 @@ use evaluator::{
     evaluate_using_expression_scoped,
 };
 use functions::{
-    evaluate_header_declarations, function_reference, header_reference_sources, is_function_name,
-    lambda_value_from_source, resolve_type_source,
+    evaluate_header_declarations, function_reference, is_function_name, lambda_value_from_source,
+    resolve_type_source,
 };
 use json::json_output_options;
 use literals::{
@@ -577,6 +578,7 @@ pub fn analyze_native_expression_with_context(
     vars: Option<Value>,
     attributes: Option<Value>,
 ) -> Result<Value, DwError> {
+    analysis::validate(expression)?;
     let (inferred_type, diagnostics) = match infer_native_type_descriptor_with_context(
         expression,
         payload.clone(),
@@ -593,35 +595,30 @@ pub fn analyze_native_expression_with_context(
         ),
         Err(error) => return Err(error),
     };
-    let reference_paths = extract_reference_paths(expression);
-    let wildcard_references = reference_paths
+    let reference_analysis = analysis::references(expression, payload.as_ref());
+    let reference_paths = reference_analysis.paths;
+    let wildcard_references = reference_analysis
+        .wildcards
+        .into_iter()
+        .map(Value::String)
+        .collect::<Vec<_>>();
+    let unresolved_references = reference_paths
         .iter()
-        .filter(|path| has_dynamic_selector(expression, path))
+        .filter(|path| {
+            let (root, tail) = path
+                .split_once('.')
+                .map_or((path.as_str(), ""), |parts| parts);
+            let (value, lookup_path) = match root {
+                "payload" => (payload.as_ref(), tail),
+                "vars" => (vars.as_ref(), tail),
+                "attributes" => (attributes.as_ref(), tail),
+                _ => (payload.as_ref(), path.as_str()),
+            };
+            value.is_some_and(|value| !reference_path_exists(value, lookup_path))
+        })
         .cloned()
         .map(Value::String)
         .collect::<Vec<_>>();
-    let unresolved_references = payload
-        .as_ref()
-        .map(|payload| {
-            reference_paths
-                .iter()
-                .filter(|path| {
-                    let (root, tail) = path
-                        .split_once('.')
-                        .map_or((path.as_str(), ""), |parts| parts);
-                    let (value, lookup_path) = match root {
-                        "payload" => (Some(payload), tail),
-                        "vars" => (vars.as_ref(), tail),
-                        "attributes" => (attributes.as_ref(), tail),
-                        _ => (Some(payload), path.as_str()),
-                    };
-                    value.is_some_and(|value| !reference_path_exists(value, lookup_path))
-                })
-                .cloned()
-                .map(Value::String)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
     let references = reference_paths
         .into_iter()
         .map(Value::String)
@@ -636,294 +633,32 @@ pub fn analyze_native_expression_with_context(
     })))
 }
 
-fn has_dynamic_selector(expression: &str, path: &str) -> bool {
-    expression.match_indices(path).any(|(index, _)| {
-        expression[index + path.len()..]
-            .trim_start()
-            .starts_with('[')
-    })
-}
-
 fn reference_path_exists(payload: &Value, path: &str) -> bool {
-    !path
-        .split('.')
-        .fold(vec![payload], |values, segment| {
-            values
-                .into_iter()
-                .flat_map(|value| match value {
-                    Value::Object(object) => object.get(segment).into_iter().collect::<Vec<_>>(),
-                    Value::Array(items) => items
-                        .iter()
-                        .flat_map(|item| match item {
-                            Value::Object(object) => object.get(segment).into_iter().collect(),
-                            _ => Vec::new(),
-                        })
-                        .collect(),
-                    _ => Vec::new(),
-                })
-                .collect()
-        })
-        .is_empty()
-}
-
-fn extract_reference_paths(expression: &str) -> Vec<String> {
-    let mut references = scan_script_reference_paths(expression, &BTreeSet::new());
-    references.sort();
-    references.dedup();
-    references
-}
-
-fn scan_script_reference_paths(
-    expression: &str,
-    inherited_bindings: &BTreeSet<String>,
-) -> Vec<String> {
-    let parsed_script = script::split_script(expression);
-    let mut references = Vec::new();
-    let declaration_sources = header_reference_sources(&parsed_script.header);
-    let mut local_bindings = inherited_bindings.clone();
-    local_bindings.extend(
-        declaration_sources
-            .iter()
-            .map(|declaration| declaration.binding.clone()),
-    );
-    for declaration in declaration_sources {
-        let mut local_scope = local_bindings.clone();
-        local_scope.extend(declaration.parameters);
-        references.extend(scan_reference_paths(&declaration.source, &local_scope));
-    }
-
-    let body_source = if parsed_script.header.is_empty() {
-        parsed_script.output_directive.as_deref().map(|directive| {
-            parsed_script
-                .body
-                .lines()
-                .filter(|line| {
-                    line.trim()
-                        .strip_prefix("output ")
-                        .is_none_or(|candidate| candidate.trim() != directive)
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-    } else {
-        None
-    };
-    let body = body_source.as_deref().unwrap_or(&parsed_script.body);
-    references.extend(scan_reference_paths(body, &local_bindings));
-    references
-}
-
-fn scan_reference_paths(expression: &str, local_bindings: &BTreeSet<String>) -> Vec<String> {
-    let mut references = Vec::new();
-    let chars = expression.char_indices().collect::<Vec<_>>();
-    let mut position = 0;
-    let mut quote = None;
-    let mut escaped = false;
-
-    while position < chars.len() {
-        let (_, character) = chars[position];
-
-        if let Some(quote_character) = quote {
-            if escaped {
-                escaped = false;
-            } else if character == '\\' {
-                escaped = true;
-            } else if character == quote_character {
-                quote = None;
-            }
-            position += 1;
-            continue;
+    fn exists(value: &Value, parts: &[&str]) -> bool {
+        if parts.is_empty() {
+            return true;
         }
-
-        if matches!(character, '\'' | '"' | '`') {
-            quote = Some(character);
-            position += 1;
-            continue;
+        if let Some(value) = selectors::unwrap_metadata_value(value) {
+            return exists(&value, parts);
         }
-
-        if character == '|' {
-            position += 1;
-            while position < chars.len() && chars[position].1 != '|' {
-                position += 1;
-            }
-            if position < chars.len() {
-                position += 1;
-            }
-            continue;
+        if let Some(items) = xml_list_items(value) {
+            return items.iter().any(|item| exists(item, parts));
         }
-
-        if !is_reference_identifier_start(character) {
-            position += 1;
-            continue;
+        if let Some(pairs) = selectors::duplicate_object_pairs(value) {
+            return pairs
+                .iter()
+                .any(|(key, value)| key == parts[0] && exists(value, &parts[1..]));
         }
-
-        let start = chars[position].0;
-        if expression[..start].chars().last() == Some('.') {
-            position += 1;
-            while position < chars.len() && is_reference_identifier_continue(chars[position].1) {
-                position += 1;
-            }
-            continue;
-        }
-        position += 1;
-        while position < chars.len() && is_reference_identifier_continue(chars[position].1) {
-            position += 1;
-        }
-
-        let mut end = if position < chars.len() {
-            chars[position].0
-        } else {
-            expression.len()
-        };
-
-        while position < chars.len() && chars[position].1 == '.' {
-            let dot_position = position;
-            position += 1;
-            if position >= chars.len() || !is_reference_identifier_start(chars[position].1) {
-                position = dot_position;
-                break;
-            }
-            position += 1;
-            while position < chars.len() && is_reference_identifier_continue(chars[position].1) {
-                position += 1;
-            }
-            end = if position < chars.len() {
-                chars[position].0
-            } else {
-                expression.len()
-            };
-        }
-
-        let path = &expression[start..end];
-        let following = expression[end..].trim_start();
-        let root = path.split('.').next().unwrap_or(path);
-        if path == "do" {
-            let opening_brace = end + expression[end..].len() - following.len();
-            if expression[opening_brace..].starts_with('{') {
-                if let Some(close) = find_matching_delimiter(expression, opening_brace, '{', '}') {
-                    references.extend(scan_script_reference_paths(
-                        &expression[opening_brace + 1..close],
-                        local_bindings,
-                    ));
-                    while position < chars.len() && chars[position].0 <= close {
-                        position += 1;
-                    }
-                    continue;
-                }
-            }
-        }
-        let is_object_key =
-            !path.contains('.') && following.starts_with(':') && !following.starts_with("::");
-        if !local_bindings.contains(root)
-            && !follows_type_operator(expression, start)
-            && !is_object_key
-            && !is_infix_function_reference(expression, start, end, path)
-            && (path.contains('.') || (!following.starts_with('(') && !is_reference_keyword(root)))
-        {
-            references.push(path.to_string());
+        match value {
+            Value::Array(items) => items.iter().any(|item| exists(item, parts)),
+            Value::Object(map) => map
+                .get(parts[0])
+                .or_else(|| xml::matching_xml_key(map, parts[0]).and_then(|key| map.get(key)))
+                .is_some_and(|value| exists(value, &parts[1..])),
+            _ => false,
         }
     }
-
-    references.sort();
-    references.dedup();
-    references
-}
-
-// An infix function is syntax, while the same name used as an operand can
-// still be a payload field (for example, `joinBy default []`).
-fn is_infix_function_reference(expression: &str, start: usize, end: usize, name: &str) -> bool {
-    if !matches!(name, "to" | "mod" | "pow")
-        && !BINARY_BUILTIN_OPERATORS.contains(&name)
-        && !COLLECTION_OPERATORS.contains(&name)
-    {
-        return false;
-    }
-    let before = &expression[..start];
-    let after = &expression[end..];
-    if !before.chars().last().is_some_and(char::is_whitespace)
-        || !after
-            .chars()
-            .next()
-            .is_some_and(|ch| ch.is_whitespace() || ch == '(')
-        || !is_binary_operator_position(expression, start)
-    {
-        return false;
-    }
-    let previous_word = before
-        .trim_end()
-        .rsplit(|ch: char| !is_reference_identifier_continue(ch))
-        .next()
-        .unwrap_or("");
-    let previous_is_selector = before
-        .trim_end()
-        .strip_suffix(previous_word)
-        .is_some_and(|prefix| prefix.ends_with('.'));
-    if !previous_is_selector
-        && is_reference_keyword(previous_word)
-        && !matches!(previous_word, "true" | "false" | "null")
-    {
-        return false;
-    }
-    let next_word = after
-        .trim_start()
-        .split(|ch: char| !is_reference_identifier_continue(ch))
-        .next()
-        .unwrap_or("");
-    if is_reference_keyword(next_word)
-        && !matches!(
-            next_word,
-            "true" | "false" | "null" | "if" | "do" | "not" | "using"
-        )
-    {
-        return false;
-    }
-    after.trim_start().chars().next().is_some_and(|ch| {
-        !matches!(
-            ch,
-            ',' | ')' | ']' | '}' | ':' | '+' | '*' | '/' | '=' | '>' | '<'
-        )
-    })
-}
-
-fn is_reference_identifier_start(character: char) -> bool {
-    character == '_' || character.is_alphabetic()
-}
-
-fn is_reference_identifier_continue(character: char) -> bool {
-    character == '_' || character.is_alphanumeric()
-}
-
-fn follows_type_operator(expression: &str, identifier_start: usize) -> bool {
-    expression[..identifier_start]
-        .trim_end()
-        .rsplit(|character: char| !is_reference_identifier_continue(character))
-        .next()
-        .is_some_and(|identifier| matches!(identifier, "as" | "is"))
-}
-
-fn is_reference_keyword(identifier: &str) -> bool {
-    matches!(
-        identifier,
-        "and"
-            | "as"
-            | "case"
-            | "default"
-            | "do"
-            | "else"
-            | "false"
-            | "fun"
-            | "if"
-            | "import"
-            | "is"
-            | "not"
-            | "null"
-            | "or"
-            | "output"
-            | "true"
-            | "type"
-            | "using"
-            | "var"
-    )
+    path.is_empty() || exists(payload, &path.split('.').collect::<Vec<_>>())
 }
 
 pub fn execute_value(script: &str, payload: Value, render_output: bool) -> Result<Value, DwError> {
