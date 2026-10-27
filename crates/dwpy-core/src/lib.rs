@@ -16,6 +16,7 @@ mod csv;
 pub mod dap;
 pub mod debug;
 mod declarations;
+mod diagnostics;
 mod evaluator;
 pub mod function_catalog;
 mod functions;
@@ -43,6 +44,7 @@ mod xml;
 mod yaml;
 
 pub use api::*;
+pub use diagnostics::{execution_error_message, unique_expression_offset, with_execution_trace};
 use builtins::{evaluate_binary_builtin, index_of, last_index_of};
 use calls::evaluate_function_call;
 use collections::{
@@ -426,6 +428,17 @@ impl CompiledScript {
     }
 
     fn execute_scoped_after_header(
+        &self,
+        payload: Value,
+        locals: Map<String, Value>,
+        options: &ExecutionOptions,
+    ) -> Result<Value, DwError> {
+        diagnostics::frame(&self.parsed.body, Some("<body>"), || {
+            self.execute_body_after_header(payload, locals, options)
+        })
+    }
+
+    fn execute_body_after_header(
         &self,
         payload: Value,
         locals: Map<String, Value>,
@@ -848,6 +861,14 @@ pub(crate) fn evaluate_expression_scoped(
     payload: &Value,
     locals: &Map<String, Value>,
 ) -> Result<Value, DwError> {
+    diagnostics::frame(source, None, || evaluate_expression_inner(source, payload, locals))
+}
+
+fn evaluate_expression_inner(
+    source: &str,
+    payload: &Value,
+    locals: &Map<String, Value>,
+) -> Result<Value, DwError> {
     let source = strip_wrapping_parens(source.trim());
     if source.is_empty() {
         return Err(DwError::Parse("empty expression".to_string()));
@@ -1190,7 +1211,9 @@ pub(crate) fn evaluate_expression_scoped(
         return Ok(function_reference(source));
     }
 
-    Err(DwError::UnsupportedFeature(source.to_string()))
+    Err(DwError::UnsupportedFeature(format!(
+        "Unable to evaluate expression `{source}`. Check that its references are defined and its syntax is supported."
+    )))
 }
 
 fn parse_namespaced_selector_expression(source: &str) -> Option<(&str, &str, &str)> {
@@ -2801,6 +2824,22 @@ output application/python
             execute_json("%dw 2.0\n---\n1 to 3 map $ + 1", Value::Null, false).unwrap(),
             json!([2, 3, 4])
         );
+    }
+
+    #[test]
+    fn group_by_result_concat_reports_incompatible_operands() {
+        let script = "%dw 2.0\nimport * from dw::core::Arrays\noutput application/json\nvar grp7 = payload groupBy ((item) -> ((item.val default \"\") as String) as String) ++ \"_\" ++ ((item.val default \"\") as String)\n---\ngrp7";
+        let err = execute_json(script, json!([{"val": "a"}]), false).unwrap_err().to_string();
+        assert!(err.contains("++"), "{err}");
+        assert!(err.contains("Object"), "{err}");
+        assert!(err.contains("String"), "{err}");
+        let (_, trace) = with_execution_trace(script, || {
+            execute_json(script, json!([{"val": "a"}]), false)
+        });
+        let trace = trace.expect("the failing operator has a source location");
+        assert!(trace.contains("4| var grp7 ="), "{trace}");
+        assert!(trace.contains("at main::++ (line: 4, column: 84)"), "{trace}");
+        assert!(trace.contains("at main::grp7"), "{trace}");
     }
 
     #[test]

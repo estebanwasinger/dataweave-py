@@ -141,16 +141,18 @@ impl RustDataWeaveRuntime {
                     });
                 }
                 let rust_result = vars_json.and_then(|vars_json| {
-                    dwpy_core::execute_transport_with_loggers(
-                        script_source,
-                        payload_json,
-                        vars_json,
-                        attributes_json.clone(),
-                        properties_map.clone(),
-                        render_output,
-                        loggers,
-                    )
-                    .map_err(|err| rust_core_error(py, err, script_source))
+                    let (result, trace) = dwpy_core::with_execution_trace(script_source, || {
+                        dwpy_core::execute_transport_with_loggers(
+                            script_source,
+                            payload_json,
+                            vars_json,
+                            attributes_json.clone(),
+                            properties_map.clone(),
+                            render_output,
+                            loggers,
+                        )
+                    });
+                    result.map_err(|err| rust_core_error(py, err, script_source, trace.as_deref()))
                 });
 
                 // A failed optimistic Rust attempt may be retried by the legacy
@@ -571,28 +573,30 @@ fn dataweave_evaluation_error(py: Python<'_>, message: &str) -> PyResult<PyErr> 
     Ok(PyErr::from_value(error_cls.call1((message,))?))
 }
 
-fn rust_core_error(py: Python<'_>, err: dwpy_core::DwError, script_source: &str) -> PyErr {
-    let raw_message = err.to_string();
+fn rust_core_error(
+    py: Python<'_>,
+    err: dwpy_core::DwError,
+    script_source: &str,
+    trace: Option<&str>,
+) -> PyErr {
+    let raw_message = dwpy_core::execution_error_message(&err);
     if raw_message.starts_with("DataWeave parse error:") {
-        return dataweave_parse_error(py, &parse_error_message(&raw_message, script_source))
+        let message = match trace {
+            Some(trace) => format!("{raw_message}{trace}"),
+            None => parse_error_message(&raw_message, script_source),
+        };
+        return dataweave_parse_error(py, &message)
             .unwrap_or_else(|_| pyo3::exceptions::PyValueError::new_err(raw_message));
     }
-    let message = rust_core_error_message(&raw_message, script_source);
+    let mut message = rust_core_error_message(&raw_message, script_source);
+    if let Some(trace) = trace {
+        message.push_str(trace);
+    }
     dataweave_evaluation_error(py, &message)
         .unwrap_or_else(|_| pyo3::exceptions::PyNotImplementedError::new_err(message))
 }
 
-fn rust_core_error_message(message: &str, script_source: &str) -> String {
-    if message.contains("expected number, got")
-        || (message.contains("cannot coerce string") && message.contains("to Number"))
-    {
-        return "You called the function '+' with these arguments, but it expects one of these combinations:\n(Number, Number)\n\nLocation:\nmain (line: 1, column: 1)".to_string();
-    }
-    if let Some((name, line, column, line_text)) = unresolved_infix_location(script_source) {
-        return format!(
-            "Unable to resolve reference of `{name}`.\n\n{line}| {line_text}\n\nLocation:\nmain (line: {line}, column: {column})"
-        );
-    }
+fn rust_core_error_message(message: &str, _script_source: &str) -> String {
     message.to_string()
 }
 
@@ -608,35 +612,6 @@ fn parse_error_message(message: &str, script_source: &str) -> String {
         .map(|index| line_column(script_source, index + 1))
         .unwrap_or_else(|| line_column(script_source, script_source.len()));
     format!("{message} (line: {line}, column: {column})")
-}
-
-fn unresolved_infix_location(script_source: &str) -> Option<(String, usize, usize, String)> {
-    for (line_index, line) in script_source.lines().enumerate() {
-        let Some(close_brace) = line.find('}') else {
-            continue;
-        };
-        let after_brace = &line[close_brace + 1..];
-        let trimmed = after_brace.trim_start();
-        let leading_spaces = after_brace.len() - trimmed.len();
-        let name = trimmed
-            .chars()
-            .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
-            .collect::<String>();
-        if name.is_empty() {
-            continue;
-        }
-        let after_name = trimmed[name.len()..].trim_start();
-        if !after_name.starts_with('{') {
-            continue;
-        }
-        return Some((
-            name,
-            line_index + 1,
-            close_brace + 1 + leading_spaces + 1,
-            line.to_string(),
-        ));
-    }
-    None
 }
 
 fn line_column(source: &str, byte_index: usize) -> (usize, usize) {

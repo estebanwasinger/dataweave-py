@@ -1110,8 +1110,7 @@ impl DebugSession {
                 let b = self.pop_data()?;
                 let a = self.pop_data()?;
                 if op == "to" {
-                    let start = crate::operators::number_value(&a)? as i64;
-                    let end = crate::operators::number_value(&b)? as i64;
+                    let (start, end) = crate::operators::range_bounds(&a, &b)?;
                     let count = (end as i128 - start as i128).unsigned_abs() + 1;
                     if count * 32 > self.options.max_materialized_bytes as u128 {
                         return Err(error("materialized range limit exceeded"));
@@ -1248,17 +1247,19 @@ impl DebugSession {
                     self.tasks.push(Task::Return);
                     self.eval(function.body.clone(), env, 0);
                 } else if let Some(arg) = args.get(i) {
+                    let mut bound_arg = arg.clone();
                     if !function.callback {
                         if let Some(t) = &function.params[i].type_source {
-                            if !parameter_accepts(&function.params[i], arg) {
-                                return Err(error(format!(
-                                    "argument {} does not match {t}",
-                                    function.params[i].name
-                                )));
-                            }
+                            bound_arg = coerce_debug_parameter(&function.params[i], arg)
+                                .ok_or_else(|| {
+                                    error(format!(
+                                        "argument {} does not match {t}",
+                                        function.params[i].name
+                                    ))
+                                })?;
                         }
                     }
-                    bindings.insert(function.params[i].name.clone(), arg.clone());
+                    bindings.insert(function.params[i].name.clone(), bound_arg);
                     self.tasks
                         .push(Task::BindCall(function, args, i + 1, bindings, depth));
                 } else if let Some(default) = &function.params[i].default {
@@ -1709,7 +1710,7 @@ impl DebugSession {
                 (*env).clone()
             };
             let function = if group.lexical {
-                if !accepts_arguments(group, &args) {
+                if !accepts_arguments(group, &args) && !accepts_coercible_arguments(group, &args) {
                     let call = &self.masked[range.start..range.end];
                     let sources = crate::syntax::parse_computed_call(call)
                         .or_else(|| crate::literals::parse_call_args(call))
@@ -1720,9 +1721,12 @@ impl DebugSession {
                 group.clone()
             } else {
                 bindings.insert(group.name.clone(), DebugValue::Function(group.clone()));
-                std::iter::once(group)
-                    .chain(group.overloads.iter())
+                let candidates = || std::iter::once(group).chain(group.overloads.iter());
+                candidates()
                     .find(|function| accepts_arguments(function, &args))
+                    .or_else(|| {
+                        candidates().find(|function| accepts_coercible_arguments(function, &args))
+                    })
                     .cloned()
                     .ok_or_else(|| {
                         let sources =
@@ -1852,6 +1856,37 @@ fn parameter_accepts(param: &Param, argument: &DebugValue) -> bool {
             &Value::Object(Map::from_iter([("__lambda".into(), Value::Bool(true))])),
         ),
     }
+}
+
+fn coerce_debug_parameter(param: &Param, argument: &DebugValue) -> Option<DebugValue> {
+    if parameter_accepts(param, argument) {
+        return Some(argument.clone());
+    }
+    let DebugValue::Data(value) = argument else {
+        return None;
+    };
+    let type_source = param.type_source.as_ref()?;
+    let meta = Value::Object(Map::from_iter([(
+        "type".into(),
+        Value::String(type_source.clone()),
+    )]));
+    crate::functions::coerce_parameter_value(&meta, value)
+        .map(|value| DebugValue::Data(Rc::new(value)))
+}
+
+fn accepts_coercible_arguments(function: &DebugFunction, args: &[DebugValue]) -> bool {
+    let required = function
+        .params
+        .iter()
+        .filter(|p| p.default.is_none())
+        .count();
+    args.len() >= required
+        && args.len() <= function.params.len()
+        && function
+            .params
+            .iter()
+            .zip(args)
+            .all(|(param, arg)| coerce_debug_parameter(param, arg).is_some())
 }
 fn accepts_arguments(function: &DebugFunction, args: &[DebugValue]) -> bool {
     let required = function

@@ -717,7 +717,11 @@ class TypeInferencer:
         return ANY
 
     def _infer_binary_concat(self, left: DWType, right: DWType) -> DWType:
-        if is_string(left) and is_string(right):
+        if (
+            (is_string(left) and (is_string(right) or is_number(right) or is_boolean(right)))
+            or (is_string(right) and (is_number(left) or is_boolean(left)))
+            or (is_number(left) and is_number(right))
+        ):
             return STRING
         if is_array(left) and is_array(right):
             if isinstance(left, ArrayType) and isinstance(right, ArrayType):

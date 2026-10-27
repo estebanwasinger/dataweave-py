@@ -201,29 +201,49 @@ fn run_request(request_json: &str, loggers: dwpy_core::Loggers) -> Result<String
         .map(properties_to_map)
         .transpose()
         .map_err(|err| JsValue::from_str(&err))?;
-    let result = if request
-        .get("typed_transport")
-        .and_then(serde_json::Value::as_bool)
-        == Some(true)
-    {
-        dwpy_core::execute_transport_with_loggers(
-            script_source,
-            payload,
-            Some(vars),
-            Some(attributes),
-            properties,
-            render_output,
-            loggers,
-        )
-    } else {
-        dwpy_core::ExecutionContext::new(Some(vars), Some(attributes), properties).and_then(
-            |mut context| {
-                context.loggers = loggers;
-                dwpy_core::execute_json_with_context(script_source, payload, context, render_output)
-            },
-        )
-    }
-    .map_err(|err| JsValue::from_str(&wasm_error_message(err, script_source)))?;
+    let (result, trace) = dwpy_core::with_execution_trace(script_source, || {
+        if request
+            .get("typed_transport")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            dwpy_core::execute_transport_with_loggers(
+                script_source,
+                payload,
+                Some(vars),
+                Some(attributes),
+                properties,
+                render_output,
+                loggers,
+            )
+        } else {
+            dwpy_core::ExecutionContext::new(Some(vars), Some(attributes), properties).and_then(
+                |mut context| {
+                    context.loggers = loggers;
+                    dwpy_core::execute_json_with_context(
+                        script_source,
+                        payload,
+                        context,
+                        render_output,
+                    )
+                },
+            )
+        }
+    });
+    let result = result.map_err(|err| {
+        let mut message = match (&err, &trace) {
+            (dwpy_core::DwError::UnsupportedFeature(message), Some(_))
+                if message.starts_with("Unable to evaluate expression `") =>
+            {
+                message.clone()
+            }
+            _ => wasm_error_message(err, script_source),
+        };
+        if let Some(trace) = trace {
+            message.push_str(&trace);
+        }
+        JsValue::from_str(&message)
+    })?;
 
     serde_json::to_string(&result).map_err(|err| JsValue::from_str(&err.to_string()))
 }
@@ -300,20 +320,22 @@ fn wasm_error_message(err: dwpy_core::DwError, script_source: &str) -> String {
         dwpy_core::DwError::UnsupportedFeature(message) => {
             normalized_script_error_message(&message, script_source)
         }
-        dwpy_core::DwError::Parse(message) => {
-            format!("DataWeave parse error: {message}")
-        }
-        dwpy_core::DwError::InvalidJson(message) => format!("Invalid JSON value: {message}"),
-        dwpy_core::DwError::ResourceLimit { .. } | dwpy_core::DwError::Output(_) => err.to_string(),
+        _ => dwpy_core::execution_error_message(&err),
     }
 }
 
 fn normalized_script_error_message(message: &str, script_source: &str) -> String {
-    if message.contains("expected number, got")
-        || (message.contains("cannot coerce string") && message.contains("to Number"))
+    if let Some(expression) = message
+        .strip_prefix("Unable to evaluate expression `")
+        .and_then(|rest| rest.split_once('`').map(|(expression, _)| expression))
     {
-        let operator = numeric_operator_from_script(script_source).unwrap_or("+");
-        return format!("You called the function '{operator}' with these arguments, but it expects one of these combinations:\n(Number, Number)\n\nLocation:\nmain (line: 1, column: 1)");
+        if let Some(index) = dwpy_core::unique_expression_offset(script_source, expression) {
+            let before = &script_source[..index];
+            let line = before.bytes().filter(|byte| *byte == b'\n').count() + 1;
+            let column = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
+            let line_text = script_source.lines().nth(line - 1).unwrap_or("");
+            return format!("{message}\n\n{line}| {line_text}\n{}\nLocation:\nmain (line: {line}, column: {column})", underline(line, column, expression.chars().count()));
+        }
     }
     if let Some((line, column, width, line_text)) =
         missing_expression_location(message, script_source)
@@ -329,11 +351,6 @@ fn normalized_script_error_message(message: &str, script_source: &str) -> String
         return format!(
             "Unable to resolve reference of: `{name}`.\n\n{line}| {line_text}\n{}\nLocation:\nmain (line: {line}, column:{column})",
             underline(line, column, 1)
-        );
-    }
-    if let Some((name, line, column, line_text)) = unresolved_infix_location(script_source) {
-        return format!(
-            "Unable to resolve reference of `{name}`.\n\n{line}| {line_text}\n\nLocation:\nmain (line: {line}, column: {column})"
         );
     }
     message.to_string()
@@ -477,35 +494,6 @@ fn identifier_column(line: &str, name: &str) -> Option<usize> {
     None
 }
 
-fn unresolved_infix_location(script_source: &str) -> Option<(String, usize, usize, String)> {
-    for (line_index, line) in script_source.lines().enumerate() {
-        let Some(close_brace) = line.find('}') else {
-            continue;
-        };
-        let after_brace = &line[close_brace + 1..];
-        let trimmed = after_brace.trim_start();
-        let leading_spaces = after_brace.len() - trimmed.len();
-        let name = trimmed
-            .chars()
-            .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
-            .collect::<String>();
-        if name.is_empty() {
-            continue;
-        }
-        let after_name = trimmed[name.len()..].trim_start();
-        if !after_name.starts_with('{') {
-            continue;
-        }
-        return Some((
-            name,
-            line_index + 1,
-            close_brace + 1 + leading_spaces + 1,
-            line.to_string(),
-        ));
-    }
-    None
-}
-
 fn underline(line: usize, column: usize, width: usize) -> String {
     format!(
         "{}{}",
@@ -575,100 +563,31 @@ fn is_top_level_index(source: &str, target: usize) -> bool {
     depth == 0 && quote.is_none()
 }
 
-fn numeric_operator_from_script(script_source: &str) -> Option<&'static str> {
-    if let Some(boundary_line) = dwpy_core::parse_script_boundary(script_source) {
-        let body = script_source
-            .lines()
-            .skip(boundary_line + 1)
-            .collect::<Vec<_>>()
-            .join("\n");
-        return find_top_level_operator(&body, &["*", "/", "+", "-"]);
-    };
-    find_top_level_operator(script_source, &["*", "/", "+", "-"])
-}
-
-fn find_top_level_operator(source: &str, operators: &[&'static str]) -> Option<&'static str> {
-    let mut paren_depth = 0i64;
-    let mut bracket_depth = 0i64;
-    let mut brace_depth = 0i64;
-    let mut quote: Option<char> = None;
-    let mut previous = '\0';
-
-    for (index, ch) in source.char_indices() {
-        if let Some(quote_ch) = quote {
-            if ch == quote_ch && previous != '\\' {
-                quote = None;
-            }
-            previous = ch;
-            continue;
-        }
-
-        match ch {
-            '"' | '\'' | '`' => quote = Some(ch),
-            '(' => paren_depth += 1,
-            ')' => paren_depth -= 1,
-            '[' => bracket_depth += 1,
-            ']' => bracket_depth -= 1,
-            '{' => brace_depth += 1,
-            '}' => brace_depth -= 1,
-            _ => {
-                if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 {
-                    let rest = &source[index..];
-                    if let Some(operator) = operators
-                        .iter()
-                        .find(|operator| rest.starts_with(**operator) && !rest.starts_with("***"))
-                    {
-                        return Some(*operator);
-                    }
-                }
-            }
-        }
-        previous = ch;
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{normalized_script_error_message, numeric_operator_from_script};
+    use super::normalized_script_error_message;
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), test)]
-    fn hides_rust_backend_prefix_for_numeric_type_errors() {
+    fn preserves_numeric_type_errors() {
         let message = normalized_script_error_message(
             "expected number, got Array [Number(1), Number(2)]",
             "%dw 2.0\noutput application/json\n---\n(1 to 10) * 2",
         );
 
         assert!(!message.contains("Rust evaluator"));
-        assert!(message.contains("You called the function '*'"));
+        assert_eq!(message, "expected number, got Array [Number(1), Number(2)]");
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), test)]
-    fn finds_numeric_operator_from_script_body() {
-        assert_eq!(
-            numeric_operator_from_script("%dw 2.0\noutput application/json\n---\n(1 to 10) * 2"),
-            Some("*")
-        );
-        assert_eq!(
-            numeric_operator_from_script("%dw 2.0\noutput application/json\n---\n{ value: 1 + 2 }"),
-            None
-        );
-    }
-
-    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    fn hides_rust_backend_prefix_for_unresolved_infix_errors() {
+    fn preserves_unrecognized_errors_without_guessing_the_cause() {
         let message = normalized_script_error_message(
             "some internal unresolved expression",
             "%dw 2.0\n---\n{a: 1} unknownInfix {b: 2}",
         );
 
-        assert_eq!(
-            message,
-            "Unable to resolve reference of `unknownInfix`.\n\n3| {a: 1} unknownInfix {b: 2}\n\nLocation:\nmain (line: 3, column: 8)"
-        );
+        assert_eq!(message, "some internal unresolved expression");
     }
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]

@@ -471,6 +471,11 @@ DataWeave-Py currently supports a wide range of DataWeave language features:
 - ✅ Type checks (`content is String`)
 - ✅ Field updates (`item update { case content at .content -> ... }`), including conditional branches inside map lambdas
 
+Numeric operands to `++` are converted to strings, so `2 ++ 3` returns `"23"`.
+For typed user functions, exact overload matches are tried first. If none match,
+numeric strings can be coerced to `Number` and numbers to `String` before the
+selected function runs; an invalid conversion does not execute the function body.
+
 ### Control Flow
 - ✅ Conditional expressions (`if-else`)
 - ✅ Pattern matching (`match-case`)

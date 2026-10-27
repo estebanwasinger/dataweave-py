@@ -52,7 +52,11 @@ pub(crate) struct CompiledSequence {
 
 #[derive(Clone)]
 enum SequenceSource {
-    Range { start: String, end: String },
+    Range {
+        start: String,
+        end: String,
+        source: String,
+    },
     Expression(String),
 }
 
@@ -79,11 +83,13 @@ pub(crate) enum TerminalOperation {
 #[derive(Clone)]
 pub(crate) struct CompiledLambda {
     expression: FastExpr,
+    source: String,
 }
 
 #[derive(Clone)]
 pub(crate) struct CompiledReducer {
     expression: FastExpr,
+    source: String,
 }
 
 #[derive(Clone)]
@@ -244,6 +250,7 @@ fn compile_sequence(source: &str, allow_expression_source: bool) -> Option<Compi
             source: SequenceSource::Range {
                 start: start.trim().to_string(),
                 end: end.trim().to_string(),
+                source: source.to_string(),
             },
             operations: Vec::new(),
         });
@@ -258,7 +265,13 @@ fn compile_reducer(source: &str) -> Option<(CompiledReducer, Option<String>)> {
     let source = strip_wrapping_parens(source.trim());
     let Some((parameters_source, body)) = split_top_level_arrow(source) else {
         let expression = compile_fast_expr(source, "$", "$$")?;
-        return Some((CompiledReducer { expression }, None));
+        return Some((
+            CompiledReducer {
+                expression,
+                source: source.to_string(),
+            },
+            None,
+        ));
     };
     let parameters_source = strip_wrapping_parens(parameters_source.trim());
     let parameters = crate::syntax::split_top_level(parameters_source, ',');
@@ -275,7 +288,13 @@ fn compile_reducer(source: &str) -> Option<(CompiledReducer, Option<String>)> {
             (second.split(':').next()?.trim(), None)
         };
     let expression = compile_fast_expr(body.trim(), first_name, second_name)?;
-    Some((CompiledReducer { expression }, default_source))
+    Some((
+        CompiledReducer {
+            expression,
+            source: body.trim().to_string(),
+        },
+        default_source,
+    ))
 }
 
 fn compile_lambda(source: &str) -> Option<CompiledLambda> {
@@ -303,7 +322,30 @@ fn compile_lambda(source: &str) -> Option<CompiledLambda> {
         .unwrap_or(implicit_secondary);
     Some(CompiledLambda {
         expression: compile_fast_expr(body, first_name, second_name)?,
+        source: body.to_string(),
     })
+}
+
+impl CompiledLambda {
+    fn evaluate(&self, item: &FastValue, secondary: &FastValue) -> Result<FastValue, DwError> {
+        let result = self.expression.evaluate(item, secondary);
+        if result.is_err() {
+            crate::diagnostics::frame(&self.source, None, || result)
+        } else {
+            result
+        }
+    }
+}
+
+impl CompiledReducer {
+    fn evaluate(&self, item: &FastValue, accumulator: &FastValue) -> Result<FastValue, DwError> {
+        let result = self.expression.evaluate(item, accumulator);
+        if result.is_err() {
+            crate::diagnostics::frame(&self.source, None, || result)
+        } else {
+            result
+        }
+    }
 }
 
 fn compile_fast_expr(source: &str, item_name: &str, secondary_name: &str) -> Option<FastExpr> {
@@ -613,13 +655,13 @@ impl CompiledSequence {
                     operation_indices[operation_index] = operation_item_index.saturating_add(1);
                     match operation {
                         SequenceOperation::Map(lambda) => {
-                            next_values.push(lambda.expression.evaluate(
+                            next_values.push(lambda.evaluate(
                                 &value,
                                 &FastValue::Integer(operation_item_index as i64),
                             )?)
                         }
                         SequenceOperation::Filter(lambda) => {
-                            let selected = lambda.expression.evaluate(
+                            let selected = lambda.evaluate(
                                 &value,
                                 &FastValue::Integer(operation_item_index as i64),
                             )?;
@@ -628,7 +670,7 @@ impl CompiledSequence {
                             }
                         }
                         SequenceOperation::FlatMap(lambda) => {
-                            let mapped = lambda.expression.evaluate(
+                            let mapped = lambda.evaluate(
                                 &value,
                                 &FastValue::Integer(operation_item_index as i64),
                             )?;
@@ -643,7 +685,7 @@ impl CompiledSequence {
                             }
                         }
                         SequenceOperation::DistinctBy(lambda) => {
-                            let key = lambda.expression.evaluate(
+                            let key = lambda.evaluate(
                                 &value,
                                 &FastValue::Integer(operation_item_index as i64),
                             )?;
@@ -656,7 +698,7 @@ impl CompiledSequence {
                             if take_finished[operation_index] {
                                 continue;
                             }
-                            let selected = lambda.expression.evaluate(
+                            let selected = lambda.evaluate(
                                 &value,
                                 &FastValue::Integer(operation_item_index as i64),
                             )?;
@@ -671,7 +713,7 @@ impl CompiledSequence {
                                 next_values.push(value);
                                 continue;
                             }
-                            let selected = lambda.expression.evaluate(
+                            let selected = lambda.evaluate(
                                 &value,
                                 &FastValue::Integer(operation_item_index as i64),
                             )?;
@@ -700,11 +742,12 @@ impl CompiledSequence {
         };
 
         match &self.source {
-            SequenceSource::Range { start, end } => {
+            SequenceSource::Range { start, end, source } => {
                 let start_value = evaluate_expression_scoped(start, payload, locals)?;
                 let end_value = evaluate_expression_scoped(end, payload, locals)?;
-                let start = number_value(&start_value)? as i64;
-                let end = number_value(&end_value)? as i64;
+                let (start, end) = crate::diagnostics::frame(source, None, || {
+                    crate::operators::range_bounds(&start_value, &end_value)
+                })?;
                 let step = if end >= start { 1i64 } else { -1i64 };
                 let mut current = start;
                 loop {
@@ -761,9 +804,7 @@ impl CompiledSequence {
         let mut saw_item = false;
         let valid = self.for_each_while(payload, locals, false, |item, index| {
             saw_item = true;
-            let mapped = lambda
-                .expression
-                .evaluate(&item, &FastValue::Integer(index as i64))?;
+            let mapped = lambda.evaluate(&item, &FastValue::Integer(index as i64))?;
             match operation {
                 TerminalOperation::Some => {
                     if mapped.truthy()? {
@@ -828,7 +869,7 @@ impl CompiledSequence {
         let mut accumulator = default;
         let valid = self.for_each(payload, locals, |item, _| {
             accumulator = Some(match accumulator.take() {
-                Some(accumulator) => reducer.expression.evaluate(&item, &accumulator)?,
+                Some(accumulator) => reducer.evaluate(&item, &accumulator)?,
                 None => item,
             });
             Ok(())

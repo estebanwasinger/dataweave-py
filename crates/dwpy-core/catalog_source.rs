@@ -229,7 +229,9 @@ pub fn keyword_operators(source: &str) -> BTreeSet<String> {
     let mut operators = Operators::default();
     for item in syn::parse_file(source).unwrap().items {
         if let Item::Fn(function) = item {
-            if function.sig.ident == "evaluate_expression_scoped" {
+            if function.sig.ident == "evaluate_expression_scoped"
+                || function.sig.ident == "evaluate_expression_inner"
+            {
                 operators.visit_block(&function.block);
             }
         }

@@ -23,6 +23,8 @@ fn run(source: &str, payload: serde_json::Value) -> DwValue {
 #[test]
 fn differential_core_transformations() {
     for source in [
+        "%dw 2.0\nfun hi(a:Number,b:Number)=a ++ b\n---\nhi(2,\"3\")",
+        "%dw 2.0\nfun f(x:Number)=\"number\"\nfun f(x:String)=\"string\"\n---\n[f(\"3\"),f(3)]",
         "%dw 2.0\noutput application/json\n---\npayload map ((item,index) -> {index:index, value:item*2})",
         "1 to 8 map ($ * 3) filter ($ > 9) reduce ((item, acc = 0) -> item + acc)",
         "%dw 2.0\nvar start = 2\nfun add(x) = x + start\n---\npayload map ((x) -> add(x))",
