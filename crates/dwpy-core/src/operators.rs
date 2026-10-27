@@ -563,6 +563,47 @@ pub(crate) fn evaluate_coercion(value: &Value, type_source: &str) -> Result<Valu
             if value.is_null() {
                 return Ok(Value::Null);
             }
+            if target_type == "DateTime" {
+                if let Value::Number(number) = value {
+                    let seconds = number.as_f64().ok_or_else(|| {
+                        DwError::UnsupportedFeature("invalid epoch seconds for DateTime".into())
+                    })?;
+                    let whole = seconds.floor();
+                    // Use the decimal representation to avoid introducing binary floating-point
+                    // noise into the subsecond component of large epoch values.
+                    let decimal = number.to_string();
+                    let fraction = if decimal.contains(['e', 'E']) {
+                        seconds.abs().fract()
+                    } else {
+                        decimal
+                            .split_once('.')
+                            .and_then(|(_, part)| format!("0.{part}").parse::<f64>().ok())
+                            .unwrap_or(0.0)
+                    };
+                    let fraction = if seconds < 0.0 && fraction != 0.0 {
+                        1.0 - fraction
+                    } else {
+                        fraction
+                    };
+                    let nanos = (fraction * 1_000_000_000.0).round() as u32;
+                    let carry = i64::from(nanos == 1_000_000_000);
+                    let nanos = nanos % 1_000_000_000;
+                    let datetime = chrono::DateTime::from_timestamp(
+                        (whole as i64).saturating_add(carry),
+                        nanos,
+                    )
+                    .ok_or_else(|| {
+                        DwError::UnsupportedFeature(
+                            "epoch seconds out of range for DateTime".into(),
+                        )
+                    })?;
+                    return Ok(Value::DateTime(crate::DwDateTime {
+                        value: datetime.fixed_offset(),
+                        fractional_digits: format!("{nanos:09}").trim_end_matches('0').len(),
+                        use_z: true,
+                    }));
+                }
+            }
             let format = extract_coercion_options(type_source)?.and_then(|options| options.format);
             let parsed = coerce_local_datetime(value, format.as_deref())?;
             match (target_type, parsed) {

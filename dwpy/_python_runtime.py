@@ -2745,6 +2745,10 @@ class DataWeaveRuntime:
 
     @staticmethod
     def _func_binary_divide(left: Any, right: Any) -> Any:
+        if isinstance(left, str):
+            left = float(left)
+        if isinstance(right, str):
+            right = float(right)
         return (left or 0) / (right or 1)
 
     @staticmethod
@@ -3481,15 +3485,17 @@ class DataWeaveRuntime:
 
     def _coerce_datetime(self, value: Any) -> datetime:
         if isinstance(value, datetime):
-            return value
+            return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
         if isinstance(value, date):
-            return datetime.combine(value, time.min)
+            return datetime.combine(value, time.min, tzinfo=timezone.utc)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return datetime.fromtimestamp(value, tz=timezone.utc)
         if isinstance(value, str):
             parsed = self._parse_temporal_literal(value.strip())
             if isinstance(parsed, datetime):
-                return parsed
+                return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
             if isinstance(parsed, date):
-                return datetime.combine(parsed, time.min)
+                return datetime.combine(parsed, time.min, tzinfo=timezone.utc)
         raise TypeError(f"Cannot coerce {type(value).__name__} to DateTime")
 
     def _coerce_time(self, value: Any) -> time:
@@ -3632,8 +3638,8 @@ class DataWeaveRuntime:
 
     @staticmethod
     def _render_temporal_token(value: datetime, token_char: str, token_length: int) -> str:
-        if token_char in {"u", "y"}:
-            year = value.year
+        if token_char in {"u", "y", "Y"}:
+            year = (value + timedelta(days=(5 - value.weekday()) % 7)).year if token_char == "Y" else value.year
             if token_length == 2:
                 return f"{year % 100:02d}"
             return str(year).zfill(max(4, token_length))
