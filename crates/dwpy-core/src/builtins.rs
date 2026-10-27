@@ -1329,6 +1329,24 @@ fn format_temporal_or_date_string(value: &str, pattern: &str, locale: &str) -> O
         if pattern == "uuuu-MM-dd" || pattern == "yyyy-MM-dd" || pattern == "y-MM-dd" {
             return Some(format!("{year:04}-{month:02}-{day:02}"));
         }
+        if matches!(pattern, "yyyy-MM-dd'T'HH:mm:ss" | "YYYY-MM-dd'T'HH:mm:ss.")
+            && value.len() >= 19
+        {
+            let (hour, minute, second) = parse_time_parts(&value[11..19])?;
+            let suffix = if pattern.ends_with('.') { "." } else { "" };
+            let formatted_year = if pattern.starts_with("YYYY") {
+                use chrono::Datelike;
+                let date = chrono::NaiveDate::from_ymd_opt(year as i32, month as u32, day as u32)?;
+                (date
+                    + chrono::Duration::days(i64::from(6 - date.weekday().num_days_from_sunday())))
+                .year()
+            } else {
+                year as i32
+            };
+            return Some(format!(
+                "{formatted_year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}{suffix}"
+            ));
+        }
         if pattern == "yyyy-MM-dd'T'HH:mm:ss.SSS" && value.len() >= 23 {
             let (hour, minute, second) = parse_time_parts(&value[11..19])?;
             let millis = value.get(20..23)?;
