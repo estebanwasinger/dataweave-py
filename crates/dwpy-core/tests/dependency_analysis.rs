@@ -125,6 +125,25 @@ fn type_inference_handles_complete_coercion_and_spread_expressions() {
 }
 
 #[test]
+fn addition_and_concatenation_have_distinct_inferred_types() {
+    for (expression, kind) in [
+        (r#""2" as Number + 3"#, "Number"),
+        ("1 + 2", "Number"),
+        ("1 ++ 2", "String"),
+        (r#""a" ++ "b""#, "String"),
+        ("[1] + 2", "Array"),
+        ("[1] ++ [2]", "Array"),
+    ] {
+        let result = analyze_expression(expression, None, None).expect(expression);
+        assert_eq!(
+            result["inferredType"]["kind"], kind,
+            "{expression}: {result}"
+        );
+        assert_eq!(result["diagnostics"], json!([]), "{expression}: {result}");
+    }
+}
+
+#[test]
 fn malformed_source_is_rejected_without_evaluating_valid_headers() {
     for expression in [r#""unfinished"#, "{a 1}", "payload +", "payload["] {
         assert!(

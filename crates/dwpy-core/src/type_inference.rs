@@ -56,6 +56,20 @@ pub(crate) fn infer_expression_type(
                 return Ok(right_type);
             }
         }
+        if operator == "+" {
+            if type_kind(&left_type) == Some("Array") {
+                return Ok(type_array(type_union(vec![
+                    left_type.get("element").cloned().unwrap_or_else(type_any),
+                    right_type,
+                ])));
+            }
+            if type_kind(&left_type) == Some("Number") && type_kind(&right_type) == Some("Number") {
+                return Ok(type_number());
+            }
+            return Err(DwError::UnsupportedFeature(format!(
+                "type inference {source}"
+            )));
+        }
         if operator == "-" {
             return Err(DwError::UnsupportedFeature(format!(
                 "type inference {source}"
