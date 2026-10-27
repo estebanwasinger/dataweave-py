@@ -156,7 +156,10 @@ pub fn extract(calls: &str, operators: &str) -> BTreeMap<String, BTreeSet<usize>
     let file = syn::parse_file(operators).unwrap();
     for item in file.items {
         if let Item::Const(c) = item {
-            if c.ident == "BINARY_BUILTIN_OPERATORS" || c.ident == "COLLECTION_OPERATORS" {
+            if c.ident == "BINARY_BUILTIN_OPERATORS"
+                || c.ident == "COLLECTION_OPERATORS"
+                || c.ident == "NUMERIC_BUILTIN_OPERATORS"
+            {
                 let Expr::Reference(r) = c.expr.as_ref() else {
                     panic!("operator list")
                 };

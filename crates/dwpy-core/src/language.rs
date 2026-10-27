@@ -172,6 +172,7 @@ fn lambda_signature(source: &str, name: &str) -> Option<Signature> {
         parameters,
         return_type: None,
         documentation: None,
+        infix: false,
     })
 }
 

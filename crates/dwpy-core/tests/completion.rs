@@ -392,3 +392,110 @@ fn callback_fields_preserve_native_shapes_and_lexical_shadowing() {
         assert!(items.is_empty(), "{source}");
     }
 }
+
+#[test]
+fn inline_literal_selectors_complete_static_structure_without_input_or_execution() {
+    for (source, expected) in [
+        ("{\n    \"name\" : \"name\"\n}.", vec!["name"]),
+        (
+            "({name: fail(\"must not run\"), lastName: log(1)}).",
+            vec!["name", "lastName"],
+        ),
+        ("{'full name': \"name\", bareKey: 42}.f", vec!["full name"]),
+        (
+            "{person: {name: \"E\", address: {city: \"BA\"}}}.person.",
+            vec!["name", "address"],
+        ),
+        (
+            "(({person: {address: {city: \"BA\"}}})).person.address.",
+            vec!["city"],
+        ),
+        (
+            "[{name: \"E\"}, {lastName: \"W\"}].",
+            vec!["name", "lastName"],
+        ),
+        ("[{name: \"E\"}, {lastName: \"W\"}][0].", vec!["name"]),
+        ("[{name: \"E\"}] map $.", vec!["name"]),
+        (
+            "{ rows: [{name: \"E\"}, {lastName: \"W\"}] }.rows.",
+            vec!["name", "lastName"],
+        ),
+        (
+            "{ entry: {first: 1}, entry: {second: 2} }.*entry.",
+            vec!["first", "second"],
+        ),
+        (
+            "{/* misleading: {extra: 1} */ name: \"a:b,c\"}.",
+            vec!["name"],
+        ),
+        (
+            r#"{"$(fail('never'))": 1, known: fail('never')}."#,
+            vec!["known"],
+        ),
+    ] {
+        let line = source.bytes().filter(|b| *b == b'\n').count();
+        let column = source.rsplit('\n').next().unwrap().encode_utf16().count();
+        let items = complete_fields(source, line, column, |_| {
+            panic!("literal completion must not request inputs")
+        })
+        .unwrap_or_default();
+        assert_eq!(
+            items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(),
+            expected,
+            "{source}"
+        );
+        if let Some(item) = items.iter().find(|i| i.label == "full name") {
+            assert_eq!(item.insert_text, "\"full name\"");
+        }
+    }
+    for source in [
+        "fail({secret: 1}).",
+        "payload[{secret: 1}].",
+        "{name: fail({secret: 1})}.name.",
+    ] {
+        let items = complete_fields(source, 0, source.len(), |_| None).unwrap_or_default();
+        assert!(items.is_empty(), "{source}: {items:?}");
+    }
+}
+
+#[test]
+fn then_binds_the_whole_input_and_preserves_projected_result_shapes() {
+    for (source, expected) in [
+        ("%dw 2.0\nimport hashWith from dw::Crypto\noutput application/json\n---\n{\n    \"name\" : \"name\"\n} then $.", vec!["name"]),
+        ("{name: \"E\", nested: {city: \"BA\"}} then $.", vec!["name", "nested"]),
+        ("{name: \"E\"} then ((value) -> value.)", vec!["name"]),
+        ("then({name: \"E\"}, $.)", vec!["name"]),
+        ("{person: {name: \"E\"}} then $.person then $.", vec!["name"]),
+        ("{name: \"E\"} then {renamed: fail(\"never\")} then $.", vec!["renamed"]),
+        ("[{name: \"E\"}] map ($ then $.)", vec!["name"]),
+    ] {
+        let cursor = source.rfind('.').unwrap() + 1;
+        let line = source[..cursor].bytes().filter(|b| *b == b'\n').count();
+        let column = source[..cursor].rsplit('\n').next().unwrap().encode_utf16().count();
+        let items = complete_fields(source, line, column, |_| panic!("static then completion must not inspect inputs")).unwrap_or_default();
+        assert_eq!(items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(), expected, "{source}");
+    }
+    let items = fields(
+        "payload then $.",
+        r#"{"name":"E","nested":{"city":"BA"}}"#,
+        "application/json",
+        serde_json::json!({}),
+    );
+    assert_eq!(
+        items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(),
+        ["name", "nested"]
+    );
+    for source in [
+        "[{name: \"E\"} then $.name, $.]",
+        "{name: \"E\"} then $$.",
+        "fail(\"never\") then $.",
+    ] {
+        let column = source.rfind('.').unwrap() + 1;
+        assert!(
+            complete_fields(source, 0, column, |_| None)
+                .unwrap_or_default()
+                .is_empty(),
+            "{source}"
+        );
+    }
+}

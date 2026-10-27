@@ -2,6 +2,48 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { complete } = require("..");
 
+test("function invocation snippets follow prefix and infix expression context", () => {
+  for (const [source, label, expected] of [
+    ['{name: up|}', 'upper', /^upper\(/],
+    ['{values: ma|}', 'map', /^map\(/],
+    ['{values: payload ma|}', 'map', /^map \(\(item, index\) -> \$\{1\}\)$/],
+    ['payload map ma|', 'map', /^map\(/],
+    ['payload jo|', 'joinBy', /^joinBy \$\{1:separator\}$/],
+    ['payload ma| $.name', 'map', /^map$/],
+  ]) {
+    const column = source.indexOf('|');
+    const items = complete({script: source.replace('|', ''), line: 0, column}).items.filter(i => i.label === label);
+    assert.ok(items.length, source);
+    assert.ok(items.every(i => expected.test(i.insertText)), source);
+  }
+});
+
+test("then callback selectors use the whole preceding value", () => {
+  const script = '%dw 2.0\nimport hashWith from dw::Crypto\noutput application/json\n---\n{\n  "name": "name"\n} then $.';
+  const { items } = complete({ script, line: 6, column: 9 });
+  assert.deepEqual(items.map(i => i.label), ["name"]);
+  const projected = '{person: {name: "E"}} then $.person then $.';
+  assert.deepEqual(complete({ script: projected, line: 0, column: projected.length }).items.map(i => i.label), ["name"]);
+  const payload = 'payload then $.';
+  assert.deepEqual(complete({ script: payload, line: 0, column: payload.length, payload: {name: "E", nested: {city: "BA"}} }).items.map(i => i.label), ["name", "nested"]);
+});
+
+test("object literal selectors expose static keys without evaluating their values", () => {
+  for (const [script, labels] of [
+    ['{\n  "name": "name"\n}.', ["name"]],
+    ['({person: {name: fail("never"), lastName: "W"}}).person.', ["name", "lastName"]],
+    ['[{name: "E"}, {lastName: "W"}].', ["name", "lastName"]],
+    ['{"full name": log("never")}.f', ["full name"]],
+  ]) {
+    const lines = script.split("\n");
+    const { items } = complete({ script, line: lines.length - 1, column: lines.at(-1).length, payload: "{bad", payload_format: "application/json" });
+    assert.deepEqual(items.map(i => i.label), labels);
+    assert.ok(items.every(i => i.kind === "field"));
+  }
+  const script = "fail({secret: 1}).";
+  assert.deepEqual(complete({ script, line: 0, column: script.length }).items, []);
+});
+
 test("evaluator operators such as update are suggested without function-call syntax", () => {
   const script = "%dw 2.0\n---\n{numA: 2} up";
   const items = complete({ script, line: 2, column: 12 }).items.filter(i => i.label === "update");

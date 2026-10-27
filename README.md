@@ -606,6 +606,13 @@ Completion also discovers keyword operators handled directly by the expression
 evaluator, including `update`. These appear as operators without function-call
 parentheses, using the same native/WASM source of truth.
 
+Invocation snippets follow expression context: `{name: up…}` inserts a prefix
+call such as `upper(text)`, while `{values: payload ma…}` prioritizes infix
+`map ((item, index) -> …)`. Supported infix operators come from the runtime;
+callback parameters come from their signatures. Imported aliases retain this
+behavior, local functions retain their own call signatures, and existing call
+arguments or infix right-hand expressions are preserved.
+
 Document functions are discovered on every completion request, including nested
 `do` blocks, closures, lambda-valued variables, overloads, and lexical shadowing.
 Imports support wildcard/selective forms, function aliases, module aliases and
@@ -619,6 +626,11 @@ suggests fields from the payload's array elements, and named parameters such as
 `item` work too. Nested callbacks use their nearest input; fields are combined
 across sampled records, including CSV rows. Selectors and shape-preserving
 collection pipelines are inspected without running callbacks or initializers.
+Inline object and array literals also supply their static fields, including
+nested selectors such as `({person: {name: "E"}}).person.`. Field values and
+computed/interpolated keys are never executed to obtain suggestions.
+The `then` callback uses the whole preceding value, so `{name: "E"} then $.`
+also suggests `name`, including after chained selector projections.
 
 The browser still uses Monaco for keyword/snippet presentation and input-field
 completion through Rust's format readers. Full hover and signature-help parity

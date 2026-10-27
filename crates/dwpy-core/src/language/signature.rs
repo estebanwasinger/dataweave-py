@@ -15,6 +15,9 @@ pub struct Signature {
     pub return_type: Option<String>,
     #[serde(default)]
     pub documentation: Option<String>,
+    /// Filled from the active runtime's operator contract, retained by aliases.
+    #[serde(skip)]
+    pub(crate) infix: bool,
 }
 impl Signature {
     pub fn label(&self) -> String {
@@ -33,6 +36,7 @@ impl Signature {
     pub fn renamed(&self, name: &str) -> Self {
         let mut s = self.clone();
         s.name = name.into();
+        s.infix = false;
         s
     }
 }
@@ -114,6 +118,7 @@ pub(crate) fn function(source: &str, range: Range<usize>) -> Option<Function> {
             parameters,
             return_type: result,
             documentation: None,
+            infix: false,
         },
         range: start..range.end,
         has_body: equals.is_some(),

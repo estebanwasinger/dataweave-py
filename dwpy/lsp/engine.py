@@ -320,9 +320,6 @@ class DataWeaveLanguageEngine:
         items: List[EngineCompletionItem] = []
         for item in response:
             insert = item["insertText"]
-            # Preserve LSP's established infix HOF snippets for native builtins.
-            if item["sortText"].startswith("4_") and item["insertTextFormat"] == "snippet":
-                insert = _FUNCTION_SNIPPET_OVERRIDES.get(item["label"], insert)
             items.append(EngineCompletionItem(
                 label=item["label"], kind=item["kind"], insert_text=insert,
                 detail=item.get("detail"), insert_text_format=item["insertTextFormat"], sort_text=item["sortText"],

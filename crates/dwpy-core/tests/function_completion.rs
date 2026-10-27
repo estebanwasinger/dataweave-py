@@ -21,6 +21,113 @@ fn named<'a>(items: &'a [CompletionItem], name: &str) -> Vec<&'a CompletionItem>
     items.iter().filter(|i| i.label == name).collect()
 }
 #[test]
+fn invocation_syntax_follows_expression_position() {
+    for source in [
+        "{name: up<cursor>}",
+        "{name:up<cursor>}",
+        "[up<cursor>]",
+        "if (true) up<cursor> else null",
+        "null default up<cursor>",
+        "payload map up<cursor>",
+        "payload + up<cursor>",
+        "((item) -> up<cursor>)",
+    ] {
+        let items = at(source);
+        assert!(
+            named(&items, "upper")
+                .iter()
+                .all(|i| i.insert_text.starts_with("upper(")),
+            "{source}"
+        );
+        assert!(!named(&items, "upper").is_empty(), "{source}");
+    }
+    for source in [
+        "ma<cursor>",
+        "{values: ma<cursor>}",
+        "payload map ma<cursor>",
+        "if (true) ma<cursor> else []",
+    ] {
+        let items = at(source);
+        assert!(
+            named(&items, "map")
+                .iter()
+                .all(|i| i.insert_text.starts_with("map(")),
+            "{source}"
+        );
+    }
+    for source in [
+        "{values: array ma<cursor>}",
+        "payload.items ma<cursor>",
+        "[1, 2] ma<cursor>",
+        "({x: 1}) ma<cursor>",
+        "getItems() ma<cursor>",
+        "payload /* ignored: + */\n ma<cursor>",
+        "payload.map ma<cursor>",
+        "payload map ((item) -> item.children ma<cursor>)",
+    ] {
+        let items = at(source);
+        assert!(
+            named(&items, "map")
+                .iter()
+                .all(|i| i.insert_text == "map ((item, index) -> ${1})"),
+            "{source}"
+        );
+        assert_eq!(
+            items[0].label, "map",
+            "infix overloads should rank first: {source}"
+        );
+    }
+    let items = at("[1,2] jo<cursor>");
+    assert!(named(&items, "joinBy")
+        .iter()
+        .all(|i| i.insert_text == "joinBy ${1:separator}"));
+    assert!(named(&at("2 po<cursor>"), "pow")
+        .iter()
+        .all(|i| i.insert_text.starts_with("pow ${1:")));
+    assert!(named(&at("payload th<cursor>"), "then")
+        .iter()
+        .all(|i| i.insert_text.contains(") -> ${1})")));
+    for source in [
+        "payload ma<cursor> ((item) -> item.name)",
+        "payload ma<cursor> $.name",
+        "ma<cursor>(payload, $)",
+    ] {
+        assert!(
+            named(&at(source), "map")
+                .iter()
+                .all(|i| i.insert_text == "map" && i.insert_text_format == "plain"),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn imported_infix_aliases_preserve_style_but_local_functions_do_not_inherit_it() {
+    let items = at("%dw 2.0\nvar each = map\n---\npayload ea<cursor>");
+    assert!(named(&items, "each")
+        .iter()
+        .all(|i| i.insert_text.starts_with("each(")));
+    let items = at("%dw 2.0\nimport joinBy as join from dw::Core\n---\npayload joi<cursor>");
+    assert!(named(&items, "join")
+        .iter()
+        .all(|i| i.insert_text.starts_with("join(")));
+    let items = at("%dw 2.0\nimport map as each from dw::Core\n---\npayload ea<cursor>");
+    assert!(named(&items, "each")
+        .iter()
+        .all(|i| i.insert_text == "each ((item, index) -> ${1})"));
+    assert!(!named(&items, "each").is_empty());
+    let items = at("%dw 2.0\nimport map as each from dw::Core\n---\npayload each ma<cursor>");
+    assert!(named(&items, "map")
+        .iter()
+        .all(|i| i.insert_text.starts_with("map(")));
+    let items = at("%dw 2.0\nimport dw::Core as C\n---\npayload C::ma<cursor>");
+    assert!(named(&items, "C::map")
+        .iter()
+        .all(|i| i.insert_text.starts_with("C::map ((")));
+    let items = at("%dw 2.0\nfun map(a, b) = a + b\n---\npayload ma<cursor>");
+    assert_eq!(named(&items, "map")[0].insert_text, "map(${1:a}, ${2:b})");
+}
+#[test]
 fn every_runtime_name_and_arity_is_discovered_without_a_catalog_update() {
     let expected = catalog_source::extract(
         include_str!("../src/calls.rs"),

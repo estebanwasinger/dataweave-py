@@ -20,11 +20,21 @@ struct Catalog {
 fn catalog() -> &'static Catalog {
     static CATALOG: OnceLock<Catalog> = OnceLock::new();
     CATALOG.get_or_init(|| {
-        serde_json::from_str(include_str!(concat!(
+        let mut catalog: Catalog = serde_json::from_str(include_str!(concat!(
             env!("OUT_DIR"),
             "/function_catalog.json"
         )))
-        .expect("validated function catalog")
+        .expect("validated function catalog");
+        for function in &mut catalog.functions {
+            let infix = crate::BINARY_BUILTIN_OPERATORS.contains(&function.name.as_str())
+                || crate::NUMERIC_BUILTIN_OPERATORS.contains(&function.name.as_str())
+                || crate::COLLECTION_OPERATORS.contains(&function.name.as_str())
+                || catalog.operators.contains(&function.name);
+            for signature in &mut function.signatures {
+                signature.infix = infix && signature.parameters.len() == 2;
+            }
+        }
+        catalog
     })
 }
 pub fn functions() -> &'static [Function] {
@@ -39,6 +49,15 @@ pub fn signatures(name: &str) -> Vec<Signature> {
         .find(|f| f.name == name)
         .map(|f| f.signatures.clone())
         .unwrap_or_default()
+}
+pub(crate) fn imported_signature(signature: &Signature, name: &str) -> Signature {
+    let mut renamed = signature.renamed(name);
+    // The runtime resolves imported aliases for collection operators. Scalar
+    // binary operators are recognized only by their canonical spelling.
+    renamed.infix = signature.infix
+        && (name == signature.name
+            || crate::COLLECTION_OPERATORS.contains(&signature.name.as_str()));
+    renamed
 }
 pub fn module_exports(module: &str) -> std::collections::BTreeMap<String, String> {
     let mut result = std::collections::BTreeMap::new();
@@ -148,7 +167,10 @@ pub fn imported_signatures(
             (!signatures.is_empty()).then(|| {
                 (
                     name.clone(),
-                    signatures.iter().map(|s| s.renamed(&name)).collect(),
+                    signatures
+                        .iter()
+                        .map(|s| imported_signature(s, &name))
+                        .collect(),
                 )
             })
         })

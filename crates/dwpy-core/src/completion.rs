@@ -5,10 +5,12 @@
 use crate::syntax::is_identifier;
 use crate::{DwMap, DwValue};
 use serde::Serialize;
+mod call_style;
 mod references;
 
 /// Complete selectors using parsed runtime values, without evaluating user code.
-/// A lookup is requested only for a recognized context root and selector path.
+/// Input lookups are requested only for recognized context roots; inline object
+/// and array literals contribute their static structure without evaluating values.
 pub fn complete_fields(
     source: &str,
     line: usize,
@@ -29,11 +31,18 @@ pub fn complete_fields(
     if reference.projections.len() > 64 {
         return Some(vec![]);
     }
-    let Some(value) = lookup(&reference.root) else {
+    let value = match reference.root {
+        references::Root::Context(root) => lookup(&root),
+        references::Root::Shape(shape) => Some(shape),
+    };
+    let Some(value) = value else {
         return Some(vec![]);
     };
     let mut values = vec![value];
     for projection in reference.projections {
+        if matches!(projection, Projection::WholeValue) {
+            continue;
+        }
         let mut next = vec![];
         if matches!(projection, Projection::Array) {
             values = vec![DwValue::Array(values)];
@@ -74,7 +83,7 @@ pub fn complete_fields(
                         _ => (),
                     }
                 }
-                Projection::Array => unreachable!(),
+                Projection::Array | Projection::WholeValue => unreachable!(),
             }
         }
         values = next;
@@ -176,10 +185,16 @@ pub fn complete_with_modules(
     use crate::language::Binding;
     let cursor = position_offset(source, line, column);
     let before = &source[..cursor];
-    let prefix = before
+    let mut prefix = before
         .rsplit(|c: char| !c.is_ascii_alphanumeric() && !matches!(c, '_' | '$' | ':'))
         .next()
         .unwrap_or("");
+    // A field separator is not a module qualifier, even without whitespace.
+    if let Some(colon) = prefix.rfind(':') {
+        if colon == 0 || prefix.as_bytes()[colon - 1] != b':' {
+            prefix = &prefix[colon + 1..];
+        }
+    }
     let context = &source[..cursor - prefix.len()];
     if context.trim_end().ends_with('.') {
         return vec![];
@@ -188,6 +203,7 @@ pub fn complete_with_modules(
         .find(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '$')
         .map_or(source.len(), |end| cursor + end);
     let has_arguments = source[following_word..].trim_start().starts_with('(');
+    let existing_rhs = call_style::has_rhs(&source[following_word..]);
     let mut bindings = std::collections::BTreeMap::new();
     let mut ranks = std::collections::BTreeMap::new();
     for f in crate::function_catalog::functions() {
@@ -206,7 +222,7 @@ pub fn complete_with_modules(
                 let label = format!("{module}::{name}");
                 let signatures = crate::function_catalog::signatures(&target)
                     .iter()
-                    .map(|s| s.renamed(&label))
+                    .map(|s| crate::function_catalog::imported_signature(s, &label))
                     .collect();
                 bindings.insert(label.clone(), Binding::Function(signatures));
                 ranks.insert(label, "3");
@@ -227,6 +243,14 @@ pub fn complete_with_modules(
         ranks.insert(name, rank);
     }
     let lower = prefix.to_lowercase();
+    let infix_names = bindings
+        .iter()
+        .filter_map(|(name, binding)| {
+            matches!(binding, Binding::Function(signatures) if signatures.iter().any(|s| s.infix))
+                .then_some(name.clone())
+        })
+        .collect();
+    let after_value = call_style::after_value(source, cursor - prefix.len(), &infix_names);
     let mut items = vec![];
     for name in crate::function_catalog::operators() {
         if name.to_lowercase().starts_with(&lower) && !bindings.contains_key(name) {
@@ -248,24 +272,41 @@ pub fn complete_with_modules(
         match binding {
             Binding::Function(signatures) => {
                 for signature in signatures {
+                    let infix = after_value && signature.infix;
                     let arguments = signature
                         .parameter_names()
                         .iter()
                         .enumerate()
-                        .map(|(i, name)| format!("${{{}:{}}}", i + 1, name))
+                        .map(|(i, name)| format!("${{{}:{}}}", i + 1, call_style::escape(name)))
                         .collect::<Vec<_>>()
                         .join(", ");
                     items.push(CompletionItem {
                         label: name.clone(),
                         kind: "function",
-                        insert_text: if has_arguments {
+                        insert_text: if has_arguments || (infix && existing_rhs) {
                             name.clone()
+                        } else if infix {
+                            call_style::infix_snippet(&signature)
                         } else {
                             format!("{name}({arguments})")
                         },
-                        insert_text_format: if has_arguments { "plain" } else { "snippet" },
+                        insert_text_format: if has_arguments || (infix && existing_rhs) {
+                            "plain"
+                        } else {
+                            "snippet"
+                        },
                         detail: signature.label(),
-                        sort_text: format!("{rank}_{name}_{:04}", signature.parameters.len()),
+                        sort_text: format!(
+                            "{}{rank}_{name}!{:04}",
+                            if infix {
+                                "0_"
+                            } else if after_value {
+                                "5_"
+                            } else {
+                                ""
+                            },
+                            signature.parameters.len()
+                        ),
                     });
                 }
             }

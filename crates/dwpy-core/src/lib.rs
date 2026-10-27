@@ -143,6 +143,8 @@ const BINARY_BUILTIN_OPERATORS: &[&str] = &[
     "writeLinesWith",
 ];
 
+const NUMERIC_BUILTIN_OPERATORS: &[&str] = &["mod", "pow"];
+
 const COLLECTION_OPERATORS: &[&str] = &[
     "groupBy",
     "map",
@@ -1285,7 +1287,7 @@ pub(crate) fn evaluate_expression_scoped(
         return evaluate_matches(&left_value, &right_value);
     }
 
-    for function_name in ["mod", "pow"] {
+    for &function_name in NUMERIC_BUILTIN_OPERATORS {
         if let Some((left, _, right)) = split_top_level_keyword_operator(source, &[function_name]) {
             let left_value = evaluate_expression_scoped(left, payload, locals)?;
             let right_value = evaluate_expression_scoped(right, payload, locals)?;
