@@ -149,6 +149,19 @@ def binary_concat(left: Any, right: Any) -> Any:
         return merged
     if isinstance(left, (bytes, bytearray)) and isinstance(right, (bytes, bytearray)):
         return bytes(left) + bytes(right)
+    if isinstance(left, (Mapping, list)) or isinstance(right, (Mapping, list)):
+        def dw_type(value: Any) -> str:
+            if isinstance(value, Mapping):
+                return "Object"
+            if isinstance(value, list):
+                return "Array"
+            if isinstance(value, str):
+                return "String"
+            return type(value).__name__
+        raise TypeError(
+            f"You called the function '++' with incompatible arguments:\n"
+            f"  1: {dw_type(left)} ({left!r})\n  2: {dw_type(right)} ({right!r})"
+        )
     return f"{left}{right}"
 
 

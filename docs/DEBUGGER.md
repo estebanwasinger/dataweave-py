@@ -142,9 +142,10 @@ instead of silently leaving the value unchanged. Debug sessions reject these
 paths before execution with a source-located error. Updates are not allowed in
 watches.
 
-Named overloads use the normal runtime's declaration order, argument counts,
-defaults, and parameter type matcher. Arguments are evaluated once before
-dispatch; only the selected body's defaults are evaluated. Recursive calls and
+Named overloads use the normal runtime's argument counts, defaults, and parameter
+type matcher. Exact matches take precedence; if none match, supported numeric-string
+and number-to-string coercions are tried in declaration order. Arguments are
+evaluated once before dispatch; only the selected body's defaults are evaluated. Recursive calls and
 function references retain the overload set. For example, a String overload
 receives `"4s"` as a String, but `"4s" as Number` still raises the same coercion
 error as normal execution. Use `"4"` when a numeric string is intended.

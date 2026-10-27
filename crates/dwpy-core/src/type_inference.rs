@@ -355,8 +355,9 @@ fn property_type(base_type: &Value, attribute: &str) -> Value {
 
 fn infer_concat_type(left: &Value, right: &Value) -> Value {
     match (type_kind(left), type_kind(right)) {
-        (Some("String"), Some("String")) => type_string(),
-        (Some("Number"), Some("Number")) => type_number(),
+        (Some("String"), Some("String" | "Number" | "Boolean"))
+        | (Some("Number" | "Boolean"), Some("String"))
+        | (Some("Number"), Some("Number")) => type_string(),
         (Some("Array"), Some("Array")) => type_array(type_union(vec![
             left.get("element").cloned().unwrap_or_else(type_any),
             right.get("element").cloned().unwrap_or_else(type_any),

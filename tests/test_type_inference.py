@@ -23,6 +23,10 @@ def test_string_concatenation_infers_string():
     assert inferred == STRING
 
 
+def test_numeric_concatenation_infers_string():
+    assert infer_script_type("2 ++ 3") == STRING
+
+
 def test_object_literal_shape():
     inferred = infer_script_type("{ hola: 'world' }")
     assert isinstance(inferred, ObjectType)

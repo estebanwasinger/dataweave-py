@@ -207,8 +207,7 @@ fn resolved_index_range(len: usize, start: i64, end: i64) -> Vec<i64> {
 }
 
 pub(crate) fn evaluate_range(left: &Value, right: &Value) -> Result<Value, DwError> {
-    let start = number_value(left)? as i64;
-    let end = number_value(right)? as i64;
+    let (start, end) = range_bounds(left, right)?;
     let step = if end >= start { 1 } else { -1 };
     let mut values = Vec::new();
     let mut current = start;
@@ -220,6 +219,18 @@ pub(crate) fn evaluate_range(left: &Value, right: &Value) -> Result<Value, DwErr
         current += step;
     }
     Ok(Value::Array(values))
+}
+
+pub(crate) fn range_bounds(left: &Value, right: &Value) -> Result<(i64, i64), DwError> {
+    let error = || {
+        DwError::UnsupportedFeature(format!(
+        "You called the function 'to' with these arguments:\n  1: {} ({})\n  2: {} ({})\n\nBut it expects arguments of these types:\n  1: Number\n  2: Number",
+        operand_type(left), left.to_json(), operand_type(right), right.to_json()
+    ))
+    };
+    let start = number_value(left).map_err(|_| error())? as i64;
+    let end = number_value(right).map_err(|_| error())? as i64;
+    Ok((start, end))
 }
 
 pub(crate) fn evaluate_comparison(
@@ -263,10 +274,18 @@ pub(crate) fn evaluate_additive(
                 combined.extend(right_map.clone());
                 Ok(Value::Object(combined))
             }
-            _ => Ok(Value::String(format!(
-                "{}{}",
-                as_dataweave_string(left),
-                as_dataweave_string(right)
+            (Value::String(left), Value::String(right)) => {
+                Ok(Value::String(format!("{left}{right}")))
+            }
+            // Preserve the runtime's existing scalar-to-string compatibility.
+            (Value::String(_), Value::Number(_) | Value::Bool(_))
+            | (Value::Number(_) | Value::Bool(_), Value::String(_))
+            | (Value::Number(_), Value::Number(_)) => Ok(Value::String(format!(
+                "{}{}", as_dataweave_string(left), as_dataweave_string(right)
+            ))),
+            _ => Err(DwError::UnsupportedFeature(format!(
+                "You called the function '++' with incompatible arguments:\n  1: {} ({})\n  2: {} ({})\nExpected matching String, Array, or Object operands, or compatible temporal operands.",
+                operand_type(left), left.to_json(), operand_type(right), right.to_json()
             ))),
         },
         "--" => evaluate_difference(left, right),
@@ -291,6 +310,24 @@ pub(crate) fn evaluate_additive(
             number_result(number_value(left)? - number_value(right)?)
         }
         _ => Err(DwError::UnsupportedFeature(operator.to_string())),
+    }
+}
+
+fn operand_type(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "Null",
+        Value::Bool(_) => "Boolean",
+        Value::Number(_) => "Number",
+        Value::String(_) => "String",
+        Value::Array(_) => "Array",
+        Value::Object(_) => "Object",
+        Value::TimeZone(_) => "TimeZone",
+        Value::Date(_) => "Date",
+        Value::LocalDateTime(_) => "LocalDateTime",
+        Value::DateTime(_) => "DateTime",
+        Value::LocalTime(_) => "LocalTime",
+        Value::Time(_) => "Time",
+        Value::Period(_) => "Period",
     }
 }
 
@@ -1082,7 +1119,9 @@ pub(crate) fn number_value(value: &Value) -> Result<f64, DwError> {
             DwError::UnsupportedFeature(format!("cannot coerce string '{value}' to Number"))
         }),
         _ => Err(DwError::UnsupportedFeature(format!(
-            "expected number, got {value:?}"
+            "Expected a Number but received {} ({})",
+            operand_type(value),
+            value.to_json()
         ))),
     }
 }

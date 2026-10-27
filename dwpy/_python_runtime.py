@@ -92,7 +92,17 @@ class LambdaCallable:
             raise TypeError("Too many arguments supplied to lambda expression")
         for index, parameter in enumerate(self.parameters):
             if index < len(provided_args):
-                local_vars[parameter.name] = provided_args[index]
+                local_vars[parameter.name] = self.runtime._coerce_function_argument(
+                    provided_args[index],
+                    parameter.type_annotation,
+                    EvaluationContext(
+                        payload=self.payload,
+                        variables=local_vars,
+                        header=self.header,
+                        attributes=self.attributes or {},
+                        properties=self.properties,
+                    ),
+                )
             else:
                 if parameter.default is not None:
                     default_ctx = EvaluationContext(
@@ -140,7 +150,9 @@ class DefinedFunction:
             raise TypeError("Too many arguments supplied to function")
         for index, parameter in enumerate(self.parameters):
             if index < len(provided_args):
-                local_vars[parameter.name] = provided_args[index]
+                local_vars[parameter.name] = self.runtime._coerce_function_argument(
+                    provided_args[index], parameter.type_annotation, self.context
+                )
             else:
                 if parameter.default is not None:
                     default_ctx = EvaluationContext(
@@ -180,9 +192,14 @@ class OverloadedFunction:
         for function in self.functions:
             if self._matches(function, args):
                 return function(*args)
-        return self.functions[-1](*args)
+        for function in self.functions:
+            if self._matches(function, args, allow_coercion=True):
+                return function(*args)
+        raise TypeError("No matching function overload for the supplied arguments")
 
-    def _matches(self, function: DefinedFunction, args: Tuple[Any, ...]) -> bool:
+    def _matches(
+        self, function: DefinedFunction, args: Tuple[Any, ...], *, allow_coercion: bool = False
+    ) -> bool:
         expected_params = function.parameters
         required_count = sum(1 for param in expected_params if param.default is None)
         if len(args) < required_count or len(args) > len(expected_params):
@@ -191,7 +208,14 @@ class OverloadedFunction:
             if index >= len(args):
                 break
             if not self.runtime._matches_type_annotation(args[index], param.type_annotation):
-                return False
+                if not allow_coercion:
+                    return False
+                try:
+                    self.runtime._coerce_function_argument(
+                        args[index], param.type_annotation, function.context
+                    )
+                except (TypeError, ValueError):
+                    return False
         return True
 
 
@@ -538,6 +562,10 @@ class DataWeaveRuntime:
     def _matches_type_annotation(self, value: Any, type_spec: Optional[parser.TypeSpec]) -> bool:
         if type_spec is None:
             return True
+        if isinstance(type_spec, parser.UnionTypeSpec):
+            return any(self._matches_type_annotation(value, option) for option in type_spec.options)
+        if not isinstance(type_spec, parser.ReferenceTypeSpec):
+            return True
         type_name = (type_spec.name or "").lower()
         if type_name in ("any", "anytype"):
             return True
@@ -554,6 +582,29 @@ class DataWeaveRuntime:
         if type_name == "boolean":
             return isinstance(value, bool)
         return True
+
+    def _coerce_function_argument(
+        self, value: Any, type_spec: Optional[parser.TypeSpec], ctx: EvaluationContext
+    ) -> Any:
+        if type_spec is None or self._matches_type_annotation(value, type_spec):
+            return value
+        if isinstance(type_spec, parser.UnionTypeSpec):
+            for option in type_spec.options:
+                try:
+                    return self._coerce_function_argument(value, option, ctx)
+                except (TypeError, ValueError):
+                    continue
+        if isinstance(type_spec, parser.ReferenceTypeSpec):
+            target = type_spec.name.lower()
+            if (target == "number" and isinstance(value, str)) or (
+                target == "string" and isinstance(value, (int, float)) and not isinstance(value, bool)
+            ):
+                coerced = self._coerce_value(value, type_spec, None, ctx)
+                if coerced is not None:
+                    return coerced
+        raise TypeError(
+            f"Cannot match argument {value!r} to {getattr(type_spec, 'name', 'type')}"
+        )
 
     def _evaluate(self, expr: parser.Expression, ctx: EvaluationContext) -> Any:
         if isinstance(expr, parser.ObjectLiteral):

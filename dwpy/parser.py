@@ -539,13 +539,27 @@ class Parser:
             self.advance()
             argument = self.parse_comparison()
             target_name = INFIX_SPECIAL.get(operator_name, operator_name)
-            expr = FunctionCall(
-                function=Identifier(
-                    name=target_name,
-                    line=token[2],
-                    column=token[3],
-                ),
-                arguments=[expr, argument],
+            function = Identifier(name=target_name, line=token[2], column=token[3])
+            # A parenthesized lambda ends the collection argument; a subsequent
+            # concatenation applies to the collection result, not the lambda.
+            def bind_lambda_concat(node: Expression) -> Optional[Expression]:
+                if isinstance(node, LambdaExpression):
+                    return FunctionCall(function=function, arguments=[expr, node])
+                if (
+                    isinstance(node, FunctionCall)
+                    and isinstance(node.function, Identifier)
+                    and node.function.name == "_binary_concat"
+                    and len(node.arguments) == 2
+                ):
+                    left = bind_lambda_concat(node.arguments[0])
+                    if left is not None:
+                        return FunctionCall(
+                            function=node.function, arguments=[left, node.arguments[1]]
+                        )
+                return None
+
+            expr = bind_lambda_concat(argument) or FunctionCall(
+                function=function, arguments=[expr, argument]
             )
         return expr
 

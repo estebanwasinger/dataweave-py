@@ -29,78 +29,82 @@ pub(crate) fn evaluate_header_declarations(
             continue;
         }
 
-        if line.starts_with("import ") {
-            register_import_aliases(line, locals)?;
-            continue;
-        }
-
-        if let Some(declaration) = line.strip_prefix("input ") {
-            let parts = declaration.split_whitespace().collect::<Vec<_>>();
-            if parts.len() < 2 || !is_identifier(parts[0]) {
-                return Err(DwError::Parse("expected input <name> <format>".to_string()));
+        crate::diagnostics::frame(line, Some("<declaration>"), || {
+            if line.starts_with("import ") {
+                register_import_aliases(line, locals)?;
+                return Ok(());
             }
-            let name = parts[0];
-            let value = if name == "payload" {
-                payload.clone()
-            } else {
-                locals
-                    .get("vars")
-                    .and_then(|vars| vars.get(name))
-                    .cloned()
-                    .ok_or_else(|| {
-                        DwError::InvalidJson(format!(
-                            "Missing named input '{name}'; supply it through vars"
-                        ))
+
+            if let Some(declaration) = line.strip_prefix("input ") {
+                let parts = declaration.split_whitespace().collect::<Vec<_>>();
+                if parts.len() < 2 || !is_identifier(parts[0]) {
+                    return Err(DwError::Parse("expected input <name> <format>".to_string()));
+                }
+                let name = parts[0];
+                let value = if name == "payload" {
+                    payload.clone()
+                } else {
+                    locals
+                        .get("vars")
+                        .and_then(|vars| vars.get(name))
+                        .cloned()
+                        .ok_or_else(|| {
+                            DwError::InvalidJson(format!(
+                                "Missing named input '{name}'; supply it through vars"
+                            ))
+                        })?
+                };
+                locals.insert(name.to_string(), value);
+                return Ok(());
+            }
+
+            if let Some(declaration) = line.strip_prefix("type ") {
+                register_type_alias(declaration, locals)?;
+                return Ok(());
+            }
+
+            if let Some(declaration) = line.strip_prefix("ns ") {
+                register_namespace_alias(declaration, locals)?;
+                return Ok(());
+            }
+
+            if let Some(declaration) = line.strip_prefix("var ") {
+                let assignment = split_top_level_char(declaration, '=')
+                    .or_else(|| declaration.rsplit_once('='))
+                    .or_else(|| split_header_var_without_equals(declaration));
+                let Some((name_source, value_source)) = assignment else {
+                    return Err(DwError::UnsupportedFeature(format!(
+                        "header var declaration {line}"
+                    )));
+                };
+                let name = name_source.split(':').next().unwrap_or_default().trim();
+                if !is_identifier(name) {
+                    return Err(DwError::Parse(format!("invalid var name {name}")));
+                }
+                let value_source = value_source.trim();
+                if value_source.is_empty() {
+                    return Err(DwError::UnsupportedFeature(format!(
+                        "multiline header var {name}"
+                    )));
+                }
+                let value = if let Some(lambda) = lambda_value_from_source(value_source, locals)? {
+                    lambda
+                } else {
+                    crate::diagnostics::frame(line, Some(name), || {
+                        evaluate_expression_scoped(value_source, payload, locals)
                     })?
-            };
-            locals.insert(name.to_string(), value);
-            continue;
-        }
-
-        if let Some(declaration) = line.strip_prefix("type ") {
-            register_type_alias(declaration, locals)?;
-            continue;
-        }
-
-        if let Some(declaration) = line.strip_prefix("ns ") {
-            register_namespace_alias(declaration, locals)?;
-            continue;
-        }
-
-        if let Some(declaration) = line.strip_prefix("var ") {
-            let assignment = split_top_level_char(declaration, '=')
-                .or_else(|| declaration.rsplit_once('='))
-                .or_else(|| split_header_var_without_equals(declaration));
-            let Some((name_source, value_source)) = assignment else {
-                return Err(DwError::UnsupportedFeature(format!(
-                    "header var declaration {line}"
-                )));
-            };
-            let name = name_source.split(':').next().unwrap_or_default().trim();
-            if !is_identifier(name) {
-                return Err(DwError::Parse(format!("invalid var name {name}")));
+                };
+                locals.insert(name.to_string(), value);
+                return Ok(());
             }
-            let value_source = value_source.trim();
-            if value_source.is_empty() {
-                return Err(DwError::UnsupportedFeature(format!(
-                    "multiline header var {name}"
-                )));
+
+            if let Some(declaration) = line.strip_prefix("fun ") {
+                register_header_function(declaration, locals)?;
+                return Ok(());
             }
-            let value = if let Some(lambda) = lambda_value_from_source(value_source, locals)? {
-                lambda
-            } else {
-                evaluate_expression_scoped(value_source, payload, locals)?
-            };
-            locals.insert(name.to_string(), value);
-            continue;
-        }
 
-        if let Some(declaration) = line.strip_prefix("fun ") {
-            register_header_function(declaration, locals)?;
-            continue;
-        }
-
-        return Err(DwError::UnsupportedFeature(format!("header line {line}")));
+            Err(DwError::UnsupportedFeature(format!("header line {line}")))
+        })?;
     }
     Ok(())
 }
@@ -738,8 +742,8 @@ pub(crate) fn evaluate_lambda_value_call(
     }
     if !params
         .iter()
-        .zip(evaluated_args.iter())
-        .all(|(param, argument)| parameter_accepts_value(param, argument))
+        .zip(&evaluated_args)
+        .all(|(param, argument)| coerce_parameter_value(param, argument).is_some())
     {
         return Err(DwError::UnsupportedFeature(format!(
             "lambda({})",
@@ -759,7 +763,8 @@ pub(crate) fn evaluate_lambda_value_call(
             return Err(DwError::Parse("invalid lambda parameter name".to_string()));
         };
         let value = if let Some(argument) = evaluated_args.get(index) {
-            argument.clone()
+            coerce_parameter_value(&Value::Object(param.clone()), argument)
+                .expect("validated lambda argument")
         } else if let Some(Value::String(default)) = param.get("default") {
             evaluate_expression_scoped(default, payload, &function_locals)?
         } else {
@@ -799,65 +804,97 @@ pub(crate) fn evaluate_user_function_call(
         evaluated_args.push(evaluate_expression_scoped(source, payload, locals)?);
     }
 
-    for definition in definitions {
-        let Value::Object(definition) = definition else {
-            continue;
-        };
-        let Some(Value::Array(params)) = definition.get("params") else {
-            continue;
-        };
-        let required = params
-            .iter()
-            .filter(|param| {
-                !matches!(
-                    param,
-                    Value::Object(map) if map.get("default").is_some()
-                )
-            })
-            .count();
-        if evaluated_args.len() < required || evaluated_args.len() > params.len() {
-            continue;
-        }
-        if !params
-            .iter()
-            .zip(evaluated_args.iter())
-            .all(|(param, argument)| parameter_accepts_value(param, argument))
-        {
-            continue;
-        }
-
-        let mut function_locals = locals.clone();
-        for (index, param) in params.iter().enumerate() {
-            let Value::Object(param) = param else {
-                return Err(DwError::Parse(format!(
-                    "invalid parameter in {function_name}"
-                )));
-            };
-            let Some(Value::String(name)) = param.get("name") else {
-                return Err(DwError::Parse(format!(
-                    "invalid parameter name in {function_name}"
-                )));
-            };
-            let value = if let Some(argument) = evaluated_args.get(index) {
-                argument.clone()
-            } else if let Some(Value::String(default)) = param.get("default") {
-                evaluate_expression_scoped(default, payload, &function_locals)?
-            } else {
+    for allow_coercion in [false, true] {
+        for definition in definitions {
+            let Value::Object(definition) = definition else {
                 continue;
             };
-            function_locals.insert(name.clone(), value);
-        }
+            let Some(Value::Array(params)) = definition.get("params") else {
+                continue;
+            };
+            let required = params
+                .iter()
+                .filter(|param| {
+                    !matches!(
+                        param,
+                        Value::Object(map) if map.get("default").is_some()
+                    )
+                })
+                .count();
+            if evaluated_args.len() < required || evaluated_args.len() > params.len() {
+                continue;
+            }
+            if !params
+                .iter()
+                .zip(evaluated_args.iter())
+                .all(|(param, argument)| {
+                    if allow_coercion {
+                        coerce_parameter_value(param, argument).is_some()
+                    } else {
+                        parameter_accepts_value(param, argument)
+                    }
+                })
+            {
+                continue;
+            }
 
-        let Some(Value::String(body)) = definition.get("body") else {
-            return Err(DwError::Parse(format!("invalid body in {function_name}")));
-        };
-        return evaluate_expression_scoped(body, payload, &function_locals);
+            let mut function_locals = locals.clone();
+            for (index, param) in params.iter().enumerate() {
+                let Value::Object(param) = param else {
+                    return Err(DwError::Parse(format!(
+                        "invalid parameter in {function_name}"
+                    )));
+                };
+                let Some(Value::String(name)) = param.get("name") else {
+                    return Err(DwError::Parse(format!(
+                        "invalid parameter name in {function_name}"
+                    )));
+                };
+                let value = if let Some(argument) = evaluated_args.get(index) {
+                    coerce_parameter_value(&Value::Object(param.clone()), argument)
+                        .expect("validated function argument")
+                } else if let Some(Value::String(default)) = param.get("default") {
+                    evaluate_expression_scoped(default, payload, &function_locals)?
+                } else {
+                    continue;
+                };
+                function_locals.insert(name.clone(), value);
+            }
+
+            let Some(Value::String(body)) = definition.get("body") else {
+                return Err(DwError::Parse(format!("invalid body in {function_name}")));
+            };
+            return evaluate_expression_scoped(body, payload, &function_locals);
+        }
     }
 
     Err(DwError::UnsupportedFeature(format!(
         "no matching overload for {function_name}({})",
         argument_sources.join(", ")
     )))
+}
+
+/// Exact matches retain their value; supported implicit coercions are only
+/// considered after all exact overloads have been tried.
+pub(crate) fn coerce_parameter_value(param: &Value, value: &Value) -> Option<Value> {
+    if parameter_accepts_value(param, value) {
+        return Some(value.clone());
+    }
+    let Value::Object(param) = param else {
+        return None;
+    };
+    let type_source = param.get("type")?.as_str()?;
+    for part in type_source.split('|').map(str::trim) {
+        let target = match (part, value) {
+            ("Number", Value::String(_)) => "Number",
+            ("String", Value::Number(_)) => "String",
+            _ => continue,
+        };
+        if let Ok(value) = crate::operators::evaluate_coercion(value, target) {
+            return Some(value);
+        }
+    }
+    None
 }
 
 pub(crate) fn parameter_accepts_value(param: &Value, value: &Value) -> bool {
