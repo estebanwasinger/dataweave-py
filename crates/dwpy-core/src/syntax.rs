@@ -77,6 +77,9 @@ pub(crate) fn split_top_level_operator<'a>(
 ) -> Option<(&'a str, &'static str, &'a str)> {
     let mut match_value = None;
     for (index, _) in source.char_indices() {
+        if starts_regex_literal(source, index) {
+            continue;
+        }
         if !is_top_level_index(source, index) {
             continue;
         }
@@ -471,7 +474,21 @@ pub(crate) fn starts_regex_literal(source: &str, index: usize) -> bool {
         || before
             .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
             .next_back()
-            .is_some_and(|word| matches!(word, "matches" | "replace" | "with" | "case"))
+            .is_some_and(|word| {
+                matches!(
+                    word,
+                    "matches"
+                        | "replace"
+                        | "with"
+                        | "case"
+                        | "contains"
+                        | "match"
+                        | "scan"
+                        | "splitBy"
+                        | "find"
+                        | "countMatches"
+                )
+            })
 }
 
 fn starts_type_argument_list(source: &str, index: usize) -> bool {

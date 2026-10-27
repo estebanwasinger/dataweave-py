@@ -232,6 +232,45 @@ fn infix_functions_pass_analysis_before_execution() {
 }
 
 #[wasm_bindgen_test]
+fn ranges_pass_formula_analysis_before_execution() {
+    for (expression, expected) in [
+        ("1 to 10 map $", json!([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])),
+        (
+            "{values: (1 to 3 map ($ * 2))}",
+            json!({"values": [2, 4, 6]}),
+        ),
+        ("(1\n/* bounds */ to\n3) map $", json!([1, 2, 3])),
+        ("(3 to -1) map $", json!([3, 2, 1, 0, -1])),
+        ("[1, 2, 3][0 to 1]", json!([1, 2])),
+        ("7 mod 4", json!(3)),
+        ("2 pow 3", json!(8)),
+    ] {
+        let result = analyze(json!({"expression": expression, "payload": {}}));
+        assert_eq!(result["references"], json!([]), "{expression}");
+        assert_eq!(result["unresolvedReferences"], json!([]), "{expression}");
+        assert_eq!(
+            execute(json!({"script": expression, "render_output": false})),
+            expected,
+            "{expression}"
+        );
+    }
+
+    let result = analyze(json!({
+        "expression": "record.start to record.end map $",
+        "payload": {"record": {"start": 1, "end": 3}}
+    }));
+    assert_eq!(result["references"], json!(["record.end", "record.start"]));
+    assert_eq!(result["unresolvedReferences"], json!([]));
+
+    let result = analyze(json!({"expression": "1 to missing", "payload": {}}));
+    assert_eq!(result["references"], json!(["missing"]));
+    assert_eq!(result["unresolvedReferences"], json!(["missing"]));
+    let result = analyze(json!({"expression": "to default 3", "payload": {}}));
+    assert_eq!(result["references"], json!(["to"]));
+    assert_eq!(result["unresolvedReferences"], json!(["to"]));
+}
+
+#[wasm_bindgen_test]
 fn analysis_keeps_real_dependencies_and_fields_named_after_functions() {
     let result = analyze(json!({
         "expression": "payload.names joinBy payload.separator",
@@ -411,5 +450,26 @@ fn every_engine_function_is_available_to_completion() {
             .unwrap()
             .iter()
             .any(|i| i["label"] == function["name"]));
+    }
+}
+
+#[wasm_bindgen_test]
+fn audited_dependency_gaps_are_fixed_in_the_wasm_entry_point() {
+    let cases: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/dependency-analysis/gaps.json"
+    ))
+    .unwrap();
+    for case in cases.as_array().unwrap() {
+        let id = case["id"].as_str().unwrap();
+        let mut request = case["request"].clone();
+        let analysis = analyze(request.clone());
+        assert_eq!(analysis["references"], case["expectedReferences"], "{id}");
+        assert_eq!(
+            analysis["unresolvedReferences"], case["expectedUnresolvedReferences"],
+            "{id}"
+        );
+        request["script"] = request["expression"].clone();
+        request["render_output"] = json!(false);
+        assert_eq!(execute(request), case["expectedResult"], "{id}");
     }
 }

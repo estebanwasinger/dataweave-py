@@ -1,0 +1,143 @@
+{
+  "date": "2026-10-26",
+  "auditedCommit": "5fb4cc5",
+  "package": "@estebanwasinger/dataweave-wasm",
+  "packageVersion": "1.2.1 (locally built from the PR source)",
+  "scope": {
+    "method": "Capture requests exercised by Python, native Rust, direct WASM, Node, and writer execution tests; replay successful requests through the WASM analyze API. Native requests capture parsed payloads; legacy Python payloads use FormatRegistry before replay. Type-inference-only requests are replayed separately without asserting input-dependent unresolved paths.",
+    "includesOfficialDocumentationExamples": true,
+    "excludes": [
+      "Intentionally failing executions",
+      "Incomplete source used only for editor completion",
+      "Debugger-only source and watch expressions requiring session/frame context"
+    ],
+    "temporaryRuntimeInstrumentationRemoved": true,
+    "originalExecutionTests": "Rust workspace passed; Python: 1232 passed and 5 xfailed; direct WASM: 29 passed; Node: 68 passed"
+  },
+  "corpus": {
+    "inputRecords": 2135,
+    "checkedRequests": 1890,
+    "distinctExpressions": 1648,
+    "executionChecks": 0,
+    "executionFailures": 0,
+    "analysisErrors": 121,
+    "dependencyMismatches": 0,
+    "unresolvedCandidates": 593,
+    "casesWithFailures": 121,
+    "successfulCapturedRequests": 2052,
+    "capturedBySource": {
+      "rust": 840,
+      "python-native": 1002,
+      "wasm": 33,
+      "node": 36,
+      "writer": 16,
+      "python": 208
+    },
+    "distinctExpressionsRejectedByAnalysis": 108,
+    "distinctExpressionsWithUnresolvedCandidates": 504,
+    "unresolvedCandidateInterpretation": "Candidates require review. Optional or intentionally missing fields and empty arrays can legitimately produce unresolved paths; the count is not a count of confirmed defects."
+  },
+  "minimizedCases": {
+    "path": "tests/fixtures/dependency-analysis/gaps.json",
+    "inputRecords": 15,
+    "checkedRequests": 15,
+    "distinctExpressions": 15,
+    "executionChecks": 15,
+    "executionFailures": 0,
+    "analysisErrors": 2,
+    "dependencyMismatches": 12,
+    "unresolvedCandidates": 11,
+    "casesWithFailures": 14,
+    "interpretation": "15 minimized cases: the fixed range control passes; 14 further analysis gaps reproduce. Every case executes successfully and returns its independently specified expected result. sourceTest identifies the existing test from which the case was minimized."
+  },
+  "confirmedGapFamilies": [
+    {
+      "family": "Interpolation dependencies",
+      "cases": [
+        "interpolation-dependency"
+      ],
+      "finding": "References inside $(...) strings are omitted, potentially leaving a calculated field without its upstream dependencies."
+    },
+    {
+      "family": "Lexical bindings",
+      "cases": [
+        "named-lambda-binding",
+        "using-binding",
+        "match-binding",
+        "update-syntax-and-binding"
+      ],
+      "finding": "Lambda, using, match-case, and update-case locals are reported as external dependencies."
+    },
+    {
+      "family": "Additional syntax/operators",
+      "cases": [
+        "update-syntax-and-binding",
+        "regex-and-matches-syntax",
+        "replace-with-syntax",
+        "mask-with-syntax"
+      ],
+      "finding": "update, at, when, matches, replace, mask, and with can be returned as references. Adding to/mod/pow alone does not cover the language."
+    },
+    {
+      "family": "Regex literal tokenization",
+      "cases": [
+        "regex-and-matches-syntax",
+        "replace-with-syntax"
+      ],
+      "finding": "Letters inside /.../ regex literals are scanned as identifiers."
+    },
+    {
+      "family": "Module and type symbols",
+      "cases": [
+        "qualified-module-function",
+        "type-literal"
+      ],
+      "finding": "Module qualifiers and type literals are mistaken for payload dependencies."
+    },
+    {
+      "family": "Multivalue selectors",
+      "cases": [
+        "multivalue-selector"
+      ],
+      "finding": "payload.*name produces a spurious bare name reference and loses the qualified field path."
+    },
+    {
+      "family": "Root context resolution",
+      "cases": [
+        "root-context-resolution"
+      ],
+      "finding": "Bare payload is incorrectly unresolved even when a payload is supplied. Empty-path lookup does not resolve to the context value itself."
+    },
+    {
+      "family": "Inference blocks reference analysis",
+      "cases": [
+        "coercion-arithmetic-inference",
+        "object-spread-inference"
+      ],
+      "finding": "Working coercion/arithmetic and object-spread expressions can throw parser errors during type inference, so dependency extraction never runs."
+    }
+  ],
+  "dealApiImpact": {
+    "source": "workspaces/deal-api/src/services/field-calculation-service/dataweave-formula.ts",
+    "observation": "Deal API invokes analyze before building dependencies and rethrows analysis errors as invalid calculations. It filters some double-parenthesized lambda names with a regex; this mitigates a subset of lambda false positives, but not the general scoping issue. Full-script import/type cases establish shared runtime gaps; Deal API itself accepts expression-only formulas.",
+    "deploymentStatus": "Audit only. No additional runtime fixes or package release performed."
+  },
+  "replay": {
+    "minimizedCases": "node scripts/audit_dependency_analysis.cjs --output /tmp/dependency-analysis-report.json",
+    "capturedCorpus": "node scripts/audit_dependency_analysis.cjs /private/tmp/dw-analysis-audit/corpus.jsonl --output /tmp/dependency-analysis-corpus-report.json",
+    "exitCode": "1 reports confirmed expectation mismatches or analysis errors. Unresolved candidates alone do not fail the audit.",
+    "inferenceOnlySupplement": "node scripts/audit_dependency_analysis.cjs /private/tmp/dw-analysis-audit/inference.jsonl --output /tmp/dependency-analysis-inference-report.json"
+  },
+  "inferenceOnlySupplement": {
+    "inputRecords": 39,
+    "checkedRequests": 34,
+    "distinctExpressions": 34,
+    "executionChecks": 0,
+    "executionFailures": 0,
+    "analysisErrors": 0,
+    "dependencyMismatches": 0,
+    "unresolvedCandidates": 2,
+    "casesWithFailures": 0,
+    "note": "These 34 additional expressions passed Python type inference. Symbolic DWType arguments have no concrete payload, so missing-reference counts are not an oracle."
+  }
+}

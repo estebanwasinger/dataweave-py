@@ -5,7 +5,7 @@ use crate::syntax::{
     editor_tokens, find_matching_delimiter, is_identifier, mask_comments, split_top_level,
     split_top_level_char, visit_top_level, CodeToken,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 mod signature;
@@ -75,6 +75,7 @@ fn read_header(
     module_sources: &BTreeMap<String, String>,
     annotations: &mut Vec<Range<usize>>,
     expressions: &mut Vec<Range<usize>>,
+    inputs: &mut BTreeSet<String>,
 ) {
     let header = &source[scope.header.clone()];
     for span in header_declaration_spans(header) {
@@ -86,9 +87,27 @@ fn read_header(
                 .iter()
                 .filter_map(|p| parameter_binding(p, "Function parameter"))
                 .collect();
-            annotations.push(f.range.start..f.body.start);
+            annotations.extend(signature_annotations(source, f.range.start..f.body.start));
             if f.has_body {
                 expressions.push(f.body.clone());
+            }
+            let raw_signature = &source[f.range.start..f.body.start];
+            if let Some(open) = raw_signature.find('(') {
+                if let Some(close) = find_matching_delimiter(raw_signature, open, '(', ')') {
+                    for parameter in split_top_level(&raw_signature[open + 1..close], ',') {
+                        if let Some((name, binding)) =
+                            parameter_binding(parameter, "Function parameter")
+                        {
+                            let start = parameter.as_ptr() as usize - source.as_ptr() as usize
+                                + parameter.len();
+                            nested.push(Scope {
+                                range: start..f.body.start,
+                                header: start..start,
+                                bindings: BTreeMap::from([(name, binding)]),
+                            });
+                        }
+                    }
+                }
             }
             if f.has_body {
                 nested.push(Scope {
@@ -125,7 +144,45 @@ fn read_header(
                 }
             }
         }
+        if let Some(name) = prefix.strip_prefix("input ").and_then(parameter_name) {
+            annotations.push(span.clone());
+            if name != "payload" {
+                inputs.insert(format!("vars.{name}"));
+            }
+        }
+        if prefix.starts_with("import ")
+            || prefix.starts_with("output ")
+            || prefix.starts_with("ns ")
+            || prefix.starts_with("%dw")
+        {
+            annotations.push(span.clone());
+        }
+        if let Some(name) = prefix
+            .strip_prefix("type ")
+            .or_else(|| prefix.strip_prefix("ns "))
+            .and_then(|s| {
+                editor_tokens(s)
+                    .first()
+                    .filter(|t| is_identifier(t.text))
+                    .map(|t| t.text.to_owned())
+            })
+        {
+            scope
+                .bindings
+                .insert(name, Binding::Variable("Type or namespace"));
+        }
         if let Some(import) = prefix.strip_prefix("import ") {
+            if let Some((items, _)) = crate::syntax::split_top_level_keyword(import, "from") {
+                for item in split_top_level(items, ',') {
+                    let (_, alias) = crate::syntax::split_top_level_keyword(item.trim(), "as")
+                        .unwrap_or((item.trim(), item.trim()));
+                    if is_identifier(alias) {
+                        scope
+                            .bindings
+                            .insert(alias.into(), Binding::Variable("Imported symbol"));
+                    }
+                }
+            }
             for (name, signatures) in
                 crate::function_catalog::imported_signatures(import, module_sources)
             {
@@ -153,6 +210,36 @@ fn read_header(
         }
     }
 }
+fn is_binding_parameter(source: &str) -> bool {
+    let Some(name) = parameter_name(source) else {
+        return false;
+    };
+    let offset = name.as_ptr() as usize - source.as_ptr() as usize + name.len();
+    let tail = source[offset..].trim();
+    tail.is_empty() || tail.starts_with(':') || tail.starts_with('=')
+}
+
+fn signature_annotations(source: &str, range: Range<usize>) -> Vec<Range<usize>> {
+    let raw = &source[range.clone()];
+    let Some(open) = raw.find('(') else {
+        return vec![range];
+    };
+    let Some(close) = find_matching_delimiter(raw, open, '(', ')') else {
+        return vec![range];
+    };
+    let mut annotations = vec![];
+    let mut start = range.start;
+    for parameter in split_top_level(&raw[open + 1..close], ',') {
+        if let Some((_, default)) = split_top_level_char(parameter, '=') {
+            let value_start = default.as_ptr() as usize - source.as_ptr() as usize;
+            annotations.push(start..value_start);
+            start = value_start + default.len();
+        }
+    }
+    annotations.push(start..range.end);
+    annotations
+}
+
 fn is_qualified_identifier(s: &str) -> bool {
     !s.is_empty() && s.split("::").all(is_identifier)
 }
@@ -235,168 +322,300 @@ pub(crate) fn expression_end(
 
 /// Bindings visible at a source byte position, outer scopes first. Function
 /// overloads are grouped per scope so shadowing never mixes unrelated overloads.
+pub(crate) struct ScopeIndex {
+    scopes: Vec<Scope>,
+    pub(crate) annotations: Vec<Range<usize>>,
+    pub(crate) inputs: BTreeSet<String>,
+}
+
+impl ScopeIndex {
+    pub(crate) fn new(source: &str, module_sources: &BTreeMap<String, String>) -> Self {
+        let tokens = editor_tokens(source);
+        let (matching, parent) = groups(&tokens);
+        let boundary = crate::parse_script_boundary_span(source);
+        let header_end = boundary.map_or_else(
+            || {
+                if source.trim_start().starts_with("output ") {
+                    source.find('\n').unwrap_or(source.len())
+                } else {
+                    source.len()
+                }
+            },
+            |s| s.0,
+        );
+        let mut scopes = vec![Scope {
+            range: 0..source.len(),
+            header: 0..header_end,
+            bindings: BTreeMap::new(),
+        }];
+        // Each do block owns a header and a body, including a missing closing brace.
+        for (i, t) in tokens.iter().enumerate() {
+            if t.literal || t.text != "do" || tokens.get(i + 1).is_none_or(|t| t.text != "{") {
+                continue;
+            }
+            let open = i + 1;
+            let end = matching[open].map_or(source.len(), |n| tokens[n].start);
+            let start = tokens[open].end;
+            let delimiter = tokens
+                .iter()
+                .enumerate()
+                .skip(open + 1)
+                .take_while(|(_, t)| t.start < end)
+                .find(|(j, t)| t.text == "---" && parent[*j] == Some(open))
+                .map(|(_, t)| t.start);
+            scopes.push(Scope {
+                range: start..end,
+                header: start..delimiter.unwrap_or(end),
+                bindings: BTreeMap::new(),
+            });
+        }
+        let mut functions = vec![];
+        let mut signature_ranges = vec![];
+        let mut expressions = vec![];
+        let mut inputs = BTreeSet::new();
+        for scope in &mut scopes {
+            expressions.push(scope.header.end..scope.range.end);
+            read_header(
+                source,
+                scope,
+                &mut functions,
+                module_sources,
+                &mut signature_ranges,
+                &mut expressions,
+                &mut inputs,
+            );
+        }
+        scopes.extend(functions);
+        // A lambda's body ends at the containing expression's comma/closing group.
+        for (i, t) in tokens.iter().enumerate() {
+            if t.literal
+                || t.text != "->"
+                || i == 0
+                || tokens[i - 1].text != ")"
+                || signature_ranges.iter().any(|r| r.contains(&t.start))
+            {
+                continue;
+            }
+            let Some(open) = matching[i - 1] else {
+                continue;
+            };
+            if open > 0 && matches!(tokens[open - 1].text, "if" | "when") {
+                continue;
+            }
+            let parameter_source = &source[tokens[open].end..tokens[i - 1].start];
+            let parameters = split_top_level(parameter_source, ',');
+            // Function types `(T) -> R` in declarations are not lambda definitions.
+            if parameters.iter().any(|p| !is_binding_parameter(p)) {
+                continue;
+            }
+            signature_ranges.extend(signature_annotations(source, tokens[open].start..t.end));
+            let end = expression_end(
+                &tokens,
+                &matching,
+                &parent,
+                i,
+                i + 1,
+                &expressions,
+                source.len(),
+            );
+            for parameter in &parameters {
+                if let Some((name, binding)) = parameter_binding(parameter, "Lambda parameter") {
+                    let end_of_parameter =
+                        parameter.as_ptr() as usize - source.as_ptr() as usize + parameter.len();
+                    scopes.push(Scope {
+                        range: end_of_parameter..t.start,
+                        header: t.start..t.start,
+                        bindings: BTreeMap::from([(name, binding)]),
+                    });
+                }
+            }
+            let bindings = parameters
+                .into_iter()
+                .filter_map(|p| parameter_binding(p, "Lambda parameter"))
+                .collect();
+            scopes.push(Scope {
+                range: t.end..end,
+                header: t.end..t.end,
+                bindings,
+            });
+        }
+        for (i, t) in tokens.iter().enumerate() {
+            if t.literal || t.text != "using" || tokens.get(i + 1).is_none_or(|t| t.text != "(") {
+                continue;
+            }
+            let Some(close) = matching[i + 1] else {
+                continue;
+            };
+            let mut bindings = BTreeMap::new();
+            for assignment in split_top_level(&source[tokens[i + 1].end..tokens[close].start], ',')
+            {
+                if let Some((name, value)) = split_top_level_char(assignment, '=') {
+                    let start = assignment.as_ptr() as usize - source.as_ptr() as usize;
+                    signature_ranges.push(start..start + name.len());
+                    if let Some(name) = parameter_name(name) {
+                        let binding = lambda_signature(value, name).map_or_else(
+                            || {
+                                if is_qualified_identifier(value.trim()) {
+                                    Binding::Reference(value.trim().into())
+                                } else {
+                                    Binding::Variable("Using variable")
+                                }
+                            },
+                            |s| Binding::Function(vec![s]),
+                        );
+                        bindings.insert(name.into(), binding);
+                    }
+                }
+            }
+            let end = expression_end(
+                &tokens,
+                &matching,
+                &parent,
+                i,
+                close + 1,
+                &expressions,
+                source.len(),
+            );
+            for assignment in split_top_level(&source[tokens[i + 1].end..tokens[close].start], ',')
+            {
+                if let Some((name, _)) = split_top_level_char(assignment, '=') {
+                    if let Some(name) = parameter_name(name) {
+                        let start = assignment.as_ptr() as usize - source.as_ptr() as usize
+                            + assignment.len();
+                        scopes.push(Scope {
+                            range: start..tokens[close].end,
+                            header: start..start,
+                            bindings: BTreeMap::from([(
+                                name.into(),
+                                Binding::Variable("Using variable"),
+                            )]),
+                        });
+                    }
+                }
+            }
+            scopes.push(Scope {
+                range: tokens[close].end..end,
+                header: tokens[close].end..tokens[close].end,
+                bindings,
+            });
+        }
+        for (i, token) in tokens.iter().enumerate() {
+            if token.literal || token.text != "case" {
+                continue;
+            }
+            let Some(open) = parent[i].filter(|open| tokens[*open].text == "{") else {
+                continue;
+            };
+            // A case is syntax only in a match/update block.
+            if open == 0 || !matches!(tokens[open - 1].text, "match" | "update") {
+                continue;
+            }
+            let end_index = (i + 1..tokens.len())
+                .find(|j| {
+                    parent[*j] == Some(open)
+                        && !tokens[*j].literal
+                        && (tokens[*j].text == "case"
+                            || (tokens[*j].text == "else"
+                                && tokens.get(*j + 1).is_some_and(|t| t.text == "->")))
+                })
+                .or(matching[open])
+                .unwrap_or(tokens.len());
+            let Some(arrow) =
+                (i + 1..end_index).find(|j| parent[*j] == Some(open) && tokens[*j].text == "->")
+            else {
+                continue;
+            };
+            signature_ranges.push(token.start..token.end);
+            let first = if tokens.get(i + 1).is_some_and(|t| t.text == "var") {
+                signature_ranges.push(tokens[i + 1].start..tokens[i + 1].end);
+                i + 2
+            } else {
+                i + 1
+            };
+            if tokens.get(first + 1).is_some_and(|t| t.text == "at") {
+                signature_ranges.push(tokens[first + 1].start..tokens[first + 1].end);
+            }
+            if let Some(guard) = (first + 1..arrow).find(|j| {
+                parent[*j] == Some(open) && !tokens[*j].literal && tokens[*j].text == "when"
+            }) {
+                signature_ranges.push(tokens[guard].start..tokens[guard].end);
+            }
+            let Some(binding) = tokens.get(first).filter(|t| {
+                !t.literal
+                    && is_identifier(t.text)
+                    && !matches!(t.text, "is" | "true" | "false" | "null")
+            }) else {
+                continue;
+            };
+            signature_ranges.push(binding.start..binding.end);
+            scopes.push(Scope {
+                range: binding.end..tokens.get(end_index).map_or(source.len(), |t| t.start),
+                header: binding.end..binding.end,
+                bindings: BTreeMap::from([(
+                    binding.text.into(),
+                    Binding::Variable("Case binding"),
+                )]),
+            });
+        }
+        scopes.sort_by(|a, b| {
+            (b.range.end - b.range.start)
+                .cmp(&(a.range.end - a.range.start))
+                .then(a.range.start.cmp(&b.range.start))
+        });
+        Self {
+            scopes,
+            annotations: signature_ranges,
+            inputs,
+        }
+    }
+
+    pub(crate) fn is_bound(&self, name: &str, cursor: usize) -> bool {
+        self.scopes
+            .iter()
+            .any(|scope| scope.range.contains(&cursor) && scope.bindings.contains_key(name))
+    }
+
+    fn visible(&self, cursor: usize) -> BTreeMap<String, Binding> {
+        let mut visible = BTreeMap::new();
+        for scope in &self.scopes {
+            if cursor >= scope.range.start && cursor <= scope.range.end {
+                visible.extend(scope.bindings.clone());
+            }
+        }
+        // Function-valued aliases are resolved without evaluating initializers.
+        for _ in 0..visible.len().min(32) {
+            let mut changed = false;
+            for (name, binding) in visible.clone() {
+                if let Binding::Reference(target) = binding {
+                    let signatures = match visible.get(&target) {
+                        Some(Binding::Function(s)) => s.clone(),
+                        Some(Binding::Reference(_)) => continue,
+                        Some(_) => vec![],
+                        None => crate::function_catalog::signatures(&target),
+                    };
+                    if !signatures.is_empty() {
+                        visible.insert(
+                            name.clone(),
+                            Binding::Function(
+                                signatures.iter().map(|s| s.renamed(&name)).collect(),
+                            ),
+                        );
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        visible
+    }
+}
+
 pub(crate) fn visible_bindings(
     source: &str,
     cursor: usize,
     module_sources: &BTreeMap<String, String>,
 ) -> BTreeMap<String, Binding> {
-    let tokens = editor_tokens(source);
-    let (matching, parent) = groups(&tokens);
-    let boundary = crate::parse_script_boundary_span(source);
-    let header_end = boundary.map_or(source.len(), |s| s.0);
-    let mut scopes = vec![Scope {
-        range: 0..source.len(),
-        header: 0..header_end,
-        bindings: BTreeMap::new(),
-    }];
-    // Each do block owns a header and a body, including a missing closing brace.
-    for (i, t) in tokens.iter().enumerate() {
-        if t.literal || t.text != "do" || tokens.get(i + 1).is_none_or(|t| t.text != "{") {
-            continue;
-        }
-        let open = i + 1;
-        let end = matching[open].map_or(source.len(), |n| tokens[n].start);
-        let start = tokens[open].end;
-        let delimiter = tokens
-            .iter()
-            .enumerate()
-            .skip(open + 1)
-            .take_while(|(_, t)| t.start < end)
-            .find(|(j, t)| t.text == "---" && parent[*j] == Some(open))
-            .map(|(_, t)| t.start);
-        scopes.push(Scope {
-            range: start..end,
-            header: start..delimiter.unwrap_or(end),
-            bindings: BTreeMap::new(),
-        });
-    }
-    let mut functions = vec![];
-    let mut signature_ranges = vec![];
-    let mut expressions = vec![];
-    for scope in &mut scopes {
-        expressions.push(scope.header.end..scope.range.end);
-        read_header(
-            source,
-            scope,
-            &mut functions,
-            module_sources,
-            &mut signature_ranges,
-            &mut expressions,
-        );
-    }
-    scopes.extend(functions);
-    // A lambda's body ends at the containing expression's comma/closing group.
-    for (i, t) in tokens.iter().enumerate() {
-        if t.literal
-            || t.text != "->"
-            || i == 0
-            || tokens[i - 1].text != ")"
-            || signature_ranges.iter().any(|r| r.contains(&t.start))
-        {
-            continue;
-        }
-        let Some(open) = matching[i - 1] else {
-            continue;
-        };
-        let parameter_source = &source[tokens[open].end..tokens[i - 1].start];
-        let parameters = split_top_level(parameter_source, ',');
-        // Function types `(T) -> R` in declarations are not lambda definitions.
-        if parameters.iter().any(|p| parameter_name(p).is_none()) {
-            continue;
-        }
-        let end = expression_end(
-            &tokens,
-            &matching,
-            &parent,
-            i,
-            i + 1,
-            &expressions,
-            source.len(),
-        );
-        let bindings = parameters
-            .into_iter()
-            .filter_map(|p| parameter_binding(p, "Lambda parameter"))
-            .collect();
-        scopes.push(Scope {
-            range: t.end..end,
-            header: t.end..t.end,
-            bindings,
-        });
-    }
-    for (i, t) in tokens.iter().enumerate() {
-        if t.literal || t.text != "using" || tokens.get(i + 1).is_none_or(|t| t.text != "(") {
-            continue;
-        }
-        let Some(close) = matching[i + 1] else {
-            continue;
-        };
-        let mut bindings = BTreeMap::new();
-        for assignment in split_top_level(&source[tokens[i + 1].end..tokens[close].start], ',') {
-            if let Some((name, value)) = split_top_level_char(assignment, '=') {
-                if let Some(name) = parameter_name(name) {
-                    let binding = lambda_signature(value, name).map_or_else(
-                        || {
-                            if is_qualified_identifier(value.trim()) {
-                                Binding::Reference(value.trim().into())
-                            } else {
-                                Binding::Variable("Using variable")
-                            }
-                        },
-                        |s| Binding::Function(vec![s]),
-                    );
-                    bindings.insert(name.into(), binding);
-                }
-            }
-        }
-        let end = expression_end(
-            &tokens,
-            &matching,
-            &parent,
-            i,
-            close + 1,
-            &expressions,
-            source.len(),
-        );
-        scopes.push(Scope {
-            range: tokens[close].end..end,
-            header: tokens[close].end..tokens[close].end,
-            bindings,
-        });
-    }
-    scopes.sort_by(|a, b| {
-        (b.range.end - b.range.start)
-            .cmp(&(a.range.end - a.range.start))
-            .then(a.range.start.cmp(&b.range.start))
-    });
-    let mut visible = BTreeMap::new();
-    for scope in scopes {
-        if cursor >= scope.range.start && cursor <= scope.range.end {
-            visible.extend(scope.bindings);
-        }
-    }
-    // Function-valued aliases are resolved without evaluating initializers.
-    for _ in 0..visible.len().min(32) {
-        let mut changed = false;
-        for (name, binding) in visible.clone() {
-            if let Binding::Reference(target) = binding {
-                let signatures = match visible.get(&target) {
-                    Some(Binding::Function(s)) => s.clone(),
-                    Some(Binding::Reference(_)) => continue,
-                    Some(_) => vec![],
-                    None => crate::function_catalog::signatures(&target),
-                };
-                if !signatures.is_empty() {
-                    visible.insert(
-                        name.clone(),
-                        Binding::Function(signatures.iter().map(|s| s.renamed(&name)).collect()),
-                    );
-                    changed = true;
-                }
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    visible
+    ScopeIndex::new(source, module_sources).visible(cursor)
 }

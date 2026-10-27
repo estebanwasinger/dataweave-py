@@ -1,0 +1,228 @@
+[
+  {
+    "id": "range-control",
+    "sourceTest": "crates/dwpy-core/tests/range_analysis.rs::range_operators_pass_dependency_analysis_before_execution",
+    "request": {
+      "expression": "1 to 10 map $",
+      "payload": {}
+    },
+    "expectedResult": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10
+    ],
+    "expectedReferences": [],
+    "expectedUnresolvedReferences": []
+  },
+  {
+    "id": "named-lambda-binding",
+    "sourceTest": "tests/test_conditional_update.py::test_selector_update_in_unparenthesized_lambda",
+    "request": {
+      "expression": "payload map (item) -> item.price",
+      "payload": [
+        {
+          "price": 2
+        }
+      ]
+    },
+    "expectedResult": [
+      2
+    ],
+    "expectedReferences": [
+      "payload"
+    ],
+    "expectedUnresolvedReferences": []
+  },
+  {
+    "id": "using-binding",
+    "sourceTest": "crates/dwpy-core/src/lib.rs::tests::evaluates_using_expression_scoped_bindings",
+    "request": {
+      "expression": "using (x = payload.name) x",
+      "payload": {
+        "name": "ana"
+      }
+    },
+    "expectedResult": "ana",
+    "expectedReferences": [
+      "payload.name"
+    ],
+    "expectedUnresolvedReferences": []
+  },
+  {
+    "id": "match-binding",
+    "sourceTest": "tests/test_runtime_basic.py::test_match_expression_with_binding_and_guard",
+    "request": {
+      "expression": "payload.total match { case var value when value > 100 -> \"large\" case var value -> \"small\" }",
+      "payload": {
+        "total": 150
+      }
+    },
+    "expectedResult": "large",
+    "expectedReferences": [
+      "payload.total"
+    ],
+    "expectedUnresolvedReferences": []
+  },
+  {
+    "id": "update-syntax-and-binding",
+    "sourceTest": "tests/test_conditional_update.py::test_conditional_update_truncates_only_tool_content",
+    "request": {
+      "expression": "payload update { case value at .name -> upper(value) }",
+      "payload": {
+        "name": "ana"
+      }
+    },
+    "expectedResult": {
+      "name": "ANA"
+    },
+    "expectedReferences": [
+      "payload"
+    ],
+    "expectedUnresolvedReferences": []
+  },
+  {
+    "id": "regex-and-matches-syntax",
+    "sourceTest": "crates/dwpy-core/src/lib.rs::tests::evaluates_negation_and_simple_matches",
+    "request": {
+      "expression": "payload matches /[a-z]+/",
+      "payload": "abc"
+    },
+    "expectedResult": true,
+    "expectedReferences": [
+      "payload"
+    ],
+    "expectedUnresolvedReferences": []
+  },
+  {
+    "id": "replace-with-syntax",
+    "sourceTest": "crates/dwpy-core/src/lib.rs::tests::evaluates_replace_with_operator_for_strings_and_regex",
+    "request": {
+      "expression": "\"abc\" replace /b/ with \"x\"",
+      "payload": {}
+    },
+    "expectedResult": "axc",
+    "expectedReferences": [],
+    "expectedUnresolvedReferences": []
+  },
+  {
+    "id": "mask-with-syntax",
+    "sourceTest": "tests/test_official_docs_examples.py::inline::dw-values-functions-mask.adoc::2",
+    "request": {
+      "expression": "%dw 2.0\nimport * from dw::util::Values\n---\n{name: \"ana\"} mask \"name\" with \"x\"",
+      "payload": {}
+    },
+    "expectedResult": {
+      "name": "x"
+    },
+    "expectedReferences": [],
+    "expectedUnresolvedReferences": []
+  },
+  {
+    "id": "qualified-module-function",
+    "sourceTest": "crates/dwpy-core/src/lib.rs::tests::evaluates_binary_to_base64_and_documented_gravatar_fixture",
+    "request": {
+      "expression": "%dw 2.0\nimport dw::Crypto\n---\nCrypto::MD5(\"hello\" as Binary)",
+      "payload": {}
+    },
+    "expectedResult": "5d41402abc4b2a76b9719d911017c592",
+    "expectedReferences": [],
+    "expectedUnresolvedReferences": []
+  },
+  {
+    "id": "type-literal",
+    "sourceTest": "tests/test_official_docs_examples.py::inline::dw-types-functions-isstringtype.adoc::0",
+    "request": {
+      "expression": "%dw 2.0\nimport * from dw::core::Types\n---\nisStringType(String)",
+      "payload": {}
+    },
+    "expectedResult": true,
+    "expectedReferences": [],
+    "expectedUnresolvedReferences": []
+  },
+  {
+    "id": "multivalue-selector",
+    "sourceTest": "tests/test_runtime_basic.py::test_xml_property_without_wildcard_returns_first_match",
+    "request": {
+      "expression": "payload.*name",
+      "payload": {
+        "name": "ana"
+      }
+    },
+    "expectedResult": [
+      "ana"
+    ],
+    "expectedReferences": [
+      "payload.name"
+    ],
+    "expectedUnresolvedReferences": []
+  },
+  {
+    "id": "interpolation-dependency",
+    "sourceTest": "tests/test_string_interpolation.py::test_basic_string_interpolation",
+    "request": {
+      "expression": "\"Hello $(payload.name)\"",
+      "payload": {
+        "name": "ana"
+      }
+    },
+    "expectedResult": "Hello ana",
+    "expectedReferences": [
+      "payload.name"
+    ],
+    "expectedUnresolvedReferences": []
+  },
+  {
+    "id": "coercion-arithmetic-inference",
+    "sourceTest": "tests/test_coercion_precedence.py::test_coercion_binds_before_arithmetic",
+    "request": {
+      "expression": "\"2\" as Number + 3",
+      "payload": {}
+    },
+    "expectedResult": 5,
+    "expectedReferences": [],
+    "expectedUnresolvedReferences": []
+  },
+  {
+    "id": "object-spread-inference",
+    "sourceTest": "crates/dwpy-core/tests/logging.rs::compact_json_rendering_never_replays_logs_on_failure_or_fallback",
+    "request": {
+      "expression": "{(payload)}",
+      "payload": {
+        "name": "ana"
+      }
+    },
+    "expectedResult": {
+      "name": "ana"
+    },
+    "expectedReferences": [
+      "payload"
+    ],
+    "expectedUnresolvedReferences": []
+  },
+  {
+    "id": "root-context-resolution",
+    "sourceTest": "tests/test_native_temporal_values.py::test_iso_looking_strings_stay_strings",
+    "request": {
+      "expression": "payload",
+      "payload": [
+        1,
+        2
+      ]
+    },
+    "expectedResult": [
+      1,
+      2
+    ],
+    "expectedReferences": [
+      "payload"
+    ],
+    "expectedUnresolvedReferences": []
+  }
+]
