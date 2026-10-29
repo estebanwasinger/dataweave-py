@@ -44,7 +44,6 @@ mod xml;
 mod yaml;
 
 pub use api::*;
-pub use diagnostics::{execution_error_message, unique_expression_offset, with_execution_trace};
 use builtins::{evaluate_binary_builtin, index_of, last_index_of};
 use calls::evaluate_function_call;
 use collections::{
@@ -59,6 +58,7 @@ use collections::{
     evaluate_then,
 };
 use csv::read_simple_csv;
+pub use diagnostics::{execution_error_message, unique_expression_offset, with_execution_trace};
 use evaluator::{
     evaluate_array_literal_scoped, evaluate_do_block_scoped, evaluate_index_base,
     evaluate_object_literal_scoped, evaluate_selector_index_scoped,
@@ -204,6 +204,7 @@ const PROPERTIES_LOCAL: &str = "__dwpy_properties";
 pub struct ExecutionContext {
     pub vars: Value,
     pub attributes: Value,
+    bindings: Map<String, Value>,
     pub properties: BTreeMap<String, String>,
     pub loggers: Loggers,
 }
@@ -246,9 +247,39 @@ impl ExecutionContext {
         Ok(Self {
             vars,
             attributes,
+            bindings: Map::new(),
             properties,
             loggers: Loggers::default(),
         })
+    }
+
+    /// Add host-provided top-level names, separate from the `vars` object.
+    pub fn with_bindings(mut self, bindings: Value) -> Result<Self, DwError> {
+        let Value::Object(bindings) = bindings else {
+            return Err(DwError::InvalidJson(
+                "bindings must be a JSON object".into(),
+            ));
+        };
+        for name in bindings.keys() {
+            if !crate::syntax::is_identifier(name)
+                || matches!(
+                    name.as_str(),
+                    "payload"
+                        | "vars"
+                        | "attributes"
+                        | PROPERTIES_LOCAL
+                        | "true"
+                        | "false"
+                        | "null"
+                )
+            {
+                return Err(DwError::InvalidJson(format!(
+                    "invalid or reserved binding name: {name}"
+                )));
+            }
+        }
+        self.bindings = bindings;
+        Ok(self)
     }
 
     /// Route this execution's messages to a sink. May be called repeatedly.
@@ -258,7 +289,7 @@ impl ExecutionContext {
     }
 
     fn into_locals(self) -> Map<String, Value> {
-        let mut locals = Map::new();
+        let mut locals = self.bindings;
         locals.insert("vars".to_string(), self.vars);
         locals.insert("attributes".to_string(), self.attributes);
         locals.insert(
@@ -553,7 +584,31 @@ pub fn infer_native_type_descriptor_with_context(
     vars: Option<Value>,
     attributes: Option<Value>,
 ) -> Result<Value, DwError> {
+    infer_native_type_descriptor_with_bindings(script, payload, vars, attributes, &Map::new())
+}
+
+fn infer_native_type_descriptor_with_bindings(
+    script: &str,
+    payload: Option<Value>,
+    vars: Option<Value>,
+    attributes: Option<Value>,
+    bindings: &Map<String, Value>,
+) -> Result<Value, DwError> {
     let parsed = split_script(script);
+    let mut visible_bindings = bindings.clone();
+    for declaration in functions::collect_header_declarations(&parsed.header) {
+        let declaration = declaration.trim();
+        if let Some(name) = declaration
+            .strip_prefix("var ")
+            .or_else(|| declaration.strip_prefix("fun "))
+        {
+            let name = name
+                .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+                .next()
+                .unwrap_or_default();
+            visible_bindings.shift_remove(name);
+        }
+    }
     let payload_type = payload
         .as_ref()
         .map(type_descriptor_from_value)
@@ -571,6 +626,7 @@ pub fn infer_native_type_descriptor_with_context(
         &payload_type,
         &vars_type,
         &attributes_type,
+        &visible_bindings,
     )
 }
 
@@ -593,12 +649,27 @@ pub fn analyze_native_expression_with_context(
     vars: Option<Value>,
     attributes: Option<Value>,
 ) -> Result<Value, DwError> {
+    analyze_native_expression_with_bindings(expression, payload, vars, attributes, None)
+}
+
+pub fn analyze_native_expression_with_bindings(
+    expression: &str,
+    payload: Option<Value>,
+    vars: Option<Value>,
+    attributes: Option<Value>,
+    bindings: Option<Value>,
+) -> Result<Value, DwError> {
     analysis::validate(expression)?;
-    let (inferred_type, diagnostics) = match infer_native_type_descriptor_with_context(
+    let supplied_bindings = bindings.is_some();
+    let bindings = ExecutionContext::default()
+        .with_bindings(bindings.unwrap_or_else(|| Value::Object(Map::new())))?
+        .bindings;
+    let (inferred_type, diagnostics) = match infer_native_type_descriptor_with_bindings(
         expression,
         payload.clone(),
         vars.clone(),
         attributes.clone(),
+        &bindings,
     ) {
         Ok(inferred_type) => (inferred_type, Vec::new()),
         Err(DwError::UnsupportedFeature(message)) => (
@@ -610,7 +681,7 @@ pub fn analyze_native_expression_with_context(
         ),
         Err(error) => return Err(error),
     };
-    let reference_analysis = analysis::references(expression, payload.as_ref());
+    let reference_analysis = analysis::references(expression, payload.as_ref(), &bindings);
     let reference_paths = reference_analysis.paths;
     let wildcard_references = reference_analysis
         .wildcards
@@ -627,9 +698,16 @@ pub fn analyze_native_expression_with_context(
                 "payload" => (payload.as_ref(), tail),
                 "vars" => (vars.as_ref(), tail),
                 "attributes" => (attributes.as_ref(), tail),
+                _ if supplied_bindings => (bindings.get(root), tail),
                 _ => (payload.as_ref(), path.as_str()),
             };
-            value.is_some_and(|value| !reference_path_exists(value, lookup_path))
+            if supplied_bindings {
+                value.is_none_or(|value| {
+                    !lookup_path.is_empty() && !reference_path_exists(value, lookup_path)
+                })
+            } else {
+                value.is_some_and(|value| !reference_path_exists(value, lookup_path))
+            }
         })
         .cloned()
         .map(Value::String)
@@ -861,7 +939,9 @@ pub(crate) fn evaluate_expression_scoped(
     payload: &Value,
     locals: &Map<String, Value>,
 ) -> Result<Value, DwError> {
-    diagnostics::frame(source, None, || evaluate_expression_inner(source, payload, locals))
+    diagnostics::frame(source, None, || {
+        evaluate_expression_inner(source, payload, locals)
+    })
 }
 
 fn evaluate_expression_inner(
@@ -2829,7 +2909,9 @@ output application/python
     #[test]
     fn group_by_result_concat_reports_incompatible_operands() {
         let script = "%dw 2.0\nimport * from dw::core::Arrays\noutput application/json\nvar grp7 = payload groupBy ((item) -> ((item.val default \"\") as String) as String) ++ \"_\" ++ ((item.val default \"\") as String)\n---\ngrp7";
-        let err = execute_json(script, json!([{"val": "a"}]), false).unwrap_err().to_string();
+        let err = execute_json(script, json!([{"val": "a"}]), false)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("++"), "{err}");
         assert!(err.contains("Object"), "{err}");
         assert!(err.contains("String"), "{err}");
@@ -2838,7 +2920,10 @@ output application/python
         });
         let trace = trace.expect("the failing operator has a source location");
         assert!(trace.contains("4| var grp7 ="), "{trace}");
-        assert!(trace.contains("at main::++ (line: 4, column: 84)"), "{trace}");
+        assert!(
+            trace.contains("at main::++ (line: 4, column: 84)"),
+            "{trace}"
+        );
         assert!(trace.contains("at main::grp7"), "{trace}");
     }
 

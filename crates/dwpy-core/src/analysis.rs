@@ -52,7 +52,11 @@ pub(crate) fn validate(source: &str) -> Result<(), crate::DwError> {
     Ok(())
 }
 
-pub(crate) fn references(source: &str, payload: Option<&crate::DwValue>) -> References {
+pub(crate) fn references(
+    source: &str,
+    payload: Option<&crate::DwValue>,
+    bindings: &crate::value::DwMap<String, crate::DwValue>,
+) -> References {
     let tokens = editor_tokens(source);
     let (matching, parent) = crate::language::groups(&tokens);
     let scopes = ScopeIndex::new(source, &BTreeMap::new());
@@ -139,7 +143,8 @@ pub(crate) fn references(source: &str, payload: Option<&crate::DwValue>) -> Refe
             i += 1;
             continue;
         }
-        let known_data = payload.is_some_and(|p| p.get(token.text).is_some());
+        let known_data = bindings.contains_key(token.text)
+            || payload.is_some_and(|p| p.get(token.text).is_some());
         let call_argument = parent[i].is_some_and(|open| {
             open > 0 && tokens[open].text == "(" && is_identifier(tokens[open - 1].text)
         });

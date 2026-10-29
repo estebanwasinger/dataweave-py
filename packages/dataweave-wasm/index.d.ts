@@ -3,6 +3,7 @@ type JsonValue = JsonPrimitive | JsonValue[] | {[key: string]: JsonValue};
 
 type AnalyzeRequest = {
   expression: string;
+  bindings?: {[key: string]: JsonValue};
   payload?: JsonValue;
   vars?: JsonValue;
   attributes?: JsonValue;
@@ -19,6 +20,7 @@ type AnalyzeResult = {
 
 type ExecuteRequest = {
   attributes?: JsonValue;
+  bindings?: {[key: string]: JsonValue};
   payload?: JsonValue;
   payload_format?: string;
   payload_format_options?: {[key: string]: JsonValue};
