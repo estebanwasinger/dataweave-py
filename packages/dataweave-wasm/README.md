@@ -26,6 +26,22 @@ Pass raw request JSON to preserve duplicate keys in inputs and log messages.
 
 Node.js bindings for the strict Rust DataWeave runtime.
 
+## Top-level bindings
+
+Pass `bindings` to `execute`, `executeWithLogs`, and `analyze` to provide
+top-level values without declaring them in the script:
+
+```js
+const bindings = {record: {rent: 12}, tenant: {name: "Ada"}};
+execute({script: "record.rent", bindings, render_output: false}); // 12
+analyze({expression: "record.rent", bindings}); // references: ["record.rent"]
+```
+
+Binding names must be identifiers. `payload`, `vars`, and `attributes` are
+reserved; the `vars` request option continues to expose values under `vars`.
+Script header declarations may shadow bindings. Bindings are host-provided
+input, independent of DataWeave's standard variable syntax.
+
 Build with `npm run build` after installing `wasm-pack` and the
 `wasm32-unknown-unknown` Rust target. The generated `dist/` directory is
 included when the package is published to GitHub Packages.

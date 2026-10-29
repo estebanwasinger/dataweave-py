@@ -97,11 +97,36 @@ pub fn execute_transport_with_loggers(
     render_output: bool,
     loggers: crate::Loggers,
 ) -> Result<Value, DwError> {
+    execute_transport_with_bindings_and_loggers(
+        script,
+        payload,
+        vars,
+        attributes,
+        properties,
+        None,
+        render_output,
+        loggers,
+    )
+}
+
+pub fn execute_transport_with_bindings_and_loggers(
+    script: &str,
+    payload: Value,
+    vars: Option<Value>,
+    attributes: Option<Value>,
+    properties: Option<std::collections::BTreeMap<String, String>>,
+    bindings: Option<Value>,
+    render_output: bool,
+    loggers: crate::Loggers,
+) -> Result<Value, DwError> {
     let mut context = ExecutionContext::from_values(
         vars.map(DwValue::from_transport_json).transpose()?,
         attributes.map(DwValue::from_transport_json).transpose()?,
         properties,
     )?;
+    if let Some(bindings) = bindings {
+        context = context.with_bindings(DwValue::from_transport_json(bindings)?)?;
+    }
     context.loggers = loggers;
     crate::execute_value_with_context(
         script,

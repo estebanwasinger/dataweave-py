@@ -196,6 +196,7 @@ fn run_request(request_json: &str, loggers: dwpy_core::Loggers) -> Result<String
         .get("attributes")
         .cloned()
         .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+    let bindings = request.get("bindings").cloned();
     let properties = request
         .get("properties")
         .map(properties_to_map)
@@ -207,18 +208,22 @@ fn run_request(request_json: &str, loggers: dwpy_core::Loggers) -> Result<String
             .and_then(serde_json::Value::as_bool)
             == Some(true)
         {
-            dwpy_core::execute_transport_with_loggers(
+            dwpy_core::execute_transport_with_bindings_and_loggers(
                 script_source,
                 payload,
                 Some(vars),
                 Some(attributes),
                 properties,
+                bindings,
                 render_output,
                 loggers,
             )
         } else {
             dwpy_core::ExecutionContext::new(Some(vars), Some(attributes), properties).and_then(
                 |mut context| {
+                    if let Some(bindings) = bindings {
+                        context = context.with_bindings(bindings.into())?;
+                    }
                     context.loggers = loggers;
                     dwpy_core::execute_json_with_context(
                         script_source,
@@ -261,17 +266,35 @@ pub fn analyze_dataweave_request(request_json: &str) -> Result<String, JsValue> 
     let payload = request.get("payload").cloned();
     let vars = request.get("vars").cloned();
     let attributes = request.get("attributes").cloned();
+    let bindings = request.get("bindings").cloned();
 
-    let result = if request
+    let typed = request
         .get("typed_transport")
         .and_then(serde_json::Value::as_bool)
-        == Some(true)
-    {
-        dwpy_core::analyze_transport_expression_with_context(expression, payload, vars, attributes)
-    } else {
-        dwpy_core::analyze_expression_with_context(expression, payload, vars, attributes)
-    }
-    .map_err(|err| JsValue::from_str(&wasm_error_message(err, expression)))?;
+        == Some(true);
+    let decode = |value: Option<serde_json::Value>| -> Result<_, dwpy_core::DwError> {
+        value
+            .map(|value| {
+                if typed {
+                    dwpy_core::DwValue::from_transport_json(value)
+                } else {
+                    Ok(value.into())
+                }
+            })
+            .transpose()
+    };
+    let result = decode(payload)
+        .and_then(|payload| {
+            dwpy_core::analyze_native_expression_with_bindings(
+                expression,
+                payload,
+                decode(vars)?,
+                decode(attributes)?,
+                decode(bindings)?,
+            )
+        })
+        .map(|value| value.to_json())
+        .map_err(|err| JsValue::from_str(&wasm_error_message(err, expression)))?;
     serde_json::to_string(&result).map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
@@ -291,7 +314,7 @@ fn decode_request_context(text: &str) -> Result<serde_json::Value, JsValue> {
         // decode execution data from its original text before keys can be lost.
         let raw_fields: BTreeMap<String, Box<serde_json::value::RawValue>> =
             serde_json::from_str(text).map_err(|err| JsValue::from_str(&err.to_string()))?;
-        for name in ["payload", "vars", "attributes"] {
+        for name in ["payload", "vars", "attributes", "bindings"] {
             if let Some(raw) = raw_fields.get(name) {
                 fields.insert(name.to_string(), decode_json_input(raw.get())?);
             }
