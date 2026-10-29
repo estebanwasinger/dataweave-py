@@ -32,6 +32,7 @@ class RustDataWeaveRuntime:
         payload_format: Optional[str] = None,
         payload_format_options: Optional[dict[str, Any]] = None,
         render_output: bool = True,
+        output_mime_type: Optional[str] = None,
     ) -> Any:
         if not self._allow_legacy_fallback:
             self._last_execution_engine = "rust-unsupported"
@@ -46,6 +47,7 @@ class RustDataWeaveRuntime:
             payload_format=payload_format,
             payload_format_options=payload_format_options,
             render_output=render_output,
+            output_mime_type=output_mime_type,
         )
 
     def capabilities(self) -> list[str]:

@@ -340,6 +340,42 @@ pub struct CompiledScript {
     compiled_body: Option<compiled::CompiledBody>,
 }
 
+/// Compile a script with an optional output format override. The override replaces
+/// the entire script output directive, including its writer properties.
+pub fn compile_with_output_mime_type(
+    script: &str,
+    output_mime_type: Option<&str>,
+) -> Result<CompiledScript, DwError> {
+    let mut compiled = compile(script)?;
+    if let Some(mime) = output_mime_type {
+        let normalized = mime.to_ascii_lowercase();
+        let name = normalized.as_str();
+        let canonical = if is_json_mime(name) || name == "text/json" {
+            "application/json"
+        } else if is_csv_mime(name) {
+            "application/csv"
+        } else if is_xml_mime(name) {
+            "application/xml"
+        } else if is_yaml_mime(name) {
+            "application/yaml"
+        } else if is_ndjson_mime(name) {
+            "application/x-ndjson"
+        } else if matches!(name, "markdown" | "md" | "text/markdown") {
+            "text/markdown"
+        } else if matches!(name, "text/plain" | "text" | "plain") {
+            "text/plain"
+        } else if matches!(name, "application/python" | "python" | "text/x-python") {
+            "application/python"
+        } else {
+            return Err(DwError::Output(format!(
+                "Unsupported output format '{mime}'"
+            )));
+        };
+        compiled.parsed.output_directive = Some(canonical.to_string());
+    }
+    Ok(compiled)
+}
+
 pub fn compile(script: &str) -> Result<CompiledScript, DwError> {
     let parsed = split_script(script);
     if parsed.body.trim().is_empty() {

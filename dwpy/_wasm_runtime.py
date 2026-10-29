@@ -130,6 +130,7 @@ class WasmDataWeaveRuntime:
         payload_format: Optional[str] = None,
         payload_format_options: Optional[Dict[str, Any]] = None,
         render_output: bool = True,
+        output_mime_type: Optional[str] = None,
         log_callback: Callable[[dict], None] | None = None,
     ) -> Any:
         _validate_properties(properties)
@@ -143,6 +144,8 @@ class WasmDataWeaveRuntime:
             "render_output": render_output,
             "capture_logs": log_callback is not None,
         }
+        if output_mime_type is not None:
+            request["output_mime_type"] = output_mime_type
         if payload_format is not None:
             request["payload_format"] = payload_format
         if payload_format_options is not None:

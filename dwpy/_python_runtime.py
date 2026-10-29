@@ -337,6 +337,7 @@ class DataWeaveRuntime:
         payload_format: Optional[str] = None,
         payload_format_options: Optional[Dict[str, Any]] = None,
         render_output: bool = True,
+        output_mime_type: Optional[str] = None,
     ) -> Any:
         payload = self._convert_input_format(payload, payload_format, payload_format_options)
         payload = self._normalise_input_value(payload)
@@ -401,7 +402,13 @@ class DataWeaveRuntime:
             ) from (err.original or err)
         if not render_output:
             return self._collapse_xml_nodes(result)
-        directive = self._parse_output_directive(script.header.output)
+        if output_mime_type is not None:
+            definition = FormatRegistry.get(output_mime_type)
+            if definition is None:
+                raise DataWeaveEvaluationError(f"Unsupported output format '{output_mime_type}'")
+            directive = OutputDirective(definition.mime_type, definition.id, {})
+        else:
+            directive = self._parse_output_directive(script.header.output)
         if directive is None or directive.format_id == "python":
             return self._collapse_xml_nodes(result)
         return self._render_output(result, directive)

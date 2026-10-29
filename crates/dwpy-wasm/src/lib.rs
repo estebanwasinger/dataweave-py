@@ -161,6 +161,9 @@ fn run_request(request_json: &str, loggers: dwpy_core::Loggers) -> Result<String
         .get("render_output")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(true);
+    let output_mime_type = request
+        .get("output_mime_type")
+        .and_then(serde_json::Value::as_str);
     let payload_format = request
         .get("payload_format")
         .and_then(serde_json::Value::as_str);
@@ -208,7 +211,7 @@ fn run_request(request_json: &str, loggers: dwpy_core::Loggers) -> Result<String
             .and_then(serde_json::Value::as_bool)
             == Some(true)
         {
-            dwpy_core::execute_transport_with_bindings_and_loggers(
+            dwpy_core::execute_transport_with_output_mime_type(
                 script_source,
                 payload,
                 Some(vars),
@@ -217,6 +220,7 @@ fn run_request(request_json: &str, loggers: dwpy_core::Loggers) -> Result<String
                 bindings,
                 render_output,
                 loggers,
+                output_mime_type,
             )
         } else {
             dwpy_core::ExecutionContext::new(Some(vars), Some(attributes), properties).and_then(
@@ -225,11 +229,21 @@ fn run_request(request_json: &str, loggers: dwpy_core::Loggers) -> Result<String
                         context = context.with_bindings(bindings.into())?;
                     }
                     context.loggers = loggers;
-                    dwpy_core::execute_json_with_context(
+                    dwpy_core::compile_with_output_mime_type(
                         script_source,
+                        if render_output {
+                            output_mime_type
+                        } else {
+                            None
+                        },
+                    )?
+                    .execute_with_context(
                         payload,
                         context,
-                        render_output,
+                        &dwpy_core::ExecutionOptions {
+                            render_output,
+                            ..Default::default()
+                        },
                     )
                 },
             )

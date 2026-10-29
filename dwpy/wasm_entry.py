@@ -25,6 +25,7 @@ def run_dataweave(
     payload_format_options: dict[str, Any] | None = None,
     render_output: bool = True,
     loggers: Iterable[Logger] | None = None,
+    output_mime_type: str | None = None,
 ) -> Any:
     """
     Execute DataWeave and return JSON-serializable output for JS/WASM interop.
@@ -39,6 +40,7 @@ def run_dataweave(
         payload_format=payload_format,
         payload_format_options=payload_format_options,
         render_output=render_output,
+        output_mime_type=output_mime_type,
     )
     return _to_json_compatible(result)
 

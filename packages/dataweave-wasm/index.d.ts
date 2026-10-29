@@ -26,6 +26,7 @@ type ExecuteRequest = {
   payload_format_options?: {[key: string]: JsonValue};
   properties?: Record<string, string>;
   render_output?: boolean;
+  output_mime_type?: string;
   script: string;
   vars?: JsonValue;
 };
