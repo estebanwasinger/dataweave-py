@@ -119,6 +119,30 @@ pub fn execute_transport_with_bindings_and_loggers(
     render_output: bool,
     loggers: crate::Loggers,
 ) -> Result<Value, DwError> {
+    execute_transport_with_output_mime_type(
+        script,
+        payload,
+        vars,
+        attributes,
+        properties,
+        bindings,
+        render_output,
+        loggers,
+        None,
+    )
+}
+
+pub fn execute_transport_with_output_mime_type(
+    script: &str,
+    payload: Value,
+    vars: Option<Value>,
+    attributes: Option<Value>,
+    properties: Option<std::collections::BTreeMap<String, String>>,
+    bindings: Option<Value>,
+    render_output: bool,
+    loggers: crate::Loggers,
+    output_mime_type: Option<&str>,
+) -> Result<Value, DwError> {
     let mut context = ExecutionContext::from_values(
         vars.map(DwValue::from_transport_json).transpose()?,
         attributes.map(DwValue::from_transport_json).transpose()?,
@@ -128,11 +152,21 @@ pub fn execute_transport_with_bindings_and_loggers(
         context = context.with_bindings(DwValue::from_transport_json(bindings)?)?;
     }
     context.loggers = loggers;
-    crate::execute_value_with_context(
+    crate::compile_with_output_mime_type(
         script,
+        if render_output {
+            output_mime_type
+        } else {
+            None
+        },
+    )?
+    .execute_value_with_context(
         DwValue::from_transport_json(payload)?,
         context,
-        render_output,
+        &ExecutionOptions {
+            render_output,
+            ..ExecutionOptions::default()
+        },
     )
     .map(|value| value.to_transport_json())
 }

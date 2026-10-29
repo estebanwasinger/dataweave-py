@@ -473,3 +473,20 @@ fn audited_dependency_gaps_are_fixed_in_the_wasm_entry_point() {
         assert_eq!(execute(request), case["expectedResult"], "{id}");
     }
 }
+
+#[wasm_bindgen_test]
+fn output_mime_override_replaces_script_directive() {
+    let script = "%dw 2.0\noutput application/json indent=true\n---\n{message: payload.name}";
+    for typed in [false, true] {
+        let request = json!({"script": script, "payload": {"name": "Ada"}, "output_mime_type": "application/json", "typed_transport": typed});
+        assert_eq!(execute(request.clone()), json!("{\"message\":\"Ada\"}"));
+        let mut raw = request;
+        raw["render_output"] = json!(false);
+        assert_eq!(execute(raw), json!({"message": "Ada"}));
+    }
+    let error = run_dataweave_request(
+        &json!({"script": script, "output_mime_type": "application/unknown"}).to_string(),
+    )
+    .unwrap_err();
+    assert!(error_message(error).contains("Unsupported output format"));
+}

@@ -820,3 +820,16 @@ read-only watches, and live execution logs. See [Debugger usage and supported
 language features](docs/DEBUGGER.md) for client setup, embedding APIs, and v1
 limitations, and the [support tracker](docs/DEBUGGER_SUPPORT_TRACKER.md) for
 progress toward full debugger coverage.
+
+To override a script's output directive, pass `output_mime_type` to
+`DataWeaveRuntime.execute`, for example:
+
+```python
+result = runtime.execute(script, payload, output_mime_type="application/yaml")
+```
+
+The override selects the writer and its defaults; writer properties in the
+script's output directive are discarded. `render_output=False` takes precedence
+and returns the unrendered value. The WASM request accepts the same
+`output_mime_type` field. Rust callers can use
+`dwpy_core::compile_with_output_mime_type` before executing the compiled script.

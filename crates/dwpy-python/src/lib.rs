@@ -46,6 +46,7 @@ impl RustDataWeaveRuntime {
         payload_format = None,
         payload_format_options = None,
         render_output = true,
+        output_mime_type = None,
         log_callback = None
     ))]
     fn execute(
@@ -59,6 +60,7 @@ impl RustDataWeaveRuntime {
         payload_format: Option<&str>,
         payload_format_options: Option<Py<PyAny>>,
         render_output: bool,
+        output_mime_type: Option<&str>,
         log_callback: Option<Py<PyAny>>,
     ) -> PyResult<Py<PyAny>> {
         if log_callback
@@ -95,13 +97,14 @@ impl RustDataWeaveRuntime {
                     payload_format,
                     payload_format_options,
                     render_output,
+                    output_mime_type,
                     Some(err),
                 );
             }
         };
 
         if is_supported_payload_request(payload_format, payload_format_options_json.as_ref())
-            && is_core_candidate(script_source)
+            && (output_mime_type.is_some() || is_core_candidate(script_source))
         {
             if let Ok(payload_json) = py_to_json(py, payload.bind(py)) {
                 let payload_json = match dwpy_core::parse_payload_format_with_options(
@@ -124,6 +127,7 @@ impl RustDataWeaveRuntime {
                             payload_format,
                             payload_format_options,
                             render_output,
+                            output_mime_type,
                             Some(dataweave_evaluation_error(py, &err.to_string())?),
                         );
                     }
@@ -142,14 +146,16 @@ impl RustDataWeaveRuntime {
                 }
                 let rust_result = vars_json.and_then(|vars_json| {
                     let (result, trace) = dwpy_core::with_execution_trace(script_source, || {
-                        dwpy_core::execute_transport_with_loggers(
+                        dwpy_core::execute_transport_with_output_mime_type(
                             script_source,
                             payload_json,
                             vars_json,
                             attributes_json.clone(),
                             properties_map.clone(),
+                            None,
                             render_output,
                             loggers,
+                            output_mime_type,
                         )
                     });
                     result.map_err(|err| rust_core_error(py, err, script_source, trace.as_deref()))
@@ -185,6 +191,7 @@ impl RustDataWeaveRuntime {
                             payload_format,
                             payload_format_options,
                             render_output,
+                            output_mime_type,
                             Some(err),
                         );
                     }
@@ -202,6 +209,7 @@ impl RustDataWeaveRuntime {
             payload_format,
             payload_format_options,
             render_output,
+            output_mime_type,
             None,
         )
     }
@@ -290,6 +298,7 @@ impl RustDataWeaveRuntime {
         payload_format: Option<&str>,
         payload_format_options: Option<Py<PyAny>>,
         render_output: bool,
+        output_mime_type: Option<&str>,
     ) -> PyResult<Py<PyAny>> {
         let Some(legacy_runtime) = &self.legacy_runtime else {
             return Err(pyo3::exceptions::PyNotImplementedError::new_err(
@@ -313,6 +322,9 @@ impl RustDataWeaveRuntime {
             kwargs.set_item("payload_format_options", payload_format_options)?;
         }
         kwargs.set_item("render_output", render_output)?;
+        if let Some(mime) = output_mime_type {
+            kwargs.set_item("output_mime_type", mime)?;
+        }
 
         let result = legacy_runtime.bind(py).call_method(
             "execute",
@@ -334,6 +346,7 @@ impl RustDataWeaveRuntime {
         payload_format: Option<&str>,
         payload_format_options: Option<Py<PyAny>>,
         render_output: bool,
+        output_mime_type: Option<&str>,
         rust_error: Option<PyErr>,
     ) -> PyResult<Py<PyAny>> {
         if self.allow_legacy_fallback {
@@ -347,6 +360,7 @@ impl RustDataWeaveRuntime {
                 payload_format,
                 payload_format_options,
                 render_output,
+                output_mime_type,
             );
         }
         self.set_last_engine("rust-unsupported");

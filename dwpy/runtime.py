@@ -98,6 +98,7 @@ class DataWeaveRuntime:
         payload_format: Optional[str] = None,
         payload_format_options: Optional[Dict[str, Any]] = None,
         render_output: bool = True,
+        output_mime_type: Optional[str] = None,
     ) -> Any:
         with logger_scope(self._loggers):
             return self._execute(
@@ -109,6 +110,7 @@ class DataWeaveRuntime:
                 payload_format=payload_format,
                 payload_format_options=payload_format_options,
                 render_output=render_output,
+                output_mime_type=output_mime_type,
             )
 
     def _execute(
@@ -122,6 +124,7 @@ class DataWeaveRuntime:
         payload_format: Optional[str] = None,
         payload_format_options: Optional[Dict[str, Any]] = None,
         render_output: bool = True,
+        output_mime_type: Optional[str] = None,
     ) -> Any:
         if self._wasm_runtime is not None:
             return self._wasm_runtime.execute(
@@ -133,6 +136,7 @@ class DataWeaveRuntime:
                 payload_format=payload_format,
                 payload_format_options=payload_format_options,
                 render_output=render_output,
+                output_mime_type=output_mime_type,
                 log_callback=None if self._loggers == () else emit_bridge_log,
             )
 
@@ -146,6 +150,7 @@ class DataWeaveRuntime:
                 payload_format=payload_format,
                 payload_format_options=payload_format_options,
                 render_output=render_output,
+                output_mime_type=output_mime_type,
                 log_callback=None if self._loggers == () else emit_bridge_log,
             )
 
@@ -158,6 +163,7 @@ class DataWeaveRuntime:
             payload_format=payload_format,
             payload_format_options=payload_format_options,
             render_output=render_output,
+            output_mime_type=output_mime_type,
         )
 
     def capabilities(self) -> list[str]:
