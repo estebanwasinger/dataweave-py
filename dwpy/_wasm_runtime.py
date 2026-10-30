@@ -5,21 +5,21 @@ import json
 import os
 import subprocess
 import threading
+from collections.abc import Callable
 from datetime import date, datetime, time
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any
 
 from . import parser
 from ._python_runtime import DataWeaveEvaluationError
 from ._rust_bridge import encode_bridge_value, json_default
 from .formats import DWObject
 
-
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent / "packages" / "dataweave-wasm"
 
 
 class _WasmNodeBridge:
-    _instance: Optional["_WasmNodeBridge"] = None
+    _instance: _WasmNodeBridge | None = None
     _instance_lock = threading.Lock()
 
     def __init__(self) -> None:
@@ -49,7 +49,7 @@ class _WasmNodeBridge:
         self.lock = threading.Lock()
 
     @classmethod
-    def instance(cls) -> "_WasmNodeBridge":
+    def instance(cls) -> _WasmNodeBridge:
         with cls._instance_lock:
             if cls._instance is None:
                 cls._instance = cls()
@@ -57,7 +57,7 @@ class _WasmNodeBridge:
 
     def execute(
         self,
-        request: Dict[str, Any],
+        request: dict[str, Any],
         log_callback: Callable[[dict], None] | None = None,
     ) -> Any:
         encoded = json.dumps(request, separators=(",", ":"), allow_nan=False)
@@ -123,18 +123,18 @@ class WasmDataWeaveRuntime:
         self,
         script_source: str,
         payload: Any,
-        vars: Optional[Dict[str, Any]] = None,
+        vars: dict[str, Any] | None = None,
         *,
         attributes: Any = None,
-        properties: Optional[Dict[str, str]] = None,
-        payload_format: Optional[str] = None,
-        payload_format_options: Optional[Dict[str, Any]] = None,
+        properties: dict[str, str] | None = None,
+        payload_format: str | None = None,
+        payload_format_options: dict[str, Any] | None = None,
         render_output: bool = True,
         output_mime_type: Optional[str] = None,
         log_callback: Callable[[dict], None] | None = None,
     ) -> Any:
         _validate_properties(properties)
-        request: Dict[str, Any] = {
+        request: dict[str, Any] = {
             "typed_transport": True,
             "script": script_source,
             "payload": _encode_wasm_value(payload),
@@ -168,9 +168,9 @@ class WasmDataWeaveRuntime:
         self,
         script_source: str,
         payload: Any = None,
-        vars: Optional[Dict[str, Any]] = None,
+        vars: dict[str, Any] | None = None,
         attributes: Any = None,
-        properties: Optional[Dict[str, str]] = None,
+        properties: dict[str, str] | None = None,
     ) -> Any:
         _validate_properties(properties)
         return self._bridge.execute(
@@ -235,18 +235,18 @@ def _decode_wasm_value(value: Any) -> Any:
     return {key: _decode_wasm_value(item) for key, item in value.items()}
 
 
-def _validate_properties(properties: Optional[Dict[str, str]]) -> None:
+def _validate_properties(properties: dict[str, str] | None) -> None:
     """Reject invalid execution properties before crossing the WASM boundary."""
     if properties is None:
         return
     if not isinstance(properties, dict):
-        raise ValueError("properties must be a JSON object with string values")
+        raise ValueError("properties must be a JSON object with string values")  # noqa: TRY004 - public validation contract
     for key, value in properties.items():
         if not isinstance(value, str):
-            raise ValueError(f"property '{key}' must be a string value")
+            raise ValueError(f"property '{key}' must be a string value")  # noqa: TRY004 - public validation contract
 
 
-def _parse_error_location(request: Dict[str, Any]) -> tuple[Optional[int], Optional[int]]:
+def _parse_error_location(request: dict[str, Any]) -> tuple[int | None, int | None]:
     source = request.get("script") or request.get("expression")
     if not isinstance(source, str):
         return None, None

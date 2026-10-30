@@ -2,15 +2,14 @@ from __future__ import annotations
 
 import base64
 import math
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
-from typing import Any, Iterable
+from typing import Any
 
+from .logging import Logger
 from .lsp.engine import DataWeaveLanguageEngine
 from .runtime import DataWeaveRuntime
-from .logging import Logger
-
 
 _LANGUAGE_ENGINE = DataWeaveLanguageEngine()
 
@@ -157,7 +156,7 @@ def _to_json_compatible(value: Any) -> Any:
             "base64": base64.b64encode(bytes(value)).decode("ascii"),
         }
 
-    if hasattr(value, "to_iso8601") and callable(getattr(value, "to_iso8601")):
+    if hasattr(value, "to_iso8601") and callable(value.to_iso8601):
         return value.to_iso8601()
 
     if isinstance(value, datetime):

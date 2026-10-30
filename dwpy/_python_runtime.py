@@ -1,32 +1,42 @@
 from __future__ import annotations
 
-import logging
-import re
-import inspect
 import copy
-import os
-import json
-import math
-import uuid as uuid_lib
 import hashlib
 import hmac
-from datetime import date, datetime, time, timedelta, timezone
-from zoneinfo import ZoneInfo
-from decimal import Decimal, InvalidOperation, localcontext
+import inspect
+import json
+import logging
+import math
+import os
+import re
+import uuid as uuid_lib
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import date, datetime, time, timedelta, timezone
+from decimal import Decimal, InvalidOperation, localcontext
 from importlib import metadata as importlib_metadata
 from pathlib import Path
+from typing import Any, ClassVar
 from urllib.parse import urlparse
 from urllib.request import urlopen
-from typing import Any, Callable, Dict, List, Optional, Mapping, Set, Tuple
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import builtins, parser
-from .formats import DWObject, FormatRegistry, FormatError, FormattedNumber, XMLNodeList, XMLNodeDict
+from .formats import (
+    DWObject,
+    FormatError,
+    FormatRegistry,
+    FormattedNumber,
+    XMLNodeDict,
+    XMLNodeList,
+)
 
 try:  # pragma: no cover - optional dependency guard
-    import pandas as pd  # type: ignore
-except Exception:  # pragma: no cover
+    import pandas as _pandas
+except ImportError:  # pragma: no cover
     pd = None
+else:
+    pd = _pandas
 PANDAS_AVAILABLE = pd is not None
 
 Missing = object()
@@ -38,10 +48,10 @@ class DataWeaveEvaluationError(RuntimeError):
     def __init__(
         self,
         message: str,
-        line: Optional[int] = None,
-        column: Optional[int] = None,
+        line: int | None = None,
+        column: int | None = None,
         length: int = 1,
-        original: Optional[BaseException] = None,
+        original: BaseException | None = None,
     ) -> None:
         super().__init__(message)
         self.line = line
@@ -53,18 +63,18 @@ class DataWeaveEvaluationError(RuntimeError):
 @dataclass
 class EvaluationContext:
     payload: Any
-    variables: Dict[str, Any]
-    header: Optional[parser.Header] = None
+    variables: dict[str, Any]
+    header: parser.Header | None = None
     line_offset: int = 0
     attributes: Any = field(default_factory=dict)
-    properties: Dict[str, str] = field(default_factory=dict)
+    properties: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
 class OutputDirective:
     mime_type: str
     format_id: str
-    properties: Dict[str, Any]
+    properties: dict[str, Any]
 
 
 @dataclass
@@ -76,17 +86,17 @@ class UpdatePathSegment:
 
 @dataclass
 class LambdaCallable:
-    runtime: "DataWeaveRuntime"
-    parameters: List[parser.Parameter]
+    runtime: DataWeaveRuntime
+    parameters: list[parser.Parameter]
     body: parser.Expression
-    closure_variables: Dict[str, Any]
+    closure_variables: dict[str, Any]
     payload: Any
-    header: Optional[parser.Header]
+    header: parser.Header | None
     attributes: Any = None
-    properties: Dict[str, str] = field(default_factory=dict)
+    properties: dict[str, str] = field(default_factory=dict)
 
     def __call__(self, *args: Any) -> Any:
-        local_vars: Dict[str, Any] = dict(self.closure_variables)
+        local_vars: dict[str, Any] = dict(self.closure_variables)
         provided_args = list(args)
         if len(provided_args) > len(self.parameters):
             raise TypeError("Too many arguments supplied to lambda expression")
@@ -137,14 +147,14 @@ class LambdaCallable:
 
 @dataclass
 class DefinedFunction:
-    runtime: "DataWeaveRuntime"
-    parameters: List[parser.Parameter]
+    runtime: DataWeaveRuntime
+    parameters: list[parser.Parameter]
     body: parser.Expression
     context: EvaluationContext
-    return_type: Optional[parser.TypeSpec]
+    return_type: parser.TypeSpec | None
 
     def __call__(self, *args: Any) -> Any:
-        local_vars: Dict[str, Any] = dict(self.context.variables)
+        local_vars: dict[str, Any] = dict(self.context.variables)
         provided_args = list(args)
         if len(provided_args) > len(self.parameters):
             raise TypeError("Too many arguments supplied to function")
@@ -182,8 +192,8 @@ class DefinedFunction:
 
 @dataclass
 class OverloadedFunction:
-    runtime: "DataWeaveRuntime"
-    functions: List[DefinedFunction]
+    runtime: DataWeaveRuntime
+    functions: list[DefinedFunction]
 
     def add(self, function: DefinedFunction) -> None:
         self.functions.append(function)
@@ -198,7 +208,7 @@ class OverloadedFunction:
         raise TypeError("No matching function overload for the supplied arguments")
 
     def _matches(
-        self, function: DefinedFunction, args: Tuple[Any, ...], *, allow_coercion: bool = False
+        self, function: DefinedFunction, args: tuple[Any, ...], *, allow_coercion: bool = False
     ) -> bool:
         expected_params = function.parameters
         required_count = sum(1 for param in expected_params if param.default is None)
@@ -221,14 +231,14 @@ class OverloadedFunction:
 
 @dataclass
 class ImplicitLambdaCallable:
-    runtime: "DataWeaveRuntime"
+    runtime: DataWeaveRuntime
     body: parser.Expression
-    closure_variables: Dict[str, Any]
+    closure_variables: dict[str, Any]
     payload: Any
-    header: Optional[parser.Header]
-    placeholders: Set[int]
+    header: parser.Header | None
+    placeholders: set[int]
     attributes: Any = None
-    properties: Dict[str, str] = field(default_factory=dict)
+    properties: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if 2 in self.placeholders:
@@ -240,7 +250,7 @@ class ImplicitLambdaCallable:
             self.parameters = [parser.Parameter(name="$")]
 
     def __call__(self, *args: Any) -> Any:
-        local_vars: Dict[str, Any] = dict(self.closure_variables)
+        local_vars: dict[str, Any] = dict(self.closure_variables)
         value = args[0] if args else None
         index = args[1] if len(args) > 1 else None
         local_vars["$"] = value
@@ -256,9 +266,9 @@ class ImplicitLambdaCallable:
 
 
 class DataWeaveRuntime:
-    _DEFAULT_CORE_EXPORTS: Optional[Dict[str, Callable[..., Any]]] = None
+    _DEFAULT_CORE_EXPORTS: dict[str, Callable[..., Any]] | None = None
 
-    _MD2_S_TABLE: Tuple[int, ...] = (
+    _MD2_S_TABLE: tuple[int, ...] = (
         41, 46, 67, 201, 162, 216, 124, 1, 61, 54, 84, 161, 236, 240, 6, 19,
         98, 167, 5, 243, 192, 199, 115, 140, 152, 147, 43, 217, 188, 76, 130, 202,
         30, 155, 87, 60, 253, 212, 224, 22, 103, 66, 111, 24, 138, 23, 229, 18,
@@ -277,7 +287,7 @@ class DataWeaveRuntime:
         49, 68, 80, 180, 143, 237, 31, 26, 219, 153, 141, 51, 159, 17, 131, 20,
     )
 
-    _IMPLICIT_LAMBDA_ARGUMENTS: Dict[str, Tuple[int, ...]] = {
+    _IMPLICIT_LAMBDA_ARGUMENTS: ClassVar[dict[str, tuple[int, ...]]] = {
         "_infix_map": (1,),
         "_infix_filter": (1,),
         "_infix_flatMap": (1,),
@@ -298,7 +308,7 @@ class DataWeaveRuntime:
 
     def __init__(self, *, enable_module_imports: bool = True) -> None:
         self._enable_module_imports = enable_module_imports
-        self._builtins: Dict[str, Callable[..., Any]] = dict(builtins.CORE_FUNCTIONS)
+        self._builtins: dict[str, Callable[..., Any]] = dict(builtins.CORE_FUNCTIONS)
         self._builtins.update(
             {
                 "_binary_plus": self._func_binary_plus,
@@ -330,12 +340,12 @@ class DataWeaveRuntime:
         self,
         script_source: str,
         payload: Any,
-        vars: Optional[Dict[str, Any]] = None,
+        vars: dict[str, Any] | None = None,
         *,
         attributes: Any = None,
-        properties: Optional[Mapping[str, str]] = None,
-        payload_format: Optional[str] = None,
-        payload_format_options: Optional[Dict[str, Any]] = None,
+        properties: Mapping[str, str] | None = None,
+        payload_format: str | None = None,
+        payload_format_options: dict[str, Any] | None = None,
         render_output: bool = True,
         output_mime_type: Optional[str] = None,
     ) -> Any:
@@ -348,11 +358,11 @@ class DataWeaveRuntime:
         if attributes is None:
             attributes = {}
         if not isinstance(attributes, Mapping):
-            raise ValueError("attributes must be a JSON object")
+            raise ValueError("attributes must be a JSON object")  # noqa: TRY004 - public validation contract
         effective_properties = dict(os.environ)
         for key, value in (properties or {}).items():
             if not isinstance(value, str):
-                raise ValueError(f"property '{key}' must be a string value")
+                raise ValueError(f"property '{key}' must be a string value")  # noqa: TRY004 - public validation contract
             effective_properties[str(key)] = value
         attributes = self._normalise_input_value(attributes)
         try:
@@ -414,7 +424,7 @@ class DataWeaveRuntime:
         return self._render_output(result, directive)
 
     def _normalise_input_value(self, value: Any) -> Any:
-        if PANDAS_AVAILABLE:
+        if pd is not None:
             if isinstance(value, pd.DataFrame):
                 records = value.to_dict(orient="records")
                 return [self._normalise_input_value(record) for record in records]
@@ -447,8 +457,8 @@ class DataWeaveRuntime:
     def _convert_input_format(
         self,
         value: Any,
-        format_name: Optional[str],
-        options: Optional[Dict[str, Any]],
+        format_name: str | None,
+        options: dict[str, Any] | None,
     ) -> Any:
         if format_name is None:
             return value
@@ -460,7 +470,7 @@ class DataWeaveRuntime:
     def _render_output(
         self,
         value: Any,
-        directive: Optional[OutputDirective],
+        directive: OutputDirective | None,
     ) -> Any:
         if directive is None or directive.format_id == "python":
             return value
@@ -478,7 +488,7 @@ class DataWeaveRuntime:
                 collapsed_object.add(key, self._collapse_xml_nodes(val))
             return collapsed_object
         if isinstance(value, XMLNodeDict):
-            collapsed: Dict[str, Any] = {}
+            collapsed: dict[str, Any] = {}
             for key, val in value.items():
                 collapsed[key] = self._collapse_xml_nodes(val)
             text_value = collapsed.get("#text")
@@ -492,14 +502,14 @@ class DataWeaveRuntime:
             text_value = collapsed.get("#text")
             if text_value is not None:
                 non_meta_keys = [
-                    key for key in collapsed.keys() if key != "#text" and not key.startswith("@")
+                    key for key in collapsed if key != "#text" and not key.startswith("@")
                 ]
                 if not non_meta_keys:
                     return text_value
             return collapsed
         return value
 
-    def _parse_output_directive(self, directive: Optional[str]) -> Optional[OutputDirective]:
+    def _parse_output_directive(self, directive: str | None) -> OutputDirective | None:
         if not directive:
             return None
         import shlex
@@ -513,8 +523,8 @@ class DataWeaveRuntime:
         idx = 0
         first = tokens[idx]
         idx += 1
-        mime_value: Optional[str] = None
-        format_token: Optional[str] = None
+        mime_value: str | None = None
+        format_token: str | None = None
         if idx < len(tokens) and tokens[idx].lower() == "with":
             mime_value = first
             idx += 1
@@ -539,8 +549,8 @@ class DataWeaveRuntime:
         properties = self._parse_directive_properties(tokens[idx:])
         return OutputDirective(mime_type=mime_value, format_id=format_def.id, properties=properties)
 
-    def _parse_directive_properties(self, tokens: List[str]) -> Dict[str, Any]:
-        properties: Dict[str, Any] = {}
+    def _parse_directive_properties(self, tokens: list[str]) -> dict[str, Any]:
+        properties: dict[str, Any] = {}
         for token in tokens:
             if "=" not in token:
                 properties[token] = True
@@ -566,7 +576,7 @@ class DataWeaveRuntime:
         except ValueError:
             return unescaped
 
-    def _matches_type_annotation(self, value: Any, type_spec: Optional[parser.TypeSpec]) -> bool:
+    def _matches_type_annotation(self, value: Any, type_spec: parser.TypeSpec | None) -> bool:
         if type_spec is None:
             return True
         if isinstance(type_spec, parser.UnionTypeSpec):
@@ -591,7 +601,7 @@ class DataWeaveRuntime:
         return True
 
     def _coerce_function_argument(
-        self, value: Any, type_spec: Optional[parser.TypeSpec], ctx: EvaluationContext
+        self, value: Any, type_spec: parser.TypeSpec | None, ctx: EvaluationContext
     ) -> Any:
         if type_spec is None or self._matches_type_annotation(value, type_spec):
             return value
@@ -656,7 +666,7 @@ class DataWeaveRuntime:
             return "".join(result_parts)
         if isinstance(expr, parser.NumberLiteral):
             # Prefer int when possible for friendlier outputs.
-            return int(expr.value) if expr.value.is_integer() else expr.value
+            return int(expr.value) if isinstance(expr.value, int) or expr.value.is_integer() else expr.value
         if isinstance(expr, parser.BooleanLiteral):
             return expr.value
         if isinstance(expr, parser.NullLiteral):
@@ -746,7 +756,7 @@ class DataWeaveRuntime:
                 return self._func_eval_script(*arguments, execution_context=ctx)
             function = self._evaluate(expr.function, ctx)
             placeholder_positions = self._resolve_placeholder_argument_indexes(expr.function)
-            args: List[Any] = []
+            args: list[Any] = []
             for idx, argument in enumerate(expr.arguments):
                 if idx in placeholder_positions and not isinstance(argument, parser.LambdaExpression):
                     placeholders = self._collect_placeholders(argument)
@@ -842,8 +852,8 @@ class DataWeaveRuntime:
         name: str,
         ctx: EvaluationContext,
         *,
-        line: Optional[int] = None,
-        column: Optional[int] = None,
+        line: int | None = None,
+        column: int | None = None,
         length: int = 1,
     ) -> Any:
         if name == "payload":
@@ -881,7 +891,7 @@ class DataWeaveRuntime:
     def _evaluate_property_function(
         self,
         function_name: str,
-        arguments: List[Any],
+        arguments: list[Any],
         ctx: EvaluationContext,
     ) -> Any:
         if function_name.endswith("props"):
@@ -892,7 +902,7 @@ class DataWeaveRuntime:
             raise TypeError(f"{function_name}() expects one property name")
         property_name = arguments[0]
         if not isinstance(property_name, str):
-            raise ValueError("property name passed to p()/prop() must be a string")
+            raise ValueError("property name passed to p()/prop() must be a string")  # noqa: TRY004 - public validation contract
         return ctx.properties.get(property_name)
 
     def _evaluate_update_expression(
@@ -931,7 +941,7 @@ class DataWeaveRuntime:
         return self._apply_update_selector(value, selector, replacement)
 
     def _resolve_update_path_source(self, source: str, ctx: EvaluationContext) -> str:
-        result: List[str] = []
+        result: list[str] = []
         index = 0
         while index < len(source):
             start = source.find("$(", index)
@@ -956,8 +966,8 @@ class DataWeaveRuntime:
             index = cursor
         return "".join(result)
 
-    def _parse_update_path_segments(self, source: str) -> List[UpdatePathSegment]:
-        segments: List[UpdatePathSegment] = []
+    def _parse_update_path_segments(self, source: str) -> list[UpdatePathSegment]:
+        segments: list[UpdatePathSegment] = []
         index = 0
         length = len(source)
         while index < length:
@@ -986,7 +996,7 @@ class DataWeaveRuntime:
                 index += 1
                 start = index
                 escaped = False
-                value_chars: List[str] = []
+                value_chars: list[str] = []
                 while index < length:
                     char = source[index]
                     if escaped:
@@ -1023,7 +1033,7 @@ class DataWeaveRuntime:
             )
         return segments
 
-    def _select_update_path_value(self, value: Any, segments: List[UpdatePathSegment]) -> Any:
+    def _select_update_path_value(self, value: Any, segments: list[UpdatePathSegment]) -> Any:
         current = value
         for segment in segments:
             if segment.kind == "property":
@@ -1044,7 +1054,7 @@ class DataWeaveRuntime:
     def _apply_update_path(
         self,
         value: Any,
-        segments: List[UpdatePathSegment],
+        segments: list[UpdatePathSegment],
         replacement: Any,
     ) -> Any:
         if not segments:
@@ -1077,7 +1087,7 @@ class DataWeaveRuntime:
         return value
 
     @staticmethod
-    def _resolve_update_index(index: int, length: int) -> Optional[int]:
+    def _resolve_update_index(index: int, length: int) -> int | None:
         resolved = length + index if index < 0 else index
         if resolved < 0 or resolved >= length:
             return None
@@ -1132,7 +1142,7 @@ class DataWeaveRuntime:
             return value
         return value
 
-    def _apply_update_selector_path(self, value: Any, path: List[Any], replacement: Any) -> Any:
+    def _apply_update_selector_path(self, value: Any, path: list[Any], replacement: Any) -> Any:
         if not path:
             return replacement
         head, *tail = path
@@ -1165,7 +1175,7 @@ class DataWeaveRuntime:
         if base is None:
             return None
         if isinstance(base, list):
-            collected: List[Any] = []
+            collected: list[Any] = []
             for item in base:
                 value = self._resolve_property(item, attribute, multi_value=multi_value)
                 if value is None:
@@ -1182,7 +1192,7 @@ class DataWeaveRuntime:
             if not matches:
                 return None
             if multi_value:
-                results: List[Any] = []
+                results: list[Any] = []
                 for _, value in matches:
                     self._append_selector_value(
                         results, value, expand_xml_list=True,
@@ -1229,9 +1239,7 @@ class DataWeaveRuntime:
             base_date = value if isinstance(value, date) and not isinstance(value, datetime) else value.date()
             return base_date.timetuple().tm_yday
         if attribute == "offsetSeconds":
-            if isinstance(value, datetime):
-                offset = value.utcoffset()
-            elif isinstance(value, time):
+            if isinstance(value, (datetime, time)):
                 offset = value.utcoffset()
             else:
                 offset = None
@@ -1259,11 +1267,11 @@ class DataWeaveRuntime:
             return key.split("}", 1)[1]
         return key
 
-    def _matching_mapping_items(self, node: Mapping[str, Any], attribute: str) -> List[Tuple[str, Any]]:
+    def _matching_mapping_items(self, node: Mapping[str, Any], attribute: str) -> list[tuple[str, Any]]:
         if isinstance(node, DWObject):
             return [(key, value) for key, value in node.items() if key == attribute]
         if isinstance(node, XMLNodeDict):
-            matches: List[Tuple[str, Any]] = []
+            matches: list[tuple[str, Any]] = []
             for key, value in node.items():
                 if attribute.startswith("@"):
                     if key == attribute:
@@ -1278,7 +1286,7 @@ class DataWeaveRuntime:
 
     @staticmethod
     def _append_selector_value(
-        results: List[Any],
+        results: list[Any],
         value: Any,
         *,
         expand_xml_list: bool = False,
@@ -1292,7 +1300,7 @@ class DataWeaveRuntime:
             return
         results.append(value)
 
-    def _resolve_key_value_pairs(self, base: Any, attribute: str) -> Optional[DWObject]:
+    def _resolve_key_value_pairs(self, base: Any, attribute: str) -> DWObject | None:
         if base is None:
             return None
         if isinstance(base, (list, tuple)):
@@ -1321,11 +1329,11 @@ class DataWeaveRuntime:
     def _resolve_descendant_property(
         self,
         base: Any,
-        attribute: Optional[str],
+        attribute: str | None,
         *,
         multi_value: bool = False,
-    ) -> List[Any]:
-        results: List[Any] = []
+    ) -> list[Any]:
+        results: list[Any] = []
 
         def visit(node: Any) -> None:
             if node is None:
@@ -1367,8 +1375,8 @@ class DataWeaveRuntime:
         visit(base)
         return results
 
-    def _resolve_descendant_key_value_pairs(self, base: Any, attribute: str) -> List[DWObject]:
-        results: List[DWObject] = []
+    def _resolve_descendant_key_value_pairs(self, base: Any, attribute: str) -> list[DWObject]:
+        results: list[DWObject] = []
 
         def visit(node: Any) -> None:
             if node is None:
@@ -1423,7 +1431,7 @@ class DataWeaveRuntime:
                     result.add(key, value)
             return result if result.items() else None
         if isinstance(base, Mapping):
-            result: Dict[str, Any] = {}
+            result: dict[str, Any] = {}
             for key, value in base.items():
                 if self._selector_predicate_matches(value, key, predicate, ctx):
                     result[str(key)] = value
@@ -1527,7 +1535,7 @@ class DataWeaveRuntime:
     @staticmethod
     def _selector_display_name(expr: parser.Expression) -> str:
         if isinstance(expr, parser.PropertyAccess) and expr.attribute is not None:
-            return expr.attribute[1:] if expr.attribute.startswith("@") else expr.attribute
+            return expr.attribute.removeprefix("@")
         if isinstance(expr, parser.DynamicSelector):
             return "<dynamic selector>"
         if isinstance(expr, parser.IndexAccess):
@@ -1583,14 +1591,14 @@ class DataWeaveRuntime:
         return selected
 
     @staticmethod
-    def _coerce_index(value: Any) -> Optional[int]:
+    def _coerce_index(value: Any) -> int | None:
         try:
             return int(value)
         except (TypeError, ValueError):
             return None
 
     @staticmethod
-    def _normalise_sequence_index(index: int, size: int) -> Optional[int]:
+    def _normalise_sequence_index(index: int, size: int) -> int | None:
         if size <= 0:
             return None
         resolved = index
@@ -1639,7 +1647,7 @@ class DataWeaveRuntime:
             raise DataWeaveEvaluationError(f"Unknown native function identifier '{key}'")
         return function
 
-    def _build_native_function_registry(self) -> Dict[str, Callable[..., Any]]:
+    def _build_native_function_registry(self) -> dict[str, Callable[..., Any]]:
         return {
             "system::read": self._func_read,
             "system::readUrl": self._func_read_url,
@@ -1763,7 +1771,7 @@ class DataWeaveRuntime:
             self._builtins.setdefault(name, function)
 
     @classmethod
-    def _load_default_core_exports(cls) -> Dict[str, Callable[..., Any]]:
+    def _load_default_core_exports(cls) -> dict[str, Callable[..., Any]]:
         if cls._DEFAULT_CORE_EXPORTS is None:
             module_runtime = cls(enable_module_imports=False)
             cls._DEFAULT_CORE_EXPORTS = module_runtime._load_module_exports("dw::Core")
@@ -1865,7 +1873,7 @@ class DataWeaveRuntime:
                 return timezone(sign * delta)
             try:
                 return ZoneInfo(token)
-            except Exception:
+            except (ValueError, ZoneInfoNotFoundError):
                 return timezone.utc
         return timezone.utc
 
@@ -1874,7 +1882,7 @@ class DataWeaveRuntime:
             return None
         if not isinstance(value, Mapping):
             raise TypeError("mapObject expects an object")
-        result: Dict[Any, Any] = {}
+        result: dict[Any, Any] = {}
         for index, (key, item) in enumerate(value.items()):
             mapped = builtins.invoke_lambda(mapper, item, key, index)
             if mapped is None:
@@ -1889,8 +1897,8 @@ class DataWeaveRuntime:
             return None
         if not isinstance(value, Mapping):
             raise TypeError("distinctBy expects an object")
-        seen: List[Any] = []
-        result: Dict[Any, Any] = {}
+        seen: list[Any] = []
+        result: dict[Any, Any] = {}
         for key, item in value.items():
             marker = builtins._hashable_key(builtins.invoke_lambda(criteria, item, key))
             if marker in seen:
@@ -1911,12 +1919,12 @@ class DataWeaveRuntime:
                 accumulator = builtins.invoke_lambda(callback, char, accumulator)
         return None if accumulator is Missing else accumulator
 
-    def _func_scan(self, text: Any, matcher: Any) -> List[List[str]]:
+    def _func_scan(self, text: Any, matcher: Any) -> list[list[str]]:
         if text is None:
             return []
         pattern = self._coerce_regex_pattern(matcher)
         compiled = re.compile(pattern)
-        result: List[List[str]] = []
+        result: list[list[str]] = []
         for match in compiled.finditer(str(text)):
             result.append([match.group(0)] + list(match.groups()))
         return result
@@ -1950,7 +1958,7 @@ class DataWeaveRuntime:
         def replace_with(callback: Callable[..., Any]) -> str:
             if needle == "":
                 return source
-            parts: List[str] = []
+            parts: list[str] = []
             cursor = 0
             index = 0
             while True:
@@ -1977,7 +1985,7 @@ class DataWeaveRuntime:
     def _func_type_of_any(self, value: Any) -> str:
         return self._dw_type_name(value)
 
-    def _func_read_lines_with(self, content: Any, charset: Any) -> List[str]:
+    def _func_read_lines_with(self, content: Any, charset: Any) -> list[str]:
         if isinstance(content, (bytes, bytearray)):
             encoding = "utf-8" if charset is None else str(charset)
             text = bytes(content).decode(encoding)
@@ -2009,13 +2017,13 @@ class DataWeaveRuntime:
             return "0"
         sign = "-" if value < 0 else ""
         value = abs(value)
-        parts: List[str] = []
+        parts: list[str] = []
         while value:
             value, rem = divmod(value, base)
             parts.append(digits[rem])
         return sign + "".join(reversed(parts))
 
-    def _func_mime_from_string(self, mime_type: Any) -> Dict[str, Any]:
+    def _func_mime_from_string(self, mime_type: Any) -> dict[str, Any]:
         text = "" if mime_type is None else str(mime_type).strip()
         try:
             type_part, *param_parts = [segment.strip() for segment in text.split(";")]
@@ -2024,7 +2032,7 @@ class DataWeaveRuntime:
             major, sub = [segment.strip() for segment in type_part.split("/", 1)]
             if not major or not sub:
                 raise ValueError(f"Invalid MIME type `{text}`.")
-            parameters: Dict[str, str] = {}
+            parameters: dict[str, str] = {}
             for token in param_parts:
                 if "=" not in token:
                     continue
@@ -2038,7 +2046,7 @@ class DataWeaveRuntime:
                     "parameters": parameters,
                 },
             }
-        except Exception as err:
+        except ValueError as err:
             return {"success": False, "error": {"message": str(err)}}
 
     def _func_mime_to_string(self, mime_type: Any) -> str:
@@ -2070,24 +2078,24 @@ class DataWeaveRuntime:
             return other_sub.endswith("+xml")
         return base_sub in {"*", other_sub}
 
-    def _func_env(self) -> Dict[str, str]:
+    def _func_env(self) -> dict[str, str]:
         return dict(os.environ)
 
-    def _func_props(self) -> Dict[str, str]:
+    def _func_props(self) -> dict[str, str]:
         return dict(os.environ)
 
     def _func_fail(self, message: Any = "Error") -> Any:
         raise DataWeaveEvaluationError(str(message))
 
     @staticmethod
-    def _func_wait(value: Any, timeout: Any) -> Any:  # noqa: ARG004
+    def _func_wait(value: Any, timeout: Any) -> Any:
         return value
 
-    def _func_try(self, delegate: Callable[..., Any]) -> Dict[str, Any]:
+    def _func_try(self, delegate: Callable[..., Any]) -> dict[str, Any]:
         try:
             result = builtins.invoke_lambda(delegate)
             return {"success": True, "result": result}
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - DataWeave try converts arbitrary delegate errors to values
             return {
                 "success": False,
                 "error": {
@@ -2097,17 +2105,17 @@ class DataWeaveRuntime:
             }
 
     @staticmethod
-    def _func_location(value: Any) -> Dict[str, Any]:  # noqa: ARG004
+    def _func_location(value: Any) -> dict[str, Any]:
         return {"locationString": "Unknown location", "text": ""}
 
     def _func_version(self) -> str:
         try:
             return importlib_metadata.version("dataweave-py")
-        except Exception:
+        except importlib_metadata.PackageNotFoundError:
             return "0.0.0"
 
-    def _func_data_format_descriptors(self) -> List[Dict[str, Any]]:
-        descriptors: List[Dict[str, Any]] = []
+    def _func_data_format_descriptors(self) -> list[dict[str, Any]]:
+        descriptors: list[dict[str, Any]] = []
         for definition in FormatRegistry._FORMATS.values():  # type: ignore[attr-defined]
             accepted_mime_types = [definition.mime_type]
             extensions: list[str] = []
@@ -2151,7 +2159,7 @@ class DataWeaveRuntime:
         content_type: Any = "application/dw",
         reader_properties: Any = None,
         *,
-        execution_context: Optional[EvaluationContext] = None,
+        execution_context: EvaluationContext | None = None,
     ) -> Any:
         content_type_text = "application/dw" if content_type is None else str(content_type)
         options = reader_properties if isinstance(reader_properties, Mapping) else {}
@@ -2261,7 +2269,7 @@ class DataWeaveRuntime:
         return str(uuid_lib.uuid4())
 
     @staticmethod
-    def _func_evaluate_compatibility_flag(flag: Any) -> bool:  # noqa: ARG004
+    def _func_evaluate_compatibility_flag(flag: Any) -> bool:
         return False
 
     def _func_hash_with(self, content: Any, algorithm: Any = "SHA-1") -> bytes:
@@ -2346,7 +2354,7 @@ class DataWeaveRuntime:
         return Decimal(str(value))
 
     @staticmethod
-    def _decimal_precision(context: Any) -> Optional[int]:
+    def _decimal_precision(context: Any) -> int | None:
         if isinstance(context, Mapping):
             precision = context.get("precision") or context.get("prec")
             if precision is not None:
@@ -2423,10 +2431,10 @@ class DataWeaveRuntime:
         fs: Any,
         reader_inputs: Any = None,
         input_values: Any = None,
-        configuration: Any = None,  # noqa: ARG002
+        configuration: Any = None,
         *,
-        execution_context: Optional[EvaluationContext] = None,
-    ) -> Dict[str, Any]:
+        execution_context: EvaluationContext | None = None,
+    ) -> dict[str, Any]:
         result = self._execute_embedded_script(
             file_to_execute,
             fs,
@@ -2451,10 +2459,10 @@ class DataWeaveRuntime:
         fs: Any,
         reader_inputs: Any = None,
         input_values: Any = None,
-        configuration: Any = None,  # noqa: ARG002
+        configuration: Any = None,
         *,
-        execution_context: Optional[EvaluationContext] = None,
-    ) -> Dict[str, Any]:
+        execution_context: EvaluationContext | None = None,
+    ) -> dict[str, Any]:
         result = self._execute_embedded_script(
             file_to_execute,
             fs,
@@ -2482,15 +2490,15 @@ class DataWeaveRuntime:
         reader_inputs: Any,
         input_values: Any,
         *,
-        execution_context: Optional[EvaluationContext] = None,
-    ) -> Dict[str, Any]:
+        execution_context: EvaluationContext | None = None,
+    ) -> dict[str, Any]:
         try:
             script_name = str(file_to_execute)
             if not isinstance(fs, Mapping) or script_name not in fs:
                 raise FileNotFoundError(f"Unable to resolve script '{script_name}'")
             script_source = fs[script_name]
             payload = {}
-            vars_context: Dict[str, Any] = (
+            vars_context: dict[str, Any] = (
                 dict(execution_context.variables) if execution_context is not None else {}
             )
             if isinstance(reader_inputs, Mapping):
@@ -2510,7 +2518,7 @@ class DataWeaveRuntime:
                 render_output=False,
             )
             return {"success": True, "result": result}
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 - run returns script failures as structured values
             return {
                 "success": False,
                 "error": {
@@ -2553,7 +2561,7 @@ class DataWeaveRuntime:
                     return candidate.read_bytes()
             raise FileNotFoundError(f"Classpath resource not found: {resource}")
         if parsed.scheme in {"http", "https"}:
-            with urlopen(resource) as response:  # noqa: S310
+            with urlopen(resource) as response:
                 return response.read()
         if parsed.scheme == "file":
             return Path(parsed.path).read_bytes()
@@ -2608,8 +2616,8 @@ class DataWeaveRuntime:
         left: Any,
         right: Any,
         *,
-        line: Optional[int] = None,
-        column: Optional[int] = None,
+        line: int | None = None,
+        column: int | None = None,
     ) -> Any:
         left = self._coerce_temporal_operand(left)
         right = self._coerce_temporal_operand(right)
@@ -2617,7 +2625,7 @@ class DataWeaveRuntime:
             left_num = float(left)
             right_num = float(right)
             result = left_num + right_num
-            return int(result) if result.is_integer() else result
+            return int(result) if isinstance(result, float) and result.is_integer() else result
 
         if isinstance(left, list):
             result_list = list(left)
@@ -2646,8 +2654,8 @@ class DataWeaveRuntime:
         left: Any,
         right: Any,
         *,
-        line: Optional[int] = None,
-        column: Optional[int] = None,
+        line: int | None = None,
+        column: int | None = None,
     ) -> Any:
         left = self._coerce_temporal_operand(left)
         right = self._coerce_temporal_operand(right)
@@ -2655,7 +2663,7 @@ class DataWeaveRuntime:
             left_num = float(left)
             right_num = float(right)
             result = left_num - right_num
-            return int(result) if result.is_integer() else result
+            return int(result) if isinstance(result, float) and result.is_integer() else result
 
         if isinstance(left, (datetime, date, time)) and self._is_period_value(right):
             return self._add_temporal_and_period(left, self._negate_period_value(right))
@@ -2776,7 +2784,7 @@ class DataWeaveRuntime:
             return 1
         return 0
 
-    def _normalize_temporal_comparison(self, left: Any, right: Any) -> Optional[Tuple[Any, Any]]:
+    def _normalize_temporal_comparison(self, left: Any, right: Any) -> tuple[Any, Any] | None:
         if isinstance(left, (date, datetime)) and isinstance(right, (date, datetime)):
             left_dt = self._temporal_to_comparable_datetime(left)
             right_dt = self._temporal_to_comparable_datetime(right)
@@ -2810,7 +2818,7 @@ class DataWeaveRuntime:
         return (left or 0) / (right or 1)
 
     @staticmethod
-    def _to_iterable(value: Any) -> List[Any]:
+    def _to_iterable(value: Any) -> list[Any]:
         if value is None:
             return []
         if isinstance(value, list):
@@ -2831,9 +2839,9 @@ class DataWeaveRuntime:
 
         return constant_callable
 
-    def _func_infix_map(self, sequence: Any, function: Callable[..., Any]) -> List[Any]:
+    def _func_infix_map(self, sequence: Any, function: Callable[..., Any]) -> list[Any]:
         callable_function = self._prepare_sequence_callable(function)
-        result: List[Any] = []
+        result: list[Any] = []
         for index, item in enumerate(self._to_iterable(sequence)):
             result.append(builtins.invoke_lambda(callable_function, item, index))
         return result
@@ -2843,11 +2851,14 @@ class DataWeaveRuntime:
         has_default, accumulator = self._reduce_default_accumulator(function)
         if not iterable:
             return accumulator if has_default else None
-        if not has_default and self._is_implicit_integer_sum_reducer(function):
-            if all(type(item) is int for item in iterable):
-                absolute_sum = sum(map(abs, iterable))
-                if absolute_sum <= 2**53:
-                    return sum(iterable)
+        if (
+            not has_default
+            and self._is_implicit_integer_sum_reducer(function)
+            and all(type(item) is int for item in iterable)
+        ):
+            absolute_sum = sum(map(abs, iterable))
+            if absolute_sum <= 2**53:
+                return sum(iterable)
         start_index = 0
         if not has_default:
             accumulator = iterable[0]
@@ -2876,7 +2887,7 @@ class DataWeaveRuntime:
             and right.level == 2
         )
 
-    def _reduce_default_accumulator(self, function: Callable[..., Any]) -> Tuple[bool, Any]:
+    def _reduce_default_accumulator(self, function: Callable[..., Any]) -> tuple[bool, Any]:
         parameters = getattr(function, "parameters", None)
         if not parameters or len(parameters) < 2:
             return False, Missing
@@ -2903,29 +2914,29 @@ class DataWeaveRuntime:
             return True, self._evaluate(default_expr, default_ctx)
         return False, Missing
 
-    def _func_infix_filter(self, sequence: Any, function: Callable[..., Any]) -> List[Any]:
+    def _func_infix_filter(self, sequence: Any, function: Callable[..., Any]) -> list[Any]:
         callable_function = self._prepare_sequence_callable(function)
-        result: List[Any] = []
+        result: list[Any] = []
         for index, item in enumerate(self._to_iterable(sequence)):
             if self._is_truthy(builtins.invoke_lambda(callable_function, item, index)):
                 result.append(item)
         return result
 
-    def _func_infix_flat_map(self, sequence: Any, function: Callable[..., Any]) -> List[Any]:
+    def _func_infix_flat_map(self, sequence: Any, function: Callable[..., Any]) -> list[Any]:
         callable_function = self._prepare_sequence_callable(function)
-        result: List[Any] = []
+        result: list[Any] = []
         for index, item in enumerate(self._to_iterable(sequence)):
             mapped = builtins.invoke_lambda(callable_function, item, index)
             result.extend(self._to_iterable(mapped))
         return result
 
-    def _func_infix_distinct_by(self, sequence: Any, function: Callable[..., Any]) -> List[Any]:
+    def _func_infix_distinct_by(self, sequence: Any, function: Callable[..., Any]) -> list[Any]:
         callable_function = self._prepare_sequence_callable(function) if function is not None else None
         items = list(self._to_iterable(sequence))
         if callable_function is None:
             return items
         seen = []
-        result: List[Any] = []
+        result: list[Any] = []
         for index, item in enumerate(items):
             key = builtins.invoke_lambda(callable_function, item, index)
             marker = builtins._hashable_key(key)
@@ -2934,7 +2945,7 @@ class DataWeaveRuntime:
                 result.append(item)
         return result
 
-    def _func_infix_to(self, start: Any, end: Any) -> List[Any]:
+    def _func_infix_to(self, start: Any, end: Any) -> list[Any]:
         return builtins.builtin_to(start, end)
 
     @staticmethod
@@ -2969,8 +2980,8 @@ class DataWeaveRuntime:
     def _call_sequence_lambda(self, function: Callable[..., Any], item: Any, index: int) -> Any:
         return builtins.invoke_lambda(function, item, index)
 
-    def _collect_placeholders(self, expr: parser.Expression) -> Set[int]:
-        placeholders: Set[int] = set()
+    def _collect_placeholders(self, expr: parser.Expression) -> set[int]:
+        placeholders: set[int] = set()
 
         def visit(node: parser.Expression) -> None:
             if isinstance(node, parser.Placeholder):
@@ -3059,13 +3070,13 @@ class DataWeaveRuntime:
         visit(expr)
         return placeholders
 
-    def _resolve_placeholder_argument_indexes(self, function_expr: parser.Expression) -> Tuple[int, ...]:
+    def _resolve_placeholder_argument_indexes(self, function_expr: parser.Expression) -> tuple[int, ...]:
         if isinstance(function_expr, parser.Identifier):
             return self._IMPLICIT_LAMBDA_ARGUMENTS.get(function_expr.name, ())
         return ()
 
-    def _resolve_imports(self, imports: List[parser.ImportDirective]) -> Dict[str, Callable[..., Any]]:
-        resolved: Dict[str, Callable[..., Any]] = {}
+    def _resolve_imports(self, imports: list[parser.ImportDirective]) -> dict[str, Callable[..., Any]]:
+        resolved: dict[str, Callable[..., Any]] = {}
         for directive in imports:
             try:
                 names_part, module_part = directive.raw.split(" from ", 1)
@@ -3097,7 +3108,7 @@ class DataWeaveRuntime:
                     resolved[alias] = exports[original]
         return resolved
 
-    def _runtime_module_exports(self, module: str) -> Dict[str, Callable[..., Any]]:
+    def _runtime_module_exports(self, module: str) -> dict[str, Callable[..., Any]]:
         if module != "dw::Runtime":
             return {}
         return {
@@ -3109,7 +3120,7 @@ class DataWeaveRuntime:
             "version": self._func_version,
         }
 
-    def _load_module_exports(self, module: str) -> Dict[str, Callable[..., Any]]:
+    def _load_module_exports(self, module: str) -> dict[str, Callable[..., Any]]:
         module_path = MODULE_BASE_PATH / (module.replace("::", "/") + ".dwl")
         if not module_path.exists():
             return {}
@@ -3130,7 +3141,7 @@ class DataWeaveRuntime:
             LOGGER.warning("Failed to load module %s", module, exc_info=True)
             return {}
         if isinstance(result, dict):
-            exports: Dict[str, Callable[..., Any]] = {}
+            exports: dict[str, Callable[..., Any]] = {}
             for key, value in result.items():
                 resolved_callable = self._normalise_module_export(value)
                 if resolved_callable is not None:
@@ -3139,15 +3150,15 @@ class DataWeaveRuntime:
         return {}
 
     @staticmethod
-    def _transform_module_source(source: str) -> Optional[str]:
-        cleaned = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
+    def _transform_module_source(source: str) -> str | None:
+        cleaned = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
         cleaned = re.sub(r"//.*", "", cleaned)
         cleaned = re.sub(r"(?m)^\s*@.*$", "", cleaned)
         pattern = re.compile(
             r"^fun\s+([A-Za-z0-9_]+)(?:\s*<[^>]*>)?\s*\((.*?)\)\s*(?::[^=]+)?=\s*((?:.|\n)*?)(?=^fun\s+|\Z)",
             re.MULTILINE,
         )
-        functions_map: Dict[str, List[Tuple[List[str], List[Optional[str]], str]]] = {}
+        functions_map: dict[str, list[tuple[list[str], list[str | None], str]]] = {}
         for match in pattern.finditer(cleaned):
             name = match.group(1)
             params_chunk = match.group(2) or ""
@@ -3167,10 +3178,10 @@ class DataWeaveRuntime:
             overloads.append((param_names, param_types, simplified_body))
         if not functions_map:
             return None
-        header_lines: List[str] = ["%dw 2.0"]
-        export_entries: List[str] = []
+        header_lines: list[str] = ["%dw 2.0"]
+        export_entries: list[str] = []
         for name, overloads in functions_map.items():
-            overload_entries: List[str] = []
+            overload_entries: list[str] = []
             for index, (param_names, param_types, body) in enumerate(overloads):
                 native_id = DataWeaveRuntime._extract_native_identifier(body)
                 if native_id is not None:
@@ -3186,7 +3197,7 @@ class DataWeaveRuntime:
                         )
                     else:
                         header_lines.append(f"var {name}__overload_{index} = () -> {body}")
-                types_expr_parts: List[str] = []
+                types_expr_parts: list[str] = []
                 for type_spec in param_types:
                     if not type_spec:
                         types_expr_parts.append("null")
@@ -3202,7 +3213,7 @@ class DataWeaveRuntime:
         return script
 
     @staticmethod
-    def _extract_native_identifier(body: str) -> Optional[str]:
+    def _extract_native_identifier(body: str) -> str | None:
         match = re.fullmatch(r"native\(\s*(['\"])([^'\"]+)\1\s*\)", body.strip())
         if match is None:
             return None
@@ -3233,11 +3244,11 @@ class DataWeaveRuntime:
         return f'"{escaped}"'
 
     @staticmethod
-    def _parse_parameters(params_chunk: str) -> Tuple[List[str], List[Optional[str]]]:
+    def _parse_parameters(params_chunk: str) -> tuple[list[str], list[str | None]]:
         if not params_chunk.strip():
             return [], []
-        parts: List[str] = []
-        current: List[str] = []
+        parts: list[str] = []
+        current: list[str] = []
         depth = 0
         for char in params_chunk:
             if char == "(":
@@ -3256,8 +3267,8 @@ class DataWeaveRuntime:
             part = "".join(current).strip()
             if part:
                 parts.append(part)
-        names: List[str] = []
-        types: List[Optional[str]] = []
+        names: list[str] = []
+        types: list[str | None] = []
         for part in parts:
             cleaned = re.sub(r"@[\w:<>]+(?:\([^)]*\))?", "", part).strip()
             if not cleaned:
@@ -3273,14 +3284,14 @@ class DataWeaveRuntime:
             types.append(type_spec)
         return names, types
 
-    def _normalise_module_export(self, value: Any) -> Optional[Callable[..., Any]]:
+    def _normalise_module_export(self, value: Any) -> Callable[..., Any] | None:
         if callable(value):
             return value
         if isinstance(value, list):
-            overloads: List[Tuple[Optional[List[Optional[str]]], Callable[..., Any]]] = []
+            overloads: list[tuple[list[str | None] | None, Callable[..., Any]]] = []
             for entry in value:
-                function: Optional[Callable[..., Any]]
-                param_types: Optional[List[Optional[str]]]
+                function: Callable[..., Any] | None
+                param_types: list[str | None] | None
                 if isinstance(entry, Mapping):
                     function = entry.get("function")
                     if not callable(function):
@@ -3306,7 +3317,7 @@ class DataWeaveRuntime:
         return None
 
     def _build_overload_dispatcher(
-        self, overloads: List[Tuple[Optional[List[Optional[str]]], Callable[..., Any]]]
+        self, overloads: list[tuple[list[str | None] | None, Callable[..., Any]]]
     ) -> Callable[..., Any]:
         def dispatcher(*args: Any) -> Any:
             for param_types, function in overloads:
@@ -3320,8 +3331,8 @@ class DataWeaveRuntime:
     def _arguments_match(
         self,
         function: Callable[..., Any],
-        param_types: Optional[List[Optional[str]]],
-        args: Tuple[Any, ...],
+        param_types: list[str | None] | None,
+        args: tuple[Any, ...],
     ) -> bool:
         expected_count = self._function_parameter_count(function)
         if expected_count is not None and expected_count != len(args):
@@ -3338,7 +3349,7 @@ class DataWeaveRuntime:
         return True
 
     @staticmethod
-    def _function_parameter_count(function: Callable[..., Any]) -> Optional[int]:
+    def _function_parameter_count(function: Callable[..., Any]) -> int | None:
         count = builtins.parameter_count(function)
         if count is not None:
             return count
@@ -3411,7 +3422,7 @@ class DataWeaveRuntime:
             return all(self._evaluate_type_check(value, option, ctx) for option in type_spec.options)
         if not isinstance(type_spec, parser.ReferenceTypeSpec):
             return False
-        for definition in ctx.header.types:
+        for definition in ctx.header.types if ctx.header is not None else ():
             if definition.name == type_spec.name:
                 return self._evaluate_type_check(value, definition.type, ctx)
         type_name = type_spec.name.lower()
@@ -3444,6 +3455,8 @@ class DataWeaveRuntime:
         options: Any,
         ctx: EvaluationContext,
     ) -> Any:
+        if not isinstance(type_spec, parser.ReferenceTypeSpec):
+            return value
         target_name = (type_spec.name or "Any").strip()
         normalised = target_name.lower()
         if normalised == "null":
@@ -3516,7 +3529,7 @@ class DataWeaveRuntime:
             ),
         )
 
-    def _coerce_string(self, value: Any, options: Any = None) -> Optional[str]:
+    def _coerce_string(self, value: Any, options: Any = None) -> str | None:
         if value is None:
             return None
         format_pattern = self._extract_format_pattern(options)
@@ -3570,7 +3583,7 @@ class DataWeaveRuntime:
         raise TypeError(f"Cannot coerce {type(value).__name__} to Time")
 
     @staticmethod
-    def _extract_format_pattern(options: Any) -> Optional[str]:
+    def _extract_format_pattern(options: Any) -> str | None:
         if not isinstance(options, Mapping):
             return None
         raw_pattern = options.get("format")
@@ -3579,7 +3592,7 @@ class DataWeaveRuntime:
         return str(raw_pattern)
 
     @staticmethod
-    def _extract_option_string(options: Any, key: str) -> Optional[str]:
+    def _extract_option_string(options: Any, key: str) -> str | None:
         if not isinstance(options, Mapping):
             return None
         raw_value = options.get(key)
@@ -3658,7 +3671,7 @@ class DataWeaveRuntime:
 
     def _format_temporal_as_string(self, value: Any, pattern: str) -> str:
         temporal_value = self._to_datetime_for_format(value)
-        result: List[str] = []
+        result: list[str] = []
         index = 0
         in_literal = False
         while index < len(pattern):
@@ -3752,7 +3765,7 @@ class DataWeaveRuntime:
         return token_char * token_length
 
     @staticmethod
-    def _coerce_boolean(value: Any) -> Optional[bool]:
+    def _coerce_boolean(value: Any) -> bool | None:
         if value is None:
             return None
         if isinstance(value, bool):
@@ -3819,14 +3832,14 @@ class DataWeaveRuntime:
     def _coerce_array(
         self,
         value: Any,
-        generics: List[parser.TypeSpec],
+        generics: list[parser.TypeSpec],
         options: Any,
         ctx: EvaluationContext,
-    ) -> List[Any]:
+    ) -> list[Any]:
         iterable = self._to_iterable(value)
         if not generics:
             return list(iterable)
-        coerced: List[Any] = []
+        coerced: list[Any] = []
         inner_type = generics[0]
         for item in iterable:
             coerced.append(self._coerce_value(item, inner_type, options, ctx))
@@ -3835,13 +3848,13 @@ class DataWeaveRuntime:
     def _coerce_object(
         self,
         value: Any,
-        generics: List[parser.TypeSpec],
+        generics: list[parser.TypeSpec],
         options: Any,
         ctx: EvaluationContext,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         if not isinstance(value, Mapping):
             raise TypeError(f"Cannot coerce {type(value).__name__} to Object")
-        result: Dict[str, Any] = {}
+        result: dict[str, Any] = {}
         if generics:
             inner_type = generics[0]
             for key, item in value.items():
@@ -3898,7 +3911,7 @@ class DataWeaveRuntime:
         return source[:body_start].count("\n")
 
     def _evaluate_string_literal(self, template: str, ctx: EvaluationContext) -> str:
-        result: List[str] = []
+        result: list[str] = []
         i = 0
         length = len(template)
         while i < length:
@@ -3933,8 +3946,8 @@ class DataWeaveRuntime:
     def _format_error_message(
         source: str,
         message: str,
-        line: Optional[int],
-        column: Optional[int],
+        line: int | None,
+        column: int | None,
         length: int = 1,
         location: str = "main",
     ) -> str:

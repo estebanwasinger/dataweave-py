@@ -6,7 +6,6 @@ import pytest
 from dwpy.formats import DWObject, FormatRegistry
 from dwpy.runtime import DataWeaveEvaluationError, DataWeaveRuntime
 
-
 PAYLOAD = '''{
   "test": {
     "test2": {"array": 1},
@@ -119,6 +118,7 @@ def test_rust_xml_writer_supports_implicit_root_object():
         "<test2><array>2</array></test2>"
         "<test2><array>3</array></test2></root>"
     )
+    assert runtime._rust_runtime is not None
     assert runtime._rust_runtime.last_execution_engine() == "rust-core"
 
 
@@ -153,6 +153,7 @@ def test_duplicate_xml_children_preserve_order_nested_values_and_attributes(runt
     assert root[0].text == "<one>"
     assert root[1].text is None
     assert [(child.tag, child.text) for child in root[2]] == [("part", "1"), ("part", "2")]
+    assert root[3].text is not None
     assert root[3].text.lower() == "true"
 
 

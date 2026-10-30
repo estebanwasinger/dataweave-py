@@ -1,16 +1,16 @@
 import json
 import os
 import re
-from pathlib import Path
 import textwrap
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 import pandas as pd
 import pytest
 import yaml
 
-import dwpy.parser as parser
-from dwpy.runtime import DataWeaveRuntime, DataWeaveEvaluationError
+from dwpy import parser
+from dwpy.runtime import DataWeaveEvaluationError, DataWeaveRuntime
 
 
 class PythonResultRuntime(DataWeaveRuntime):
@@ -1068,7 +1068,7 @@ output application/python
 def test_every_named_core_function_is_available_by_default():
     runtime = DataWeaveRuntime()
     core_source = (Path(__file__).parents[1] / "dwpy/modules/dw/Core.dwl").read_text()
-    core_function_names = set(re.findall(r"^fun\s+([A-Za-z0-9_]+)", core_source, re.M))
+    core_function_names = set(re.findall(r"^fun\s+([A-Za-z0-9_]+)", core_source, re.MULTILINE))
 
     assert sorted(core_function_names - runtime._builtins.keys()) == []
 

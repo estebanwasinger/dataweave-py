@@ -6,10 +6,10 @@ import argparse
 import json
 import os
 import re
-import tomllib
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Mapping
 
+import tomllib  # ty: ignore[unresolved-import] - release workflows use Python 3.12
 
 _SEMVER = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 
@@ -20,11 +20,11 @@ def parse_version(value: str) -> tuple[int, int, int]:
         raise ValueError(
             f"Expected a stable SemVer version in MAJOR.MINOR.PATCH form, got {value!r}"
         )
-    return tuple(int(part) for part in match.groups())
+    return int(match.group(1)), int(match.group(2)), int(match.group(3))
 
 
 def normalize_release_tag(tag: str) -> str:
-    version = tag[1:] if tag.startswith("v") else tag
+    version = tag.removeprefix("v")
     parse_version(version)
     return version
 
@@ -38,7 +38,7 @@ def read_pyproject_version(path: Path) -> str:
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     version = data["project"]["version"]
     if not isinstance(version, str):
-        raise ValueError(f"Expected a static project version in {path}")
+        raise ValueError(f"Expected a static project version in {path}")  # noqa: TRY004 - version validation uses ValueError
     parse_version(version)
     return version
 
@@ -76,7 +76,7 @@ def read_npm_version(path: Path) -> str:
     data = json.loads(path.read_text(encoding="utf-8"))
     version = data["version"]
     if not isinstance(version, str):
-        raise ValueError(f"Expected a string package version in {path}")
+        raise ValueError(f"Expected a string package version in {path}")  # noqa: TRY004 - version validation uses ValueError
     parse_version(version)
     return version
 

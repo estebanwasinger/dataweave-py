@@ -6,15 +6,16 @@ import os
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import pytest
-
-from dwpy.runtime import DataWeaveRuntime
 from jwt_support import RSA_PRIVATE_KEY, verify_rsa_token
 
+from dwpy.runtime import DataWeaveRuntime
+
+UTC = timezone.utc
 
 DOCS_ROOT = Path(
     os.environ.get(
@@ -616,10 +617,7 @@ def _payload_from_source_block(
     heading = text[max(0, block.start - 500) : block.start].lower()
     headings = re.findall(r"(?m)^=+\s+(.+?)\s*$", heading)
     nearest_heading = headings[-1] if headings else ""
-    if not (
-        nearest_heading.startswith("input")
-        or nearest_heading.startswith("payload")
-    ):
+    if not nearest_heading.startswith(("input", "payload")):
         return None, None
     if block.language == "json":
         try:
@@ -676,6 +674,7 @@ def _inline_json_examples() -> list[OfficialDocExample]:
                     break
             if output_block is None:
                 continue
+            assert output_index is not None
             try:
                 expected = _json_value(output_block.code)
             except json.JSONDecodeError:
@@ -856,6 +855,8 @@ def _matches_dynamic_expected(example_id: str, result: Any, expected: Any) -> bo
             return False
         expected_epoch = int(now_value.timestamp())
         clock_hour = now_value.hour % 12 or 12
+        offset = now_value.utcoffset()
+        assert offset is not None
         return (
             result["epochTime"] == expected_epoch
             and result["nanoseconds"] == now_value.microsecond * 1000
@@ -869,7 +870,7 @@ def _matches_dynamic_expected(example_id: str, result: Any, expected: Any) -> bo
             and result["quarter"] == ((now_value.month - 1) // 3) + 1
             and result["dayOfWeek"] == now_value.isoweekday()
             and result["dayOfYear"] == int(now_value.strftime("%j"))
-            and result["offsetSeconds"] == int(now_value.utcoffset().total_seconds())
+            and result["offsetSeconds"] == int(offset.total_seconds())
             and result["formattedDate"] == f"{now_value.year:04}-{now_value.month:02}-{now_value.day:02}"
             and result["formattedTime"] == f"{clock_hour:02}:{now_value.minute:02}:{now_value.second:02}"
         )

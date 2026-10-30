@@ -1,11 +1,11 @@
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any, cast
 
 import pytest
 
 from dwpy import DataWeaveRuntime, LogEntry
-
 
 BACKENDS = ["python", "rust", "wasm"]
 
@@ -44,7 +44,7 @@ fun inspect(value) = logError(log("prefix", "outer"), logInfo("inner", value))
 def test_logs_before_error_are_delivered_and_next_run_is_isolated(backend):
     entries = []
     runtime = DataWeaveRuntime(backend=backend, loggers=[entries.append])
-    with pytest.raises(Exception):
+    with pytest.raises(RuntimeError, match="boom"):
         runtime.execute('import fail from dw::Runtime\noutput application/json\n---\n[log("before"), fail("boom")]', None)
     assert entries == [LogEntry("warn", None, "before")]
     DataWeaveRuntime(backend=backend, loggers=[]).execute('log("other")', None)
@@ -78,6 +78,7 @@ def test_auto_fallback_does_not_deliver_logs_from_both_attempts():
     runtime = DataWeaveRuntime(backend="auto", loggers=[entries.append])
     # The second function is Python-only, so Rust falls back after logging.
     assert runtime.execute('[log("once"), isLegacySizeOfNumber()]', None) == ["once", False]
+    assert runtime._rust_runtime is not None
     assert runtime._rust_runtime.last_execution_engine() == "python-legacy"
     assert entries == [LogEntry("warn", None, "once")]
 
@@ -99,7 +100,7 @@ def test_concurrent_engines_and_reentrant_sinks_are_isolated(backend):
 
 def test_logger_configuration_is_validated():
     with pytest.raises(TypeError, match="loggers must contain"):
-        DataWeaveRuntime(loggers=[object()])
+        DataWeaveRuntime(loggers=[cast(Any, object())])
 
 
 @pytest.mark.parametrize("backend", BACKENDS)

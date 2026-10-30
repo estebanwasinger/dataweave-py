@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import cast
 
 from lsprotocol import types
 
-from dwpy.lsp.engine import EngineCompletionItem
 from dwpy.lsp import server as lsp_server
+from dwpy.lsp.engine import EngineCompletionItem
 
 
 def test_uri_to_path_handles_file_uri() -> None:
@@ -36,7 +37,7 @@ def test_completion_handler_maps_engine_items(monkeypatch) -> None:
         position=types.Position(line=0, character=8),
     )
 
-    result = lsp_server.completion(fake_ls, params)
+    result = lsp_server.completion(cast(lsp_server.DataWeaveLanguageServer, fake_ls), params)
     assert isinstance(result, types.CompletionList)
     assert result.items
     assert result.items[0].label == "name"
@@ -55,7 +56,7 @@ def test_completion_handler_preserves_explicit_namespace_replacement(monkeypatch
         text_document=types.TextDocumentIdentifier(uri="file:///tmp/sample.dwl"),
         position=types.Position(line=0, character=8),
     )
-    item = lsp_server.completion(fake_ls, params).items[0]
+    item = lsp_server.completion(cast(lsp_server.DataWeaveLanguageServer, fake_ls), params).items[0]
     assert item.text_edit == types.TextEdit(
         range=types.Range(start=types.Position(line=0, character=0), end=types.Position(line=0, character=8)),
         new_text="Text::upper(${1:text})",

@@ -160,7 +160,7 @@ def test_completion_chooses_prefix_or_infix_from_expression_context() -> None:
         script, line, column = _cursor(source)
         items = [item for item in engine.complete(script=script, line=line, column=column) if item.label == label]
         assert items, source
-        assert all(item.insert_text.startswith(expected) for item in items), source
+        assert all((item.insert_text or "").startswith(expected) for item in items), source
 
 
 def test_completion_uses_lambda_snippets_for_higher_order_operators() -> None:
@@ -340,7 +340,7 @@ payload.user.<cursor>name
 def test_lsp_field_resolution_can_use_rust_type_descriptors(monkeypatch) -> None:
     import dwpy.lsp.engine as lsp_engine
 
-    def fail_python_property_resolution(*args, **kwargs):  # noqa: ANN002, ANN003
+    def fail_python_property_resolution(*args, **kwargs):
         raise AssertionError("Python property resolver should not be needed")
 
     monkeypatch.setattr(lsp_engine, "_resolve_property_type", fail_python_property_resolution)
@@ -368,7 +368,7 @@ payload.user.<cursor>
 def test_lsp_index_resolution_can_use_rust_type_descriptors(monkeypatch) -> None:
     import dwpy.lsp.engine as lsp_engine
 
-    def fail_python_index_resolution(*args, **kwargs):  # noqa: ANN002, ANN003
+    def fail_python_index_resolution(*args, **kwargs):
         raise AssertionError("Python index resolver should not be needed")
 
     monkeypatch.setattr(lsp_engine, "_resolve_index_type", fail_python_index_resolution)
@@ -459,7 +459,7 @@ fun multiply(number) = multiply(number,number)
     items = [i for i in engine.complete(script=script, line=line, column=column) if i.label == "multiply"]
     assert len(items) == 3
     assert all(i.kind == "function" for i in items)
-    assert {i.detail.replace(" : ", ": ") for i in items} == {"multiply(number)", "multiply(number, multiplier: Number)", "multiply(number, multiplier: String)"}
+    assert {(i.detail or "").replace(" : ", ": ") for i in items} == {"multiply(number)", "multiply(number, multiplier: Number)", "multiply(number, multiplier: String)"}
     assert {i.insert_text for i in items} == {"multiply(${1:number})", "multiply(${1:number}, ${2:multiplier})"}
 
 

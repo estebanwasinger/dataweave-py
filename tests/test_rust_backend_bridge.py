@@ -5,6 +5,7 @@ import os
 import textwrap
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any, Protocol, cast
 
 import pandas as pd
 import pytest
@@ -12,8 +13,7 @@ import yaml
 
 from dwpy.runtime import DataWeaveRuntime
 from dwpy.type_inference import infer_script_type
-from dwpy.typesystem import ArrayType, ObjectType, STRING
-
+from dwpy.typesystem import STRING, ArrayType, ObjectType
 
 BACKEND_CONTRACT_TEST = pytest.mark.skipif(
     os.environ.get("DWPY_TEST_BACKEND") is not None,
@@ -25,6 +25,19 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+class NativeRuntime(Protocol):
+    def last_execution_engine(self) -> str: ...
+
+    def infer_type_descriptor(self, script_source: str, **kwargs: Any) -> dict[str, Any]: ...
+
+    def execute_smoke_json(self, script_source: str, payload_json: str) -> str: ...
+
+
+def _native_runtime(runtime: DataWeaveRuntime) -> NativeRuntime:
+    assert runtime._rust_runtime is not None
+    return cast(NativeRuntime, runtime._rust_runtime)
+
+
 @BACKEND_CONTRACT_TEST
 def test_default_runtime_uses_rust_backend_bridge() -> None:
     runtime = DataWeaveRuntime()
@@ -32,7 +45,7 @@ def test_default_runtime_uses_rust_backend_bridge() -> None:
     assert runtime.active_backend == "rust"
     assert "rust-core-evaluator" in runtime.capabilities()
     assert runtime.execute("payload.name", {"name": "dw"}) == "dw"
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 @BACKEND_CONTRACT_TEST
@@ -48,9 +61,9 @@ def test_auto_backend_falls_back_only_when_rust_extension_is_unavailable(monkeyp
     import dwpy.runtime as runtime_module
 
     def fail_to_create_rust_runtime(
-        enable_module_imports: bool,  # noqa: ARG001
+        enable_module_imports: bool,
         *,
-        allow_legacy_fallback: bool,  # noqa: ARG001
+        allow_legacy_fallback: bool,
     ):
         raise ImportError("simulated missing extension")
 
@@ -89,7 +102,7 @@ def test_explicit_rust_backend_is_strict_for_unsupported_features() -> None:
         )
         == "Lisbon"
     )
-    assert auto_runtime._rust_runtime.last_execution_engine() == "python-legacy"
+    assert _native_runtime(auto_runtime).last_execution_engine() == "python-legacy"
 
 
 def test_rust_bridge_preserves_python_value_roundtrip() -> None:
@@ -108,7 +121,7 @@ output application/python
         script,
         {"user": {"name": "Ana", "tags": ["a", "b"], "active": True}},
     ) == {"name": "Ana", "tags": ["a", "b"], "active": True}
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_normalizes_dataframe_inputs_in_core() -> None:
@@ -138,7 +151,7 @@ output application/python
         "payloadCities": ["London", "Berlin"],
         "varNames": ["ALICE", "BOB"],
     }
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_json_indent_output_in_core() -> None:
@@ -157,7 +170,7 @@ output application/json indent=2
     )
     assert json.loads(result) == {"name": "legacy"}
     assert result.count("\n") > 1
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_json_writer_options_in_core() -> None:
@@ -171,7 +184,7 @@ output application/json indent=4 sort_keys=true ensure_ascii=true
     result = runtime.execute(script, {"word": "niño"})
 
     assert result == '{\n    "a": "caf\\u00e9",\n    "z": "ni\\u00f1o"\n}'
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_evaluates_simple_dynamic_core_expressions() -> None:
@@ -194,7 +207,7 @@ def test_rust_bridge_evaluates_simple_dynamic_core_expressions() -> None:
     )
     assert isinstance(random_int, int)
     assert 0 <= random_int < 1233
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_ignores_comments_in_core() -> None:
@@ -222,7 +235,7 @@ var greeting = "DataWeave"
         "greeting": "DataWeave",
         "literal": "not // a comment",
     }
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_operators_and_indexing_in_core() -> None:
@@ -253,7 +266,7 @@ output application/python
         "first": "first",
         "eligible": "yes",
     }
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_primitive_coercions_in_core() -> None:
@@ -283,7 +296,7 @@ output application/python
         "nowDateSize": 10,
         "mapped": ["1-x", "2-x", "3-x"],
     }
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_string_interpolation_in_core() -> None:
@@ -318,7 +331,7 @@ var suffix = upper(vars.suffix)
         "defaulted": "Guest: anonymous",
         "nullValue": "Value: ",
     }
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_simple_header_functions_in_core() -> None:
@@ -353,7 +366,7 @@ fun normalize(value): Number = value as Number
         "custom": "Custom: SPECIAL",
         "normalized": 12.5,
     }
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_function_references_in_core() -> None:
@@ -369,7 +382,7 @@ applyEach(up, payload.names)
     result = runtime.execute(script, {"names": ["a", "b"]})
 
     assert json.loads(result) == ["A", "B"]
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_supported_import_aliases_in_core() -> None:
@@ -393,7 +406,7 @@ import keysOf, valuesOf from dw::core::Objects
         "keys": ["a", "b"],
         "values": [1, 2],
     }
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_null_safe_selectors_in_core() -> None:
@@ -410,11 +423,11 @@ var city = payload.user?.address?.city default "UNKNOWN"
 
     missing = runtime.execute(script, {})
     assert json.loads(missing) == {"city": "UNKNOWN", "quoted": "UNKNOWN"}
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
     present = runtime.execute(script, {"user": {"address": {"city": "Madrid"}, "value 2": "s"}})
     assert json.loads(present) == {"city": "Madrid", "quoted": "s"}
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_match_expressions_in_core() -> None:
@@ -445,7 +458,7 @@ output application/json
         "bucket": "large",
         "boolCase": 1,
     }
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
     other = runtime.execute(script, {"status": "other", "total": 40, "flag": False})
     assert json.loads(other) == {
@@ -453,7 +466,7 @@ output application/json
         "bucket": "small",
         "boolCase": 0,
     }
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_representative_fixture_in_core() -> None:
@@ -482,7 +495,7 @@ def test_rust_bridge_executes_representative_fixture_in_core() -> None:
         "reference": 1,
         "generatedAt": "2024-01-01T00:00:00Z",
     }
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_numeric_and_empty_helpers_in_core() -> None:
@@ -536,7 +549,7 @@ output application/json
         "decimalValue": True,
         "integerValue": False,
     }
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_negation_and_simple_matches_in_core() -> None:
@@ -575,7 +588,7 @@ output application/json
         "alpha": True,
         "literal": True,
     }
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_collection_object_helpers_in_core() -> None:
@@ -628,7 +641,7 @@ var key = "name"
         ],
         "dynamic": "Ana",
     }
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_string_helpers_in_core() -> None:
@@ -728,7 +741,7 @@ output application/json
         "wrapped": "'ab'",
         "wrappedMissing": "/a/b/c/",
     }
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_ranges_slices_and_difference_in_core() -> None:
@@ -771,7 +784,7 @@ output application/json
         "arrayPlusArray": [2, [2]],
         "arrayPlusScalar": [2, 2],
     }
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_descendant_selectors_in_core() -> None:
@@ -810,7 +823,7 @@ output application/python
             {"name": "Nested"},
         ],
     }
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_map_filter_and_lambdas_in_core() -> None:
@@ -843,7 +856,7 @@ output application/python
             {"name": "C", "id": 2},
         ],
     }
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_reduce_in_core() -> None:
@@ -866,7 +879,7 @@ output application/python
             "names": ["a", "b"],
         },
     ) == {"total": 11, "joined": "AB", "product": 18, "empty": 7}
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_flat_map_and_group_by_in_core() -> None:
@@ -903,7 +916,7 @@ output application/python
             "b": [{"id": 2, "kind": "b", "tags": ["z"]}],
         },
     }
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_distinct_by_and_order_by_in_core() -> None:
@@ -940,7 +953,7 @@ output application/python
             {"kind": "b", "score": 5},
         ],
     }
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_object_transforms_in_core() -> None:
@@ -960,7 +973,7 @@ output application/python
         "mapped": {"A": 1, "B": 3, "C": 5},
         "filtered": {"b": 2},
     }
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_object_merge_and_array_property_selectors_in_core() -> None:
@@ -995,7 +1008,7 @@ output application/python
         "books": [{"title": "A"}, {"title": "B"}],
         "mappedMessages": ["Hello", None, "World"],
     }
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_vars_scope_in_core() -> None:
@@ -1024,7 +1037,7 @@ output application/python
         "scaled": [10, 20, 30],
         "fallback": "ok",
     }
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_json_vars_scope_in_core() -> None:
@@ -1045,7 +1058,7 @@ output application/json
     )
 
     assert json.loads(result) == {"scaled": [10, 20, 30], "filtered": [2, 3]}
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_read_write_format_helpers_in_core() -> None:
@@ -1072,7 +1085,7 @@ import read, write from dw::Core
         "yamlParsed": "admin",
         "yamlWritten": "name: Ana\nenabled: true\n",
     }
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_markdown_output_and_write_in_core() -> None:
@@ -1093,7 +1106,7 @@ output text/markdown
     assert "| name   | age   |" in rendered
     assert "| Jane   | 30    |" in rendered
     assert "| Bob    | 25    |" in rendered
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
     written = runtime.execute(
         """%dw 2.0
@@ -1107,7 +1120,7 @@ write([{name: "Jane", age: 30}], "text/markdown")
 
     assert "| name   | age   |" in written
     assert "| Jane   | 30    |" in written
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_core_math_and_mime_helpers_in_core() -> None:
@@ -1164,7 +1177,7 @@ output application/json
     }
     assert result["mimeText"] == "application/json"
     assert result["handled"] is True
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_header_vars_in_core() -> None:
@@ -1191,7 +1204,7 @@ var summary = greeting ++ " " ++ payload.name
         "message": "HELLO DW",
         "captured": "2024-05-05T12:00:00Z",
     }
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_renders_safe_json_output_in_core() -> None:
@@ -1226,13 +1239,13 @@ output application/json
         "merged": {"name": "A", "password": "****"},
         "messages": ["Hi"],
     }
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_raw_smoke_json_preserves_duplicate_payload_keys() -> None:
     runtime = DataWeaveRuntime()
     payload = '{"test":{"test2":{"array":1},"test2":{"array":2},"test2":{"array":3}}}'
-    result = runtime._rust_runtime.execute_smoke_json("payload.test.*test2", payload)
+    result = _native_runtime(runtime).execute_smoke_json("payload.test.*test2", payload)
     assert json.loads(result) == [{"array": 1}, {"array": 2}, {"array": 3}]
 
 
@@ -1248,7 +1261,7 @@ output application/json
 """
 
     assert runtime.execute(script, {}) == '{"a":2,"a":3}'
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_json_writer_indent_in_core() -> None:
@@ -1266,7 +1279,7 @@ output application/json indent=2
 
     assert json.loads(result) == {"id": 1, "tags": ["a", "b"]}
     assert result.count("\n") > 1
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_csv_writer_in_core() -> None:
@@ -1280,7 +1293,7 @@ payload
     result = runtime.execute(script, [{"name": "Ann", "age": 20}])
 
     assert result == "name;age\nAnn;20\n"
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_ndjson_writer_in_core() -> None:
@@ -1293,7 +1306,7 @@ def test_rust_bridge_executes_ndjson_writer_in_core() -> None:
     )
 
     assert result == '{"id":1}\n{"__text":"ok","@source":"test"}\n'
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_parses_ndjson_payload_in_core() -> None:
@@ -1308,7 +1321,7 @@ def test_rust_bridge_parses_ndjson_payload_in_core() -> None:
     )
 
     assert result == [1, 2]
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_parses_nested_yaml_payload_in_core() -> None:
@@ -1338,7 +1351,7 @@ output application/python
     )
 
     assert result == {"customer": "MULE", "firstSku": "A-1", "totalItems": 2}
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_parses_xml_payload_in_core() -> None:
@@ -1356,7 +1369,7 @@ output application/json
     )
 
     assert json.loads(result) == {"title": "DW"}
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_renders_xml_output_in_core() -> None:
@@ -1370,7 +1383,7 @@ output application/xml
     result = runtime.execute(script, {})
 
     assert result == '<user id="123">Max</user>'
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_reads_and_writes_xml_attributes_in_core() -> None:
@@ -1388,7 +1401,7 @@ output application/xml
     )
 
     assert result == '<customer id="7">Ada</customer>'
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_parses_text_payload_formats_in_core() -> None:
@@ -1399,21 +1412,21 @@ def test_rust_bridge_parses_text_payload_formats_in_core() -> None:
         '{"name": "mule"}',
         payload_format="application/json",
     ) == "MULE"
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
     assert runtime.execute(
         "%dw 2.0\noutput application/python\n---\npayload.name",
         "name: Ana",
         payload_format="yaml",
     ) == "Ana"
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
     assert runtime.execute(
         "%dw 2.0\noutput application/python\n---\npayload map ((item) -> item.city)",
         "name,city\nAna,London\nBob,Berlin",
         payload_format="application/csv",
     ) == ["London", "Berlin"]
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
     assert runtime.execute(
         "%dw 2.0\noutput application/python\n---\npayload[0].city",
@@ -1421,7 +1434,7 @@ def test_rust_bridge_parses_text_payload_formats_in_core() -> None:
         payload_format="csv",
         payload_format_options={"separator": ";"},
     ) == "Lisbon"
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
     assert runtime.execute(
         "%dw 2.0\noutput application/python\n---\npayload[1][1]",
@@ -1429,7 +1442,7 @@ def test_rust_bridge_parses_text_payload_formats_in_core() -> None:
         payload_format="csv",
         payload_format_options={"separator": ";", "header": False},
     ) == "Lisbon"
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
     assert runtime.execute(
         "%dw 2.0\noutput application/python\n---\npayload[0].city",
@@ -1437,14 +1450,14 @@ def test_rust_bridge_parses_text_payload_formats_in_core() -> None:
         payload_format="csv",
         payload_format_options={"separator": "|", "quote": "'"},
     ) == "Lisbon"
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
     assert runtime.execute(
         "%dw 2.0\noutput application/python\n---\npayload map ((item) -> item.city)",
         "| name | city |\n|:---|:---|\n| Ana | London |",
         payload_format="text/markdown",
     ) == ["London"]
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
     assert runtime.execute(
         "%dw 2.0\noutput application/python\n---\npayload[0][1]",
@@ -1452,7 +1465,7 @@ def test_rust_bridge_parses_text_payload_formats_in_core() -> None:
         payload_format="markdown",
         payload_format_options={"header": False},
     ) == "London"
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_filters_csv_by_coerced_date_comparison_in_core() -> None:
@@ -1480,7 +1493,7 @@ map $.file_id
     assert json.loads(result) == {
         "file_ids": ["a0ee074e-85ce-4512-87f7-f6ea4b18dad4"]
     }
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_update_filter_pipeline_handles_relative_date_comparison_in_core() -> None:
@@ -1535,7 +1548,7 @@ filter ((item, index) -> item.created_at < now() - |P1M|)
             "created_by": "estebanwasinger-1",
         }
     ]
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_renders_yaml_writer_options_in_core() -> None:
@@ -1555,7 +1568,7 @@ output application/yaml skipNullOn="everywhere" writeDeclaration=true
     assert result.startswith("---\n")
     assert "remove" not in result
     assert "null" not in result
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_renders_payload_array_objects_as_block_yaml() -> None:
@@ -1577,7 +1590,7 @@ payload
     assert '- {"id"' not in result
     assert "- id: 01HCZE828BD4NQ19VR8WNP1V5W" in result
     assert "  name: Keyway" in result
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_one_line_output_script_in_core() -> None:
@@ -1586,7 +1599,7 @@ def test_rust_bridge_executes_one_line_output_script_in_core() -> None:
     result = runtime.execute("output application/yaml --- payload", {"name": "dw"})
 
     assert "name: dw" in result
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_dispatches_typed_overloads_in_core() -> None:
@@ -1600,7 +1613,7 @@ hola("") ++ hola(1)
 """
 
     assert runtime.execute(script, {}) == "hello!hi"
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_executes_csv_group_by_map_object_in_core() -> None:
@@ -1643,12 +1656,12 @@ mapObject ((value, key, index) -> {
             },
         ]
     }
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_exposes_type_descriptor_for_python_inference() -> None:
     runtime = DataWeaveRuntime()
-    descriptor = runtime._rust_runtime.infer_type_descriptor(
+    descriptor = _native_runtime(runtime).infer_type_descriptor(
         "{ name: payload.user.name, tags: payload.user.tags }",
         payload={"user": {"name": "Mule", "tags": ["dw"]}},
     )
@@ -1663,8 +1676,9 @@ def test_rust_bridge_exposes_type_descriptor_for_python_inference() -> None:
     )
     assert isinstance(inferred, ObjectType)
     assert inferred.field_dict()["name"][0] == STRING
-    assert isinstance(inferred.field_dict()["tags"][0], ArrayType)
-    assert inferred.field_dict()["tags"][0].element == STRING
+    tags_type = inferred.field_dict()["tags"][0]
+    assert isinstance(tags_type, ArrayType)
+    assert tags_type.element == STRING
 
 
 def test_rust_bridge_executes_string_collection_helpers_in_core() -> None:
@@ -1723,7 +1737,7 @@ output application/python
             "Scala": [{"name": "Bar", "language": "Scala"}],
         },
     }
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_preserves_object_take_while_result() -> None:
@@ -1739,12 +1753,12 @@ obj takeWhile ((value, key) -> value < 3)
     result = runtime.execute(script, payload=None, render_output=True)
 
     assert json.loads(result) == {"a": 1, "b": 2}
-    assert runtime._rust_runtime.last_execution_engine() == "rust-core"
+    assert _native_runtime(runtime).last_execution_engine() == "rust-core"
 
 
 def test_rust_bridge_smoke_json_identity() -> None:
     runtime = DataWeaveRuntime()
-    native = runtime._rust_runtime
+    native = _native_runtime(runtime)
 
     result = native.execute_smoke_json("%dw 2.0\n---\npayload", '{"id":7}')
 
