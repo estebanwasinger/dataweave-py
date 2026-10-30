@@ -6481,4 +6481,96 @@ sum(recurring_billings.amount)
         assert_eq!(result["wildcardReferences"], json!(["record"]));
         assert_eq!(result["unresolvedReferences"], json!(["record.missing"]));
     }
+
+    fn evaluate_stdlib(expression: &str) -> serde_json::Value {
+        execute_json(
+            &format!(
+                "%dw 2.0\nimport * from dw::core::Strings\noutput application/json\n---\n{expression}"
+            ),
+            serde_json::Value::Null,
+            false,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn camelize_preserves_case_inside_words() {
+        assert_eq!(
+            evaluate_stdlib(
+                r#"["CUSTOMER", "CUStomer", "customerName", "customer_first_name", "foo_BAR", "_FOO_BAR", "foo__bar", "foo_", "__", "", "customer name", null] map camelize($)"#
+            ),
+            json!([
+                "cUSTOMER",
+                "cUStomer",
+                "customerName",
+                "customerFirstName",
+                "fooBAR",
+                "fOOBAR",
+                "fooBar",
+                "foo",
+                "",
+                "",
+                "customer name",
+                null
+            ])
+        );
+    }
+
+    #[test]
+    fn capitalize_normalizes_hyphens_without_collapsing_spaces() {
+        assert_eq!(
+            evaluate_stdlib(
+                r#"["some-title: The begining", "customerName", "some_title", "a--b", "  some-title  ", "foo__bar", "a*s_b’s", "", null] map capitalize($)"#
+            ),
+            json!([
+                "Some Title: The Begining",
+                "Customer Name",
+                "Some Title",
+                "A  B",
+                "  Some Title  ",
+                "Foo  Bar",
+                "A*S B’S",
+                "",
+                null
+            ])
+        );
+    }
+
+    #[test]
+    fn quoted_selectors_decode_escapes_in_nested_expressions() {
+        assert_eq!(
+            evaluate_stdlib(
+                r#"do {
+                var obj = {"t\"a": {"it's": 7}, "a\\b": 8, "line\nbreak": 9}
+                ---
+                [obj."t\"a".'it\'s', obj.'a\\b', obj."line\nbreak",
+                 obj."t\"a"?, obj."missing\"key"?, obj."t\"a"!."it's"]
+            }"#
+            ),
+            json!([7, 8, 9, true, false, 7])
+        );
+    }
+
+    #[test]
+    fn size_of_null_propagates_through_functions_and_collections() {
+        assert_eq!(
+            evaluate_stdlib(
+                r#"do {
+                fun measure(value) = sizeOf(value)
+                ---
+                {direct: sizeOf(null), coerced: sizeOf(null as Number),
+                 nested: [null, "abc", []] map measure($),
+                 fallback: sizeOf(null) default 42}
+            }"#
+            ),
+            json!({"direct": null, "coerced": null, "nested": [null, 3, 0], "fallback": 42})
+        );
+    }
+
+    #[test]
+    fn unterminated_quoted_selector_reports_an_error() {
+        let error =
+            execute_json(r#"{"a": 1}."unterminated"#, serde_json::Value::Null, false).unwrap_err();
+        assert!(error.to_string().contains("unterminated"), "{error}");
+    }
 }
