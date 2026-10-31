@@ -52,6 +52,9 @@ Repository = "https://github.com/estebanwasinger/dataweave-py"
 Issues = "https://github.com/estebanwasinger/dataweave-py/issues"
 
 [project.optional-dependencies]
+conformance = [
+    "dataweave-native==2.12.2",
+]
 core = []
 pandas = [
     "pandas>=2.3.3",
