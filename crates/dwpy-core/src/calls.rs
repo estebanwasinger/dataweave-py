@@ -93,13 +93,16 @@ pub(crate) fn evaluate_function_call(
             Ok(Value::String(as_string(&argument)?.trim().to_string()))
         }
         "sizeOf" if arity == 1 => {
-            if argument_sources[0].contains(" as Number") {
-                return Ok(Value::Number(1.into()));
-            }
             if let Some(size) = evaluate_size_of_range(argument_sources[0], payload, locals)? {
                 return Ok(Value::Number(size.into()));
             }
             let argument = evaluate_expression_scoped(argument_sources[0], payload, locals)?;
+            if argument.is_null() {
+                return Ok(Value::Null);
+            }
+            if argument_sources[0].contains(" as Number") {
+                return Ok(Value::Number(1.into()));
+            }
             Ok(Value::Number(serde_json::Number::from(size_of(&argument)?)))
         }
         "now" if arity == 0 => Value::parse_temporal(&current_utc_datetime_string()),

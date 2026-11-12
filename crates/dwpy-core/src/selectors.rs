@@ -286,9 +286,11 @@ pub(crate) fn parse_path_segments(source: &str) -> Result<Vec<PathSegment>, DwEr
                 } else if ch == '\\' {
                     escaped = true;
                 } else if ch == quote {
-                    let mut attribute = source
-                        [segment_start + quote.len_utf8()..index - quote.len_utf8()]
-                        .to_string();
+                    let mut attribute =
+                        crate::literals::parse_string_literal(&source[segment_start..index])?
+                            .ok_or_else(|| {
+                                DwError::Parse(format!("invalid quoted selector {source}"))
+                            })?;
                     if attribute_prefix {
                         attribute = format!("@{attribute}");
                     }

@@ -42,18 +42,22 @@ pub(crate) fn camelize(value: &Value) -> Result<Value, DwError> {
     if value.is_null() {
         return Ok(Value::Null);
     }
-    let source = split_camel_with_separator(&as_dataweave_string(value), '_');
-    let parts: Vec<String> = source
+    let source = as_dataweave_string(value);
+    let mut output = String::new();
+    for (index, part) in source
         .split('_')
         .filter(|part| !part.is_empty())
-        .map(|part| part.to_lowercase())
-        .collect();
-    if parts.is_empty() {
-        return Ok(Value::String(String::new()));
-    }
-    let mut output = parts[0].clone();
-    for part in parts.iter().skip(1) {
-        output.push_str(&capitalize_word(part));
+        .enumerate()
+    {
+        let mut chars = part.chars();
+        if let Some(first) = chars.next() {
+            if index == 0 {
+                output.extend(first.to_lowercase());
+            } else {
+                output.extend(first.to_uppercase());
+            }
+            output.extend(chars);
+        }
     }
     Ok(Value::String(output))
 }
@@ -62,9 +66,10 @@ pub(crate) fn capitalize(value: &Value) -> Result<Value, DwError> {
     if value.is_null() {
         return Ok(Value::Null);
     }
-    let separated = split_camel_with_separator(&as_dataweave_string(value), ' ').replace('_', " ");
+    let separated =
+        split_camel_with_separator(&as_dataweave_string(value), ' ').replace(['_', '-'], " ");
     let words: Vec<String> = separated
-        .split_whitespace()
+        .split(' ')
         .map(|word| capitalize_word(&word.to_lowercase()))
         .collect();
     Ok(Value::String(words.join(" ")))
