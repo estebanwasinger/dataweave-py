@@ -1016,7 +1016,11 @@ fn evaluate_expression_inner(
 
     if let Some(inner) = source
         .strip_prefix('-')
-        .filter(|inner| !inner.starts_with('-'))
+        // A minus immediately followed by a digit is part of a numeric
+        // literal, rather than the lower-precedence unary minus operator.
+        .filter(|inner| {
+            !inner.starts_with('-') && !inner.as_bytes().first().is_some_and(u8::is_ascii_digit)
+        })
     {
         let value = evaluate_expression_scoped(inner, payload, locals)?;
         return number_result(-number_value(&value)?);
@@ -3234,6 +3238,28 @@ output application/python
         assert_eq!(
             execute_json("%dw 2.0\n---\n-payload.amount", json!({"amount": 7}), false).unwrap(),
             json!(-7)
+        );
+    }
+
+    #[test]
+    fn negative_literals_and_unary_minus_have_distinct_precedence() {
+        let script = r#"%dw 2.0
+var x = 2
+var offset = -3 + 1
+---
+{
+  unary: -x + 3,
+  parenthesized: (-x) + 3,
+  product: -x * 2 + 1,
+  literal: -3 + 1,
+  decimal: -3.5 + 1,
+  multiplication: -3 * 2 + 1,
+  nested: [offset, -3 /* comment + --- */ + 1, 2 * -3 + 1]
+}"#;
+        assert_eq!(
+            execute_json(script, serde_json::Value::Null, false).unwrap(),
+            json!({"unary": -5, "parenthesized": 1, "product": -5, "literal": -2,
+                   "decimal": -2.5, "multiplication": -5, "nested": [-2, -2, -5]})
         );
     }
 
