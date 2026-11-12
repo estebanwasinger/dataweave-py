@@ -618,13 +618,25 @@ def _csv_reader(value: Any, options: Dict[str, Any]) -> Any:
     text = _ensure_text(value, options)
     delimiter = str(options.get("separator", ",")) or ","
     quote = str(options.get("quote", '"')) or '"'
+    escape = str(options.get("escape", "\\")) or "\\"
     header = _to_bool(options.get("header", True))
-    stream = io.StringIO(text)
-    if header:
-        reader = csv.DictReader(stream, delimiter=delimiter, quotechar=quote)
-        return [dict(row) for row in reader]
-    reader = csv.reader(stream, delimiter=delimiter, quotechar=quote)
-    return [row for row in reader]
+    ignore_empty = _to_bool(options.get("ignoreEmptyLine", True))
+    reader = csv.reader(io.StringIO(text, newline=""), delimiter=delimiter,
+                        quotechar=quote, escapechar=escape, doublequote=False)
+    rows = []
+    source_lines = text.splitlines(keepends=True)
+    previous_line = 0
+    for row in reader:
+        raw_record = "".join(source_lines[previous_line:reader.line_num])
+        previous_line = reader.line_num
+        if ignore_empty and not raw_record.strip():
+            continue
+        rows.append(row or [""])
+    if not header or not rows:
+        return rows
+    headers, *body = rows
+    return [{headers[i] if i < len(headers) else f"column_{i}": cell
+             for i, cell in enumerate(row)} for row in body]
 
 
 def _markdown_reader(value: Any, options: Dict[str, Any]) -> Any:
@@ -700,47 +712,53 @@ def _markdown_cells_to_row(headers: list[str], row: list[str]) -> list[str]:
 
 def _csv_writer(value: Any, options: Dict[str, Any]) -> str:
     delimiter = str(options.get("separator", ",")) or ","
-    quote = options.get("quote", '"')
+    quote = str(options.get("quote", '"')) or '"'
+    escape = str(options.get("escape", "\\")) or "\\"
+    if any(len(char) != 1 for char in (delimiter, quote, escape)):
+        raise FormatError("CSV separator, quote and escape must be single characters")
     header = _to_bool(options.get("header", True))
-    newline = options.get("newline")
-    rows = value
-    if isinstance(value, dict):
-        rows = [value]
+    quote_header = _to_bool(options.get("quoteHeader", False))
+    quote_values = _to_bool(options.get("quoteValues", False))
+    newline = options.get("lineSeparator", options.get("newline", "\n"))
+    rows = [value] if isinstance(value, dict) else value
     if not isinstance(rows, list):
         raise FormatError("CSV writer expects a list or dict value")
-    output = io.StringIO()
+
+    def text(cell: Any) -> str:
+        if cell is None:
+            return ""
+        if isinstance(cell, bool):
+            return str(cell).lower()
+        if isinstance(cell, (dict, list)):
+            return json.dumps(cell, ensure_ascii=False, separators=(",", ":"))
+        return str(cell)
+
+    def render_row(cells: Any, quoted: bool) -> str:
+        result = []
+        for cell in cells:
+            escaped = "".join((escape if ch in (escape, quote) or
+                               not quoted and ch in (delimiter, "\n", "\r") else "") + ch
+                              for ch in text(cell))
+            result.append(quote + escaped + quote if quoted else escaped)
+        return delimiter.join(result) + str(newline)
+
+    output = []
     if rows and isinstance(rows[0], dict):
-        fieldnames = options.get("columns")
-        if fieldnames is None:
-            fieldnames = list(rows[0].keys())
-        elif isinstance(fieldnames, str):
-            fieldnames = [segment.strip() for segment in fieldnames.split(",") if segment.strip()]
-        if not fieldnames:
+        columns = options.get("columns", list(rows[0].keys()))
+        if isinstance(columns, str):
+            columns = [segment.strip() for segment in columns.split(",") if segment.strip()]
+        if not columns:
             raise FormatError("CSV writer requires at least one column when writing dictionaries")
-        writer = csv.DictWriter(
-            output,
-            fieldnames=fieldnames,
-            delimiter=delimiter,
-            quotechar=quote,
-            extrasaction="ignore",
-            lineterminator=newline if newline is not None else "\n",
-        )
         if header:
-            writer.writeheader()
-        writer.writerows(rows)
-    else:
-        writer = csv.writer(
-            output,
-            delimiter=delimiter,
-            quotechar=quote,
-            lineterminator=newline if newline is not None else "\n",
-        )
+            output.append(render_row(columns, quote_header))
         for row in rows:
-            if isinstance(row, (list, tuple)):
-                writer.writerow(list(row))
-            else:
-                writer.writerow([row])
-    return output.getvalue()
+            if not isinstance(row, dict):
+                raise FormatError("CSV writer mixed row types")
+            output.append(render_row((row.get(column) for column in columns), quote_values))
+    else:
+        for row in rows:
+            output.append(render_row(row if isinstance(row, (list, tuple)) else [row], quote_values))
+    return "".join(output)
 
 
 def _plain_writer(value: Any, options: Dict[str, Any]) -> str:

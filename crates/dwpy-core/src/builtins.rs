@@ -4,7 +4,6 @@ use num_bigint::BigInt;
 use digest::Digest;
 use regex::Regex;
 
-use crate::csv::{read_simple_csv, split_simple_delimited_row_preserving_cells};
 use crate::markdown::render_markdown_output;
 use crate::mime::{mime_from_string, mime_is_handled_by, mime_to_string};
 use crate::periods::special_string_value;
@@ -313,21 +312,7 @@ pub(crate) fn read_format_with_options(
             let parsed = parse_xml_document(&text)?;
             Ok(apply_xml_null_value_option(parsed, options))
         }
-        "application/csv" | "text/csv" | "csv" => {
-            let separator = read_option(options, "separator")
-                .and_then(|value| value.chars().next())
-                .unwrap_or(',');
-            let quote = read_option(options, "quote")
-                .and_then(|value| value.chars().next())
-                .unwrap_or('"');
-            let header = read_bool_option(options, "header", true);
-            if !header {
-                return Ok(read_headerless_csv_as_column_objects(
-                    &text, separator, quote,
-                ));
-            }
-            read_simple_csv(&text, separator, quote, header)
-        }
+        "application/csv" | "text/csv" | "csv" => crate::csv::read_csv(&text, options, true),
         "text/plain" | "plain" | "text" => Ok(Value::String(text)),
         "application/octet-stream" | "octet-stream" => Ok(binary_value(text.into_bytes())),
         "multipart/form-data" => read_multipart_form_data(&text, content_type, options),
@@ -468,32 +453,11 @@ fn multipart_headers(headers: &str) -> Map<String, Value> {
     }))
 }
 
-fn read_headerless_csv_as_column_objects(text: &str, separator: char, quote: char) -> Value {
-    Value::Array(
-        text.lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| {
-                let cells = split_simple_delimited_row_preserving_cells(line, separator, quote);
-                Value::Object(Map::from_iter(cells.into_iter().enumerate().map(
-                    |(index, cell)| (format!("column_{index}"), Value::String(cell)),
-                )))
-            })
-            .collect(),
-    )
-}
-
 fn read_option(options: &Value, name: &str) -> Option<String> {
     let Value::Object(map) = options else {
         return None;
     };
     map.get(name).map(as_dataweave_string)
-}
-
-fn read_bool_option(options: &Value, name: &str, default: bool) -> bool {
-    let Some(value) = read_option(options, name) else {
-        return default;
-    };
-    matches!(value.as_str(), "true" | "True" | "1" | "yes")
 }
 
 pub(crate) fn write_format(value: &Value, content_type: &Value) -> Result<Value, DwError> {
@@ -519,6 +483,9 @@ pub(crate) fn write_format_with_options(
         }
         "application/x-ndjson" | "application/x-ldjson" | "ndjson" => {
             crate::ndjson::render_ndjson_value(value, options).map(Value::String)
+        }
+        "application/csv" | "text/csv" | "csv" => {
+            crate::csv::render_csv_with_options(value, options).map(Value::String)
         }
         "text/plain" | "plain" | "text" => {
             crate::output::render_plain_output(value).map(Value::String)

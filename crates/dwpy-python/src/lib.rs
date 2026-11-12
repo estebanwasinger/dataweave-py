@@ -754,9 +754,19 @@ fn is_supported_payload_options(
         return false;
     };
     match payload_format {
-        Some("csv") | Some("application/csv") | Some("text/csv") => map
-            .keys()
-            .all(|key| matches!(key.as_str(), "separator" | "quote" | "header")),
+        Some("csv") | Some("application/csv") | Some("text/csv") => map.keys().all(|key| {
+            matches!(
+                key.as_str(),
+                "separator"
+                    | "quote"
+                    | "escape"
+                    | "header"
+                    | "ignoreEmptyLine"
+                    | "bodyStartLineNumber"
+                    | "headerLineNumber"
+                    | "streaming"
+            )
+        }),
         Some("markdown") | Some("md") | Some("text/markdown") | Some("text/x-markdown") => {
             map.keys().all(|key| key == "header")
         }
@@ -820,21 +830,59 @@ fn is_supported_json_output_option((key, value): (&str, &str)) -> bool {
 }
 
 fn is_supported_csv_output_line(line: &str) -> bool {
-    let mut tokens = line.split_whitespace();
-    if tokens.next() != Some("application/csv") {
-        return false;
-    }
-    for token in tokens {
-        if token.starts_with("separator=")
-            || token.starts_with("quote=")
-            || token.starts_with("header=")
-            || token.starts_with("columns=")
-        {
-            continue;
+    let mut chars = line.chars().peekable();
+    let mut tokens = Vec::new();
+    while chars.peek().is_some() {
+        while chars.peek().is_some_and(|c| c.is_whitespace()) {
+            chars.next();
         }
+        let mut token = String::new();
+        let mut quoted = false;
+        let mut escaped = false;
+        while let Some(&ch) = chars.peek() {
+            if !quoted && ch.is_whitespace() {
+                break;
+            }
+            chars.next();
+            token.push(ch);
+            if ch == '"' && !escaped {
+                quoted = !quoted;
+            }
+            if ch == '\\' && !escaped {
+                escaped = true;
+            } else {
+                escaped = false;
+            }
+        }
+        if !token.is_empty() {
+            tokens.push(token);
+        }
+    }
+    if tokens.first().map(String::as_str) != Some("application/csv") {
         return false;
     }
-    true
+    tokens.iter().skip(1).all(|token| {
+        token.split_once('=').is_some_and(|(key, _)| {
+            matches!(
+                key,
+                "separator"
+                    | "quote"
+                    | "escape"
+                    | "header"
+                    | "columns"
+                    | "quoteValues"
+                    | "quoteHeader"
+                    | "lineSeparator"
+                    | "newline"
+                    | "bufferSize"
+                    | "deferred"
+                    | "encoding"
+                    | "bodyStartLineNumber"
+                    | "headerLineNumber"
+                    | "ignoreEmptyLine"
+            )
+        })
+    })
 }
 
 fn is_supported_ndjson_output_line(line: &str) -> bool {
