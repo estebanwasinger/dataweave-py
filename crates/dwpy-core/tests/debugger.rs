@@ -48,6 +48,17 @@ fn differential_core_transformations() {
         assert_eq!(run(source,payload.clone()),execute_value(source,payload.into(),true).unwrap(),"{source}");
     }
 }
+
+#[test]
+fn negative_literal_precedence_matches_normal_execution() {
+    let source = "%dw 2.0\nvar x = 2\n---\n[-3 + 1, -3.5 + 1, -x + 3, (-x) + 3]";
+    let expected = DwValue::from(json!([-2, -2.5, -5, 1]));
+    assert_eq!(run(source, serde_json::Value::Null), expected);
+    assert_eq!(
+        execute_value(source, DwValue::Null, false).unwrap(),
+        expected
+    );
+}
 #[test]
 fn stops_watches_and_scope() {
     let source = "%dw 2.0\nvar x = 3\n---\npayload map ((item,index) -> item+x)";

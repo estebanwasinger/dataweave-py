@@ -447,7 +447,10 @@ impl Parser<'_> {
             }
         } else if let Some(rest) = s.strip_prefix("not ") {
             Kind::Unary("not".into(), child(rest)?)
-        } else if let Some(rest) = s.strip_prefix('-') {
+        } else if let Some(rest) = s
+            .strip_prefix('-')
+            .filter(|rest| !rest.as_bytes().first().is_some_and(u8::is_ascii_digit))
+        {
             Kind::Unary("-".into(), child(rest)?)
         } else if let Some((a, b)) =
             split_top_level_keyword(s, "default").filter(|_| split_top_level_arrow(s).is_none())
