@@ -313,20 +313,34 @@ def builtin_camelize(text: Any) -> Any:
     parts = [part for part in str(text).split("_") if part]
     if not parts:
         return ""
-    first = parts[0].lower()
-    rest = [part[:1].upper() + part[1:].lower() for part in parts[1:]]
+    first = parts[0][:1].lower() + parts[0][1:]
+    rest = [part[:1].upper() + part[1:] for part in parts[1:]]
     return first + "".join(rest)
 
 
 def builtin_capitalize(text: Any) -> Any:
     if text is None:
         return None
-    with_camel_split = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", str(text))
-    with_spaces = with_camel_split.replace("_", " ")
-    words = [word for word in re.split(r"\s+", with_spaces.strip()) if word]
-    if not words:
-        return ""
-    return " ".join(word.title() for word in words)
+    source = str(text)
+    separated = []
+    previous = None
+    for char in source:
+        if char.isupper() and previous is not None and (
+            previous.islower() or previous in "0123456789"
+        ):
+            separated.append(" ")
+        separated.append(" " if char in "_-" else char)
+        previous = char
+
+    def capitalize_word(word: str) -> str:
+        result = []
+        capitalize_next = True
+        for char in word.lower():
+            result.append(char.upper() if capitalize_next else char.lower())
+            capitalize_next = not char.isalnum()
+        return "".join(result)
+
+    return " ".join(capitalize_word(word) for word in "".join(separated).split(" "))
 
 
 def builtin_char_code(text: Any) -> Any:
@@ -830,9 +844,9 @@ def builtin_is_empty(value: Any) -> bool:
     return False
 
 
-def builtin_size_of(value: Any) -> int:
+def builtin_size_of(value: Any) -> Optional[int]:
     if value is None:
-        return 0
+        return None
     if isinstance(value, (list, tuple, Mapping)):
         return len(value)
     if isinstance(value, (bytes, bytearray)):
