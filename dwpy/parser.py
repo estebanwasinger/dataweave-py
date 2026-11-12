@@ -1113,6 +1113,16 @@ class Parser:
         token = self.current()
         token_type = token[0]
         value = token[1]
+        if token_type in {"IDENT", "STRING"} and self.peek(1)[0] == "COLON":
+            self.advance()
+            self.advance()
+            key = _unescape_string(value or "") if token_type == "STRING" else value or ""
+            key_expr = (
+                self._parse_interpolated_string(key)
+                if token_type == "STRING" and "$(" in key
+                else StringLiteral(value=key)
+            )
+            return ObjectLiteral(fields=[(key_expr, self.parse_expression())])
         if token_type == "BANG":
             self.advance()
             operand = self.parse_postfix_no_infix()
@@ -1184,6 +1194,8 @@ class Parser:
             self.advance()
             expr = self.parse_expression()
             self.expect("RPAREN")
+            if self.match("COLON"):
+                return ObjectLiteral(fields=[(expr, self.parse_expression())])
             return expr
         raise ParseError(
             f"Unexpected token {token_type} at line {token[2]}, column {token[3]}"

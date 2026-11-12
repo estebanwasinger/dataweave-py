@@ -35,6 +35,24 @@ pub(crate) fn infer_expression_type(
         ]));
     }
 
+    if let Some((before_colon, after_colon)) = split_top_level_char(source, ':') {
+        if let Some((left, _, key)) = split_top_level_operator(before_colon, &["++"]) {
+            let left_type =
+                infer_expression_type(left, payload_type, vars_type, attributes_type, bindings)?;
+            let right = format!("{key}:{after_colon}");
+            let right_type =
+                infer_expression_type(&right, payload_type, vars_type, attributes_type, bindings)?;
+            return Ok(infer_concat_type(&left_type, &right_type));
+        }
+        return infer_object_literal_type(
+            &format!("{{{source}}}"),
+            payload_type,
+            vars_type,
+            attributes_type,
+            bindings,
+        );
+    }
+
     if let Some((left, operator, right)) = split_top_level_operator(source, &["++", "+", "-"]) {
         let left_type =
             infer_expression_type(left, payload_type, vars_type, attributes_type, bindings)?;
@@ -266,9 +284,17 @@ fn infer_object_literal_type(
             )));
         };
         let key_source = key_source.trim();
-        let key = if key_source.starts_with('(') {
-            open = true;
-            None
+        let key = if key_source.starts_with('(')
+            && find_matching_delimiter(key_source, 0, '(', ')') == Some(key_source.len() - 1)
+        {
+            let inner = key_source[1..key_source.len() - 1].trim();
+            match parse_string_literal(inner)? {
+                Some(key) if !key.contains("$(") => Some(key),
+                _ => {
+                    open = true;
+                    None
+                }
+            }
         } else if let Some(key) = parse_string_literal(key_source)? {
             if key.contains("$(") {
                 open = true;

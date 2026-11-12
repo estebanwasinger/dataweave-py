@@ -1059,12 +1059,24 @@ fn evaluate_expression_inner(
         return evaluate_or_else(&left_value, right, payload, locals);
     }
 
-    if let Some((before_colon, _)) = split_top_level_char(source, ':') {
+    if let Some((before_colon, after_colon)) = split_top_level_char(source, ':') {
         if let Some((left, operator, right)) = functions::split_collection_operator(source, locals)
         {
             if left.len() < before_colon.len() {
                 return evaluate_collection_operator(left, &operator, right, payload, locals);
             }
+        }
+        // An unbraced single-entry object can be the right operand of a
+        // sequence operator. Its value extends to the end of the expression.
+        if let Some((left, operator, key)) = split_top_level_operator(before_colon, &["++", "--"]) {
+            let left_value = if operator == "--" {
+                evaluate_index_base(left, payload, locals)?
+            } else {
+                evaluate_expression_scoped(left, payload, locals)?
+            };
+            let right = format!("{key}:{after_colon}");
+            let right_value = evaluate_expression_scoped(&right, payload, locals)?;
+            return evaluate_additive(&left_value, operator, &right_value);
         }
         return evaluate_object_literal_scoped(&format!("{{{source}}}"), payload, locals);
     }
