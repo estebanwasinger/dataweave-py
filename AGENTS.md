@@ -45,6 +45,22 @@ UV_CACHE_DIR=.uv-cache uv run --extra dev pytest
 ```
 The `--extra dev` flag installs the dev dependencies defined in `pyproject.toml`, while `UV_CACHE_DIR` keeps uv's cache local to the repo for environments with restricted access.
 
+## Comparing with MuleSoft's DataWeave Playground
+For functional or language-semantics comparisons, use MuleSoft's official playground transform endpoint as a reference for its DataWeave implementation. For example:
+
+```bash
+curl -sS 'https://dataweave.mulesoft.com/transform' \
+  -H 'Accept: application/json' \
+  -H 'Content-Type: application/json' \
+  -H 'X-DataweaveAction: preview' \
+  -b 'dw.playground_hide_legal_notice=true' \
+  --data-raw '{"main":"/main.dwl","inputs":{"payload":{"value":"e30=","kind":"binary","properties":{},"mimeType":"application/json"}},"fs":{"/main.dwl":"%dw 2.0\noutput application/json\n---\n{answer: 1 + 1}"}}'
+```
+
+- Set `fs["/main.dwl"]` to the script being tested. Input `value` is base64-encoded content; `e30=` is an empty JSON object. Match the payload MIME type and script output format when comparing implementations.
+- Inspect `success`, `result.content`, and `error`: a response may report a DataWeave compilation or execution error even when the HTTP request succeeds. Compare equivalent inputs, outputs, and errors, and retain meaningful details such as duplicate object keys.
+- Send only synthetic, non-sensitive scripts and data; the playground is a MuleSoft service. Its implementation and behavior can change, so record the tested cases and date rather than assuming a particular runtime version.
+
 # Old Java Project (Legacy)
 
 ## Project Structure & Module Organization
