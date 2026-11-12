@@ -57,7 +57,7 @@ use collections::{
     evaluate_split_where, evaluate_substring_by, evaluate_sum_by, evaluate_take_while,
     evaluate_then,
 };
-use csv::read_simple_csv;
+
 pub use diagnostics::{execution_error_message, unique_expression_offset, with_execution_trace};
 use evaluator::{
     evaluate_array_literal_scoped, evaluate_do_block_scoped, evaluate_index_base,
@@ -880,14 +880,7 @@ pub fn parse_native_payload_format_with_options(
             Value::String(text) => text,
             other => as_dataweave_string(&other),
         };
-        let separator = input_option(options, "separator")
-            .and_then(|value| value.chars().next())
-            .unwrap_or(',');
-        let quote = input_option(options, "quote")
-            .and_then(|value| value.chars().next())
-            .unwrap_or('"');
-        let header = input_bool_option(options, "header", true);
-        return read_simple_csv(&text, separator, quote, header);
+        return csv::read_csv(&text, options.unwrap_or(&Value::Null), false);
     }
     if is_markdown_mime(payload_format) {
         let text = match payload {
@@ -900,13 +893,6 @@ pub fn parse_native_payload_format_with_options(
     Err(DwError::UnsupportedFeature(format!(
         "payload format {payload_format}"
     )))
-}
-
-fn input_option<'a>(options: Option<&'a Value>, name: &str) -> Option<String> {
-    let Value::Object(map) = options? else {
-        return None;
-    };
-    map.get(name).map(as_dataweave_string)
 }
 
 fn input_bool_option(options: Option<&Value>, name: &str, default: bool) -> bool {

@@ -2185,7 +2185,13 @@ class DataWeaveRuntime:
             )
             return self._evaluate(expr, ctx)
         format_name = content_type_text.split(";", 1)[0].strip()
-        return self._convert_input_format(string_to_parse, format_name, dict(options))
+        result = self._convert_input_format(string_to_parse, format_name, dict(options))
+        if (
+            format_name in {"application/csv", "text/csv", "csv"}
+            and str(options.get("header", True)).lower() not in {"true", "1", "yes"}
+        ):
+            return [{f"column_{index}": cell for index, cell in enumerate(row)} for row in result]
+        return result
 
     def _func_read_url(self, url: Any, content_type: Any = "application/dw", reader_properties: Any = None) -> Any:
         resource = "" if url is None else str(url)
